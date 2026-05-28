@@ -1,0 +1,16 @@
+---
+title: "💬 Caso 1 — Prompt normal (sin tools)"
+---
+sequenceDiagram
+    autonumber
+    actor U as 👤 Usuario
+    participant APP as 📱 App
+    participant LM as 🧠 LM Studio
+
+    U->>APP: "Explicame el patron Repository"
+    APP->>LM: POST /chat/completions<br/>(messages + tools disponibles)
+    Note over LM: El modelo decide que NO<br/>necesita ninguna tool
+    LM-->>APP: stream "El patron Repository es..."
+    Note over APP: Renderiza tokens en vivo<br/>en la burbuja del assistant
+    LM-->>APP: finish_reason = "stop"
+    APP-->>U: 💬 Respuesta de texto

@@ -1,0 +1,26 @@
+---
+title: "🎨 Caso 3 — Prompt para generar imagen (SDXL)"
+---
+sequenceDiagram
+    autonumber
+    actor U as 👤 Usuario
+    participant APP as 📱 App
+    participant LM as 🧠 LM Studio
+    participant IS as 🎨 Image Service<br/>(FastAPI)
+    participant CY as 🖼️ ComfyUI<br/>+ SDXL (GPU)
+
+    U->>APP: "Dibuja un dragon estilo Van Gogh"
+    APP->>LM: POST /chat/completions
+    Note over LM: Reconoce intencion artistica<br/>traduce a prompt SDXL en ingles
+    LM-->>APP: tool_calls = [generate_image]<br/>prompt = "epic dragon, van gogh..."
+    Note over APP: 🎨 Muestra "Generando imagen…"<br/>con el prompt como subtitulo
+    APP->>IS: POST /generate-image<br/>{prompt, width, height}
+    IS->>CY: ejecuta workflow SDXL
+    Note over CY: 🔥 GPU corre el modelo<br/>~10-30 segundos
+    CY-->>IS: PNG bytes
+    IS-->>APP: {success:true, image_base64:"..."}
+    Note over APP: Guarda base64 en _lastImage<br/>(fuera del contexto del LLM)
+    APP->>LM: POST /chat/completions<br/>+ metadatos (sin base64)
+    LM-->>APP: stream "Aqui tienes tu dragon..."
+    Note over APP: Pega el PNG al ChatMessage<br/>del assistant
+    APP-->>U: 💬 Texto + 🖼️ imagen

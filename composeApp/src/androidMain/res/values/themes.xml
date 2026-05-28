@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema base usado solo durante el splash/arranque, antes de que Compose tome el control.
+         enableEdgeToEdge() + SystemBarsEffect se encargan de la apariencia en runtime. -->
+    <style name="Theme.LocalChatBot" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>

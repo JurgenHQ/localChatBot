@@ -1,0 +1,43 @@
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+*.hprof
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Configuración local (SDK path, secretos)
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+
+# iOS / Xcode
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+Pods/
+**/DerivedData/
+
+# Logs y temporales
+*.log
+*.tmp

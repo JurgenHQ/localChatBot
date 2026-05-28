@@ -1,0 +1,25 @@
+---
+title: "📊 Caso 4 — Prompt para generar diagrama (Mermaid)"
+---
+sequenceDiagram
+    autonumber
+    actor U as 👤 Usuario
+    participant APP as 📱 App
+    participant LM as 🧠 LM Studio
+    participant IS as 📊 Image Service<br/>(FastAPI)
+    participant MM as ⚙️ mermaid-cli<br/>+ Chromium headless
+
+    U->>APP: "Mapa conceptual de fotosintesis"
+    APP->>LM: POST /chat/completions
+    Note over LM: Detecta que necesita texto legible<br/>elige render_diagram (NO image)
+    LM-->>APP: tool_calls = [render_diagram]<br/>code = "mindmap\n  root..."
+    Note over APP: 📊 Muestra "Renderizando diagrama…"<br/>con la 1a linea como subtitulo
+    APP->>IS: POST /generate-diagram<br/>{code, theme, background}
+    IS->>MM: spawn mmdc -i input.mmd -o out.png
+    Note over MM: Chromium parsea Mermaid<br/>y dibuja PNG limpio
+    MM-->>IS: out.png
+    IS-->>APP: {success:true, image_base64:"..."}
+    Note over APP: Mismo flujo que generate_image:<br/>base64 out-of-band
+    APP->>LM: POST /chat/completions<br/>+ metadatos (sin base64)
+    LM-->>APP: stream "Listo, aqui tienes tu mapa..."
+    APP-->>U: 💬 Texto + 📊 diagrama con texto nitido

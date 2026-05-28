@@ -1,0 +1,21 @@
+---
+title: "🔎 Caso 2 — Prompt que necesita internet"
+---
+sequenceDiagram
+    autonumber
+    actor U as 👤 Usuario
+    participant APP as 📱 App
+    participant LM as 🧠 LM Studio
+    participant TAV as 🌐 Tavily API
+
+    U->>APP: "Que paso con NVIDIA hoy?"
+    APP->>LM: POST /chat/completions
+    Note over LM: Detecta que necesita<br/>informacion actual
+    LM-->>APP: tool_calls = [search_web]<br/>query = "NVIDIA news today"
+    Note over APP: 🔎 Muestra "Buscando…"<br/>con la query como subtitulo
+    APP->>TAV: GET /search?q=...
+    TAV-->>APP: [{title, url, content}, ...]
+    APP->>LM: POST /chat/completions<br/>+ resultado tool (snippets)
+    LM-->>APP: stream "Hoy NVIDIA anuncio..."<br/>+ cita fuentes
+    Note over APP: Pega chips de fuentes<br/>debajo del mensaje
+    APP-->>U: 💬 Texto + 🔗 fuentes

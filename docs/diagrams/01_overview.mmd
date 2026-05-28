@@ -1,0 +1,31 @@
+---
+title: "🌍 Vista general — LocalChatBot"
+---
+flowchart LR
+    subgraph PHONE["📱 Tu teléfono"]
+        APP["🤖 LocalChatBot<br/>(KMP + Compose)"]
+    end
+
+    subgraph PC["💻 Tu PC (servidor en LAN)"]
+        LMS["🧠 LM Studio<br/>puerto 1234<br/>(modelo LLM)"]
+        IMG["🎨 Image Service<br/>puerto 8080<br/>(FastAPI)"]
+        SDXL["🖼️ ComfyUI + SDXL"]
+        MMDC["📊 mermaid-cli<br/>+ Chromium"]
+        IMG --> SDXL
+        IMG --> MMDC
+    end
+
+    subgraph WEB["☁️ Internet (opcional)"]
+        TAV["🔎 Tavily API"]
+    end
+
+    APP -- "chat OpenAI-compat" --> LMS
+    APP -- "imagenes y diagramas" --> IMG
+    APP -. "solo si hay API key" .-> TAV
+
+    style APP fill:#7C4DFF,stroke:#5A35CC,color:#fff,stroke-width:3px
+    style LMS fill:#2C5AFF,stroke:#1E40CC,color:#fff,stroke-width:3px
+    style IMG fill:#2EBD66,stroke:#1F8A4B,color:#fff,stroke-width:3px
+    style SDXL fill:#FF8A00,stroke:#CC6E00,color:#fff,stroke-width:2px
+    style MMDC fill:#00BCD4,stroke:#0091A8,color:#fff,stroke-width:2px
+    style TAV fill:#FF5252,stroke:#CC3A3A,color:#fff,stroke-width:3px
