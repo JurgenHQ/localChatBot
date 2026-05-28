@@ -13,6 +13,7 @@ La UI es **100% compartida** entre Android e iOS — un solo árbol de composabl
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Flujo de datos](#flujo-de-datos)
+- [Inspector de red (debug)](#inspector-de-red-debug)
 - [Prerrequisitos](#prerrequisitos)
 - [Levantar el modelo local](#levantar-el-modelo-local)
 - [Servidor: replicar el setup](#servidor-replicar-el-setup)
@@ -27,16 +28,24 @@ La UI es **100% compartida** entre Android e iOS — un solo árbol de composabl
 ## Qué hace la app
 
 - **Onboarding** al primer arranque: pide IP, puerto (con sufijo visual `/v1`) y nombre del modelo, y prueba la conexión contra `GET /v1/models` midiendo latencia.
+- **Dos modos de conexión**: red local (IP + puerto) o **URL directa** (Cloudflare Tunnel, ngrok, etc.) para usar la app desde fuera de tu LAN. Toggle inline en el onboarding y en Configuración.
 - **Chat con streaming**: respuestas token a token vía `POST /v1/chat/completions` (`stream=true`). Múltiples sesiones persistidas, scroll automático al último mensaje del usuario, indicador de escritura.
 - **Adjuntar imágenes**: si el modelo es multimodal, se puede mandar una imagen junto con el prompt (codificada como `data:image/jpeg;base64,...`).
-- **Modo voz**: dictado por reconocimiento de voz nativo (Android `SpeechRecognizer` / iOS `SFSpeechRecognizer`) y lectura de la respuesta con TTS del sistema.
+- **Vista previa de imágenes generadas**: tocar una imagen del chat la abre fullscreen con botón "Guardar imagen" (envía a galería en Android, Photo Library en iOS).
+- **Modo voz (dos sabores)**: dictado simple (botón de micro en el composer, transcribe a texto y lo deja editar) **y** modo conversación (`VoiceConversationSheet`) — flujo manos libres que escucha, manda al modelo, lee la respuesta con TTS y vuelve a escuchar. Usa APIs nativas: Android `SpeechRecognizer` + `TextToSpeech` / iOS `SFSpeechRecognizer` + `AVSpeechSynthesizer`.
 - **Web search con tools**: si configuras una API key de **Tavily**, el modelo puede invocar la tool `search_web` automáticamente cuando la pregunta necesita información actual. Las fuentes se muestran como chips bajo la respuesta.
-- **Generación de imágenes con tools**: si levantas un Image Service local (FastAPI + ComfyUI + SDXL — ver [Servidor: replicar el setup](#servidor-replicar-el-setup)), el modelo puede invocar `generate_image` cuando le pidas crear o dibujar algo. La imagen aparece en la respuesta del assistant; tocarla muestra la opción "Guardar imagen" para enviarla a la galería del dispositivo.
+- **Generación de imágenes con tools** (`generate_image`): si levantas el servicio multimedia local (FastAPI + ComfyUI + SDXL — ver [Servidor: replicar el setup](#servidor-replicar-el-setup)), el modelo invoca esta tool para imágenes artísticas, retratos, paisajes, etc.
+- **Renderizado de diagramas con tools** (`render_diagram`): el mismo servicio expone `/generate-diagram` (wrapper de **mermaid-cli** + Chromium headless). El modelo elige esta tool — y NO `generate_image` — cuando le pides un mapa conceptual, mindmap, flowchart, secuencia, clases, ER, etc. Resultado: el texto del diagrama sale nítido y legible (los modelos de difusión no saben dibujar texto).
 - **Reenviar y editar mensajes**: long-press sobre un mensaje del usuario abre un menú con "Editar" (lo carga en el composer, junto con la imagen si tenía) o "Reenviar" (vuelve a invocar al modelo con el mismo contenido). En ambos casos se descartan las respuestas posteriores.
 - **Botón de stop**: mientras el modelo procesa un prompt, el botón de enviar se reemplaza por un botón de detener que cancela el stream en curso.
 - **Cambio rápido de modelo**: tocando el nombre del modelo en la barra superior del chat se abre un selector con los modelos disponibles del endpoint.
-- **Drawer lateral de sesiones**: lista de conversaciones agrupadas por fecha, búsqueda, crear nueva, borrar.
-- **Configuración**: edita IP/puerto/modelo en caliente, muestra estado de conexión en vivo (verde/rojo), cambia tema (System/Light/Dark) y color de acento (aplicado en toda la UI a través de `MaterialTheme.colorScheme.primary`), guarda la API key de Tavily, borra todo el historial.
+- **Barra de uso de contexto**: indicador visual encima del composer que muestra cuántos tokens lleva consumidos la conversación respecto al `context_length` real del modelo (lo lee de LM Studio cuando está disponible, 8192 como fallback). El cálculo excluye las imágenes porque van out-of-band y no consumen contexto.
+- **System prompt configurable**: instrucción inicial que se antepone como mensaje `system` en cada llamada al modelo. Útil para fijar idioma, tono, persona o restricciones globales sin tener que repetirlas por sesión.
+- **Biblioteca de plantillas de prompt**: guardas prompts reutilizables con título y cuerpo. Desde el composer (icono ✨) abres el sheet, eliges una y se inserta en el draft — útil para prompts largos que usas seguido (resumen de código, traducción técnica, code review, etc.).
+- **Drawer lateral de sesiones**: lista de conversaciones agrupadas por fecha, búsqueda, crear nueva, borrar, fijar (pinned arriba).
+- **Configuración**: edita modo de conexión, IP/puerto o URL del tunnel, modelo, URL del servicio multimedia (puede ser distinto al del LLM cuando usas tunnels), tema (System/Light/Dark), color de acento, API key de Tavily, system prompt por defecto, plantillas de prompt, e historial.
+- **Inspector de red integrado** (Configuración → Desarrollador): muestra cada petición HTTP con request/response crudos, latencia, errores, y búsqueda con navegación entre coincidencias. Útil para depurar tool calls.
+- **Edge-to-edge nativo**: la barra de notificaciones y la de navegación toman el color del tema activo (claro u oscuro) sin saltos visuales.
 - **Background-safe**: el stream se lanza en `applicationScope` y pide al SO mantener el proceso vivo (foreground service en Android) para que la respuesta no se corte al cambiar de app.
 - **Persistencia**: preferencias e historial completo guardados en `SharedPreferences` (Android) / `NSUserDefaults` (iOS) vía `multiplatform-settings`.
 
@@ -111,54 +120,141 @@ Cada pantalla expone también un `*Content(state, callbacks)` *stateless* para q
 
 ```
 localChatBot/
-├── build.gradle.kts                ← raíz (sin código, solo plugins)
+├── ARCHITECTURE.md                    ← documentación de arquitectura con diagramas Mermaid
+├── README.md
+├── LICENSE
+├── build.gradle.kts                   ← raíz (sin código, solo plugins)
 ├── settings.gradle.kts
 ├── gradle.properties
-├── gradle/libs.versions.toml       ← catálogo de versiones
+├── gradle/libs.versions.toml          ← catálogo de versiones
+│
+├── docs/
+│   └── diagrams/                      ← diagramas ilustrativos del flujo de la app
+│       ├── 01_overview.{mmd,png}
+│       ├── 02_prompt_normal.{mmd,png}      (chat sin tools)
+│       ├── 03_prompt_internet.{mmd,png}    (search_web)
+│       ├── 04_prompt_image.{mmd,png}       (generate_image)
+│       ├── 05_prompt_diagram.{mmd,png}     (render_diagram)
+│       └── README.md
+│
 ├── composeApp/
-│   ├── build.gradle.kts            ← config KMP (android + iosX64/Arm64/SimulatorArm64)
+│   ├── build.gradle.kts               ← config KMP (android + iosX64/Arm64/SimulatorArm64)
 │   └── src/
 │       ├── commonMain/kotlin/com/localchatbot/
 │       │   ├── App.kt                              ← entry composable; decide onboarding vs main
-│       │   ├── core/
-│       │   │   ├── theme/        (Colors, Typography, Dimens, AppTheme)
-│       │   │   ├── network/      (HttpClientFactory)
-│       │   │   ├── storage/      (SettingsFactory expect)
-│       │   │   └── state/        (ActiveSessionStore)
-│       │   ├── domain/
-│       │   │   ├── model/        (ChatSession, ChatMessage, ConnectionConfig, AppPreferences)
-│       │   │   ├── repository/   (ChatRepository, ModelRepository, PreferencesRepository — interfaces)
-│       │   │   └── usecase/      (CreateSession, SendMessage, CheckConnection)
-│       │   ├── data/
-│       │   │   ├── remote/       (OpenAiApi, ChatCompletionRequest/Response DTOs)
-│       │   │   └── repository/   (*RepositoryImpl)
+│       │   │
+│       │   ├── core/                               ← infraestructura cross-cutting (no negocio)
+│       │   │   ├── background/
+│       │   │   │   └── BackgroundExecutor.kt           (expect: mantiene el proceso vivo durante streams)
+│       │   │   ├── debug/
+│       │   │   │   └── NetworkInspector.kt             (store en memoria de las últimas N llamadas HTTP)
+│       │   │   ├── image/
+│       │   │   │   ├── ImageDecoder.kt                 (expect: bytes → ImageBitmap)
+│       │   │   │   └── ImageSaver.kt                   (expect: guarda a la galería del dispositivo)
+│       │   │   ├── network/
+│       │   │   │   └── HttpClientFactory.kt            (Ktor + plugins + Json compartido)
+│       │   │   ├── platform/
+│       │   │   │   └── UrlOpener.kt                    (expect: abre URLs externas)
+│       │   │   ├── state/
+│       │   │   │   ├── ActiveSessionStore.kt           (estado compartido entre VMs)
+│       │   │   │   └── StreamingStateStore.kt          (tracking de streams en curso + tool activity)
+│       │   │   ├── storage/
+│       │   │   │   └── SettingsFactory.kt              (expect: settings persistentes)
+│       │   │   ├── theme/
+│       │   │   │   ├── AppTheme.kt                     (entry de Material 3)
+│       │   │   │   ├── Colors.kt · Typography.kt · Dimens.kt
+│       │   │   │   └── SystemBarsEffect.kt             (expect: barras de sistema con color del tema)
+│       │   │   └── voice/
+│       │   │       ├── SpeechRecognizer.kt             (expect: dictado nativo)
+│       │   │       ├── TextToSpeech.kt                 (expect: lectura del assistant)
+│       │   │       ├── MicPermission.kt                (expect: permiso de micrófono)
+│       │   │       ├── MarkdownToSpeech.kt             (limpia markdown antes de TTS)
+│       │   │       └── VoiceConversationController.kt  (controla el bucle voz↔chat)
+│       │   │
+│       │   ├── domain/                             ← reglas de negocio, sin dependencias externas
+│       │   │   ├── model/        (Chat, Connection, AppPreferences, PromptTemplate)
+│       │   │   ├── repository/   (ChatRepository, PreferencesRepository, StreamEvent — interfaces)
+│       │   │   ├── tools/        (Tool + ToolRegistry, WebSearchTool, ImageGenerationTool,
+│       │   │   │                  DiagramRenderTool)
+│       │   │   └── usecase/      (UseCases.kt: CreateSession, SendMessage, CheckConnection,
+│       │   │                      ListModels — todos juntos, incluye el bucle de tool-calling)
+│       │   │
+│       │   ├── data/                               ← implementaciones, talkers a APIs externas
+│       │   │   ├── remote/
+│       │   │   │   ├── OpenAiApi.kt + OpenAiDtos.kt    (chat/completions con tool calling + streaming)
+│       │   │   │   ├── LmStudioApi.kt + LmStudioDtos.kt (extras de LM Studio: context length real)
+│       │   │   │   ├── TavilyApi.kt                    (web search)
+│       │   │   │   ├── ImageGenApi.kt + ImageGenDtos.kt (FastAPI /generate-image)
+│       │   │   │   ├── DiagramRenderApi.kt + DiagramRenderDtos.kt (FastAPI /generate-diagram)
+│       │   │   │   └── ToolDtos.kt                     (DTOs comunes de OpenAI tool calling)
+│       │   │   └── repository/   (ChatRepositoryImpl, ModelRepositoryImpl, PreferencesRepositoryImpl)
+│       │   │
 │       │   ├── di/
-│       │   │   └── AppContainer.kt
+│       │   │   └── AppContainer.kt                 ← composition root manual (todo se cablea aquí)
+│       │   │
 │       │   └── presentation/
-│       │       ├── components/
-│       │       │   ├── atoms/        (AppLogo, AppTextField, Buttons, StatusDot, SectionLabel)
+│       │       ├── components/                     ← Atomic Design
+│       │       │   ├── atoms/        (AppIcon, AppTextField, Buttons, StatusDot, SectionLabel,
+│       │       │   │                  TypingIndicator + AtomsPreviews)
 │       │       │   ├── molecules/    (MessageBubble, SessionRow, LabeledField, SuggestionChip,
-│       │       │   │                  ConnectionStatusBadge, SettingsRow, SectionCard)
-│       │       │   └── organisms/    (ChatTopBar, AppBottomBar, ChatComposer)
+│       │       │   │                  ConnectionStatusBadge, SettingsRow, SectionCard,
+│       │       │   │                  ContextUsageBar, ModelPickerList, SourceChip
+│       │       │   │                  + MoleculesPreviews)
+│       │       │   └── organisms/    (AppTopBar, AppBottomBar, ChatComposer + OrganismsPreviews)
 │       │       ├── features/
-│       │       │   ├── onboarding/   (OnboardingViewModel + OnboardingScreen + Content)
-│       │       │   ├── chat/         (ChatViewModel + ChatScreen/Content + ChatEmptyState)
-│       │       │   ├── sessions/     (SessionsViewModel + SessionDrawer/Content)
-│       │       │   └── settings/     (SettingsViewModel + SettingsEditorViewModel + screens)
+│       │       │   ├── onboarding/   (OnboardingViewModel + OnboardingScreen — toggle Red local /
+│       │       │   │                  URL directa, prueba de conexión, picker de modelo)
+│       │       │   ├── chat/         (ChatViewModel + ChatScreen + ChatEmptyState — burbujas,
+│       │       │   │                  composer, vista previa de imágenes, dismiss del teclado)
+│       │       │   ├── sessions/     (SessionsViewModel + SessionDrawer — lista, búsqueda, pin)
+│       │       │   ├── settings/     (SettingsViewModel + SettingsEditorViewModel + screens,
+│       │       │   │                  toggle de modo de conexión, editores en bottom sheet)
+│       │       │   ├── templates/    (PromptTemplatesSheet — biblioteca de prompts reutilizables)
+│       │       │   ├── voice/        (VoiceConversationSheet — UI del modo conversación por voz)
+│       │       │   └── debug/        (NetworkInspectorScreen — único feature sin ViewModel, ver
+│       │       │                      sección "Inspector de red")
 │       │       ├── navigation/       (MainScaffold — tabs Chat / Configuración)
-│       │       └── preview/          (PreviewSurface, PreviewData)
+│       │       └── preview/          (PreviewSurface, PreviewSamples)
+│       │
 │       ├── androidMain/
-│       │   ├── AndroidManifest.xml
-│       │   ├── res/values/themes.xml
+│       │   ├── AndroidManifest.xml                 (permisos: INTERNET, RECORD_AUDIO, etc.)
+│       │   ├── res/values/themes.xml               (edge-to-edge, transparent bars)
 │       │   └── kotlin/com/localchatbot/
-│       │       ├── MainActivity.kt
-│       │       ├── LocalChatBotApp.kt        ← Application, inicializa AppContextHolder
-│       │       ├── AppContextHolder.kt
-│       │       └── core/storage/SettingsFactory.android.kt  (SharedPreferences)
+│       │       ├── MainActivity.kt                 (entry)
+│       │       ├── LocalChatBotApp.kt              (Application; inicializa AppContextHolder)
+│       │       ├── AppContextHolder.kt             (acceso al Context desde commonMain vía actuals)
+│       │       └── core/
+│       │           ├── background/
+│       │           │   ├── BackgroundExecutor.android.kt   (lanza ChatForegroundService)
+│       │           │   └── ChatForegroundService.kt        (notificación persistente durante streams)
+│       │           ├── image/
+│       │           │   ├── ImageDecoder.android.kt         (BitmapFactory → ImageBitmap)
+│       │           │   └── ImageSaver.android.kt           (MediaStore → Pictures/)
+│       │           ├── platform/UrlOpener.android.kt       (Intent ACTION_VIEW)
+│       │           ├── storage/SettingsFactory.android.kt  (SharedPreferences)
+│       │           ├── theme/SystemBarsEffect.android.kt   (enableEdgeToEdge dinámico)
+│       │           └── voice/
+│       │               ├── SpeechRecognizer.android.kt     (android.speech.SpeechRecognizer)
+│       │               ├── TextToSpeech.android.kt         (android.speech.tts.TextToSpeech)
+│       │               └── MicPermission.android.kt        (ActivityCompat.requestPermissions)
+│       │
 │       └── iosMain/kotlin/com/localchatbot/
-│           ├── MainViewController.kt          ← expuesto a Swift como MainViewControllerKt.MainViewController()
-│           └── core/storage/SettingsFactory.ios.kt          (NSUserDefaults)
-└── iosApp/                          ← (a crear con Xcode, ver sección iOS)
+│           ├── MainViewController.kt               (expuesto a Swift como
+│           │                                        MainViewControllerKt.MainViewController())
+│           └── core/
+│               ├── background/BackgroundExecutor.ios.kt    (no-op; iOS gestiona background diferente)
+│               ├── image/
+│               │   ├── ImageDecoder.ios.kt                 (UIImage → Skia ImageBitmap)
+│               │   └── ImageSaver.ios.kt                   (UIImageWriteToSavedPhotosAlbum)
+│               ├── platform/UrlOpener.ios.kt               (UIApplication.openURL)
+│               ├── storage/SettingsFactory.ios.kt          (NSUserDefaults)
+│               ├── theme/SystemBarsEffect.ios.kt           (no-op; iOS controla las barras)
+│               └── voice/
+│                   ├── SpeechRecognizer.ios.kt             (SFSpeechRecognizer + AVAudioEngine)
+│                   ├── TextToSpeech.ios.kt                 (AVSpeechSynthesizer)
+│                   └── MicPermission.ios.kt                (AVAudioSession.requestRecordPermission)
+│
+└── iosApp/                                          ← (a crear con Xcode, ver sección iOS)
 ```
 
 ---
@@ -191,6 +287,51 @@ Resultado: si el usuario cambia el modelo en Configuración, el top bar del chat
 
 ---
 
+## Inspector de red (debug)
+
+Una pantalla pensada para desarrolladores que muestra el JSON crudo de **cada petición HTTP** que la app hace al modelo o a los servicios multimedia. Útil sobre todo para depurar tool calls cuando el modelo se comporta raro.
+
+**Cómo abrirlo**: Configuración → Desarrollador → Inspector de red.
+
+**Qué ves en la lista** (más reciente arriba):
+
+| Campo | Ejemplo |
+|---|---|
+| Método y URL | `POST http://192.168.1.42:1234/v1/chat/completions` |
+| Tipo | `Chat` · `ImageGen` · `DiagramRender` |
+| Estado | `200 · 1.4s`, `400 · 50ms`, `error · timeout`, etc. |
+| Hora | `14:32:08` |
+
+**Qué ves al tocar una transacción**:
+
+- Request body completo (mensaje del usuario, definiciones de tools, parámetros).
+- Response body completo (incluyendo el streaming de SSE concatenado para `/chat/completions`).
+- Búsqueda con resaltado de coincidencias y navegación con `↑/↓` para saltar entre matches.
+- Las imágenes base64 se truncan a un placeholder `...<truncado N chars>...` para que la UI no explote con bloques de 2MB de texto.
+
+### Arquitectura (es la única feature sin ViewModel)
+
+```
+APIs (OpenAiApi, DiagramRenderApi, etc.)
+        │ inspector.record(transaction)
+        ▼
+┌─────────────────────────────────────────────────┐
+│  NetworkInspector  (clase plain, singleton)     │
+│  ───────────────                                │
+│  StateFlow<List<NetworkTransaction>>            │
+│  buffer circular de 50 items, en memoria        │
+└─────────────────────────────────────────────────┘
+        │ inspector.entries
+        ▼
+NetworkInspectorScreen  (Composable, sin VM)
+   estado de UI local con `remember { mutableStateOf(...) }`
+   (selección, búsqueda, match actual)
+```
+
+Decisión consciente: el "estado de dominio" es trivial (lista append-only), el estado de UI es efímero y local, y no hay side effects ni use cases — un ViewModel sería boilerplate vacío. Además, el inspector es un **singleton** vive en `AppContainer` y lo usan las APIs (capa de datos) para escribir; si fuera un ViewModel viviría atado al ciclo de vida de una pantalla y la capa de datos no podría empujarle eventos. Si en algún momento crece (export a archivo, replay de requests, filtros persistentes), se envuelve en `NetworkInspectorViewModel` sin más.
+
+---
+
 ## Prerrequisitos
 
 ### Software
@@ -200,6 +341,7 @@ Resultado: si el usuario cambia el modelo en Configuración, el top bar del chat
 - **Android Studio** Koala (2024.1) o superior, con SDK 35.
 - **Xcode** 15+ (solo iOS).
 - **Gradle**: no hace falta instalarlo, el wrapper se incluye.
+- **Node 18+** (solo en la máquina del servidor multimedia): necesario si vas a habilitar el endpoint `/generate-diagram`. `npx` se encarga de bajar `mermaid-cli` al vuelo, no hay que instalar nada globalmente.
 
 ### Variables que ya están en el proyecto
 
@@ -253,17 +395,21 @@ Esta sección documenta cómo montar **desde cero** la máquina servidor que alo
 |---|---|---|
 | **LM Studio** | `1234` | Sirve LLMs locales con API OpenAI-compatible (`/v1/chat/completions`, `/v1/models`). |
 | **ComfyUI** | `8188` | Backend de Stable Diffusion. UI nodal + API HTTP para generar imágenes. |
-| **Image Service** | `8080` | Wrapper FastAPI sobre ComfyUI. Expone `POST /generate-image` con una API simple (prompt + tamaño) que la app consume como tool. |
+| **Servicio multimedia** | `8080` | Wrapper FastAPI con **dos endpoints**: `POST /generate-image` (imágenes SDXL vía ComfyUI) y `POST /generate-diagram` (Mermaid → PNG vía `mermaid-cli` + Chromium headless). La app consume ambos como tools. |
 
 ```
    App móvil
       │
       ├──► http://<ip>:1234/v1   ── LM Studio  (LLM)
       │
-      └──► http://<ip>:8080      ── Image Service (FastAPI)
-                                          │
-                                          └──► http://localhost:8188  (ComfyUI)
+      └──► http://<ip>:8080      ── Servicio multimedia (FastAPI)
+                                       │
+                                       ├──► http://localhost:8188 (ComfyUI → SDXL)   [/generate-image]
+                                       │
+                                       └──► npx mmdc + Chromium headless             [/generate-diagram]
 ```
+
+> En modo URL directa (Cloudflare Tunnel, ngrok, etc.) sustituye `http://<ip>:1234` por la URL del tunnel del LLM, y `http://<ip>:8080` por la del servicio multimedia (pueden ser tunnels distintos — la app permite configurar ambas URLs por separado).
 
 ### 1. LM Studio (LLM)
 
@@ -469,7 +615,84 @@ def generate(req: GenerateRequest):
 
 > Este wrapper es deliberadamente simple. Si quieres soporte de LoRAs, ControlNet, upscalers, refiner SDXL, etc., generas el workflow con la UI de ComfyUI, exportas el JSON desde el menú "Save (API Format)" y lo embebes en `build_workflow`.
 
-### 4. Script para levantar todo junto (Windows)
+### 4. Endpoint de diagramas (`/generate-diagram`)
+
+Para mapas conceptuales, mindmaps, flowcharts, secuencia, clases, ER, gantt, etc. usamos **Mermaid** rendererizado con `mermaid-cli` (headless Chromium). Los modelos de difusión generan imágenes hermosas pero ilegibles cuando hay texto; este endpoint produce PNGs con texto perfecto porque no "genera" pixel a pixel — parsea código Mermaid de forma determinista.
+
+#### Prerrequisito
+
+```bash
+# Node 18+ (lo más fácil: instalar desde https://nodejs.org)
+# mermaid-cli se descarga al vuelo con npx, no hace falta instalarlo globalmente
+```
+
+Verifica:
+```bash
+npx -y -p @mermaid-js/mermaid-cli mmdc --version
+```
+
+#### Contrato del endpoint
+
+```
+POST http://<host>:8080/generate-diagram
+Content-Type: application/json
+
+{
+  "code": "mindmap\n  root((Fotosíntesis))\n    Luz solar\n    CO₂\n    H₂O\n    Glucosa",
+  "theme": "default",          // opcional: default | dark | forest | neutral
+  "background": "transparent", // opcional
+  "width": 2400,               // opcional, ancho del canvas en px
+  "scale": 3                   // opcional, factor de escala (3× = nítido en mobile HD)
+}
+```
+
+**Respuesta** (misma forma que `/generate-image` para que la app trate ambos igual):
+```json
+{ "success": true, "image_base64": "<base64 PNG>", "filename": "diagram_xxx.png" }
+```
+
+#### Esqueleto en `main.py`
+
+Añadir al mismo FastAPI que sirve `/generate-image`:
+
+```python
+import subprocess, tempfile, base64
+from pathlib import Path
+
+class DiagramRequest(BaseModel):
+    code: str
+    theme: str | None = None
+    background: str | None = None
+    width: int | None = 2400
+    scale: int | None = 3
+
+
+@app.post("/generate-diagram")
+def generate_diagram(req: DiagramRequest):
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        in_file = tmp / "in.mmd"
+        out_file = tmp / "out.png"
+        in_file.write_text(req.code, encoding="utf-8")
+
+        cmd = ["npx", "-y", "-p", "@mermaid-js/mermaid-cli", "mmdc",
+               "-i", str(in_file), "-o", str(out_file),
+               "-w", str(req.width or 2400),
+               "-s", str(req.scale or 3)]
+        if req.theme:      cmd += ["-t", req.theme]
+        if req.background: cmd += ["-b", req.background]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0 or not out_file.exists():
+            return {"success": False, "error": proc.stderr.strip() or "mmdc falló"}
+
+        b64 = base64.b64encode(out_file.read_bytes()).decode()
+        return {"success": True, "image_base64": b64, "filename": out_file.name}
+```
+
+> **Por qué `width=2400 scale=3`**: la app manda estos valores por defecto. Con `scale=3` el PNG sale ~7200px efectivos — no se pixela ni con zoom fuerte en pantallas HD. Si tu hardware es justo, baja a `scale=2`.
+
+### 5. Script para levantar todo junto (Windows)
 
 `run_all.bat`:
 ```bat
@@ -488,7 +711,7 @@ tmux split-window -t ai 'cd ~/proyectos/image-service && source venv/bin/activat
 tmux attach -t ai
 ```
 
-### 5. Verificar que todo funciona desde el móvil
+### 6. Verificar que todo funciona desde el móvil
 
 Antes de configurar la app, prueba desde un navegador o `curl` en la misma red:
 
