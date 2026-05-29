@@ -78,6 +78,7 @@ fun ChatScreen(
     voiceController: VoiceConversationController,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
+    showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val state by chatViewModel.state.collectAsStateWithLifecycle()
@@ -103,7 +104,8 @@ fun ChatScreen(
             onOpenTemplates = { templatesOpen = true },
             onSaveImage = chatViewModel::saveImage,
             onDismissError = chatViewModel::dismissError,
-            voiceSupported = PlatformCapabilities.voiceSupported
+            voiceSupported = PlatformCapabilities.voiceSupported,
+            showMenuButton = showMenuButton
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -148,6 +150,7 @@ fun ChatContent(
     onSaveImage: (ByteArray) -> Unit = {},
     onDismissError: () -> Unit = {},
     voiceSupported: Boolean = true,
+    showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -176,7 +179,8 @@ fun ChatContent(
             onSubtitleClick = onChangeModel,
             onSearchClick = if (state.activeSession?.messages?.isNotEmpty() == true) {
                 { searchOpen = !searchOpen; if (!searchOpen) searchQuery = "" }
-            } else null
+            } else null,
+            showMenuButton = showMenuButton
         )
 
         if (searchOpen) {

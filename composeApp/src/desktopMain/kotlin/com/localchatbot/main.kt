@@ -10,8 +10,8 @@ import java.awt.Dimension
 
 fun main() = application {
     val windowState = rememberWindowState(
-        width = 480.dp,
-        height = 880.dp,
+        width = 1100.dp,
+        height = 820.dp,
         position = WindowPosition(Alignment.Center),
     )
     Window(

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -32,7 +33,8 @@ fun ChatTopBar(
     onNewClick: () -> Unit,
     modifier: Modifier = Modifier,
     onSubtitleClick: (() -> Unit)? = null,
-    onSearchClick: (() -> Unit)? = null
+    onSearchClick: (() -> Unit)? = null,
+    showMenuButton: Boolean = true
 ) {
     Row(
         modifier = modifier
@@ -41,8 +43,12 @@ fun ChatTopBar(
             .padding(horizontal = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(modifier = Modifier.size(44.dp).clickable(onClick = onMenuClick), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.Menu, contentDescription = "Menú", tint = MaterialTheme.colorScheme.onBackground)
+        if (showMenuButton) {
+            Box(modifier = Modifier.size(44.dp).clickable(onClick = onMenuClick), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Menu, contentDescription = "Menú", tint = MaterialTheme.colorScheme.onBackground)
+            }
+        } else {
+            Spacer(Modifier.size(44.dp))
         }
         Column(
             modifier = Modifier.weight(1f),

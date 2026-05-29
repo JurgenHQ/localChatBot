@@ -2,12 +2,16 @@ package com.localchatbot.presentation.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -17,6 +21,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.di.AppContainer
 import com.localchatbot.presentation.components.organisms.AppBottomBar
@@ -72,41 +77,63 @@ fun MainScaffold(container: AppContainer) {
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // imePadding al Column externo: con windowSoftInputMode=adjustResize en el manifest,
-        // el sistema redimensiona la ventana al tamaño correcto y imePadding no duplica.
-        Column(modifier = Modifier.fillMaxSize().imePadding()) {
-            Box(modifier = Modifier.weight(1f)) {
-                when (selected) {
-                    BottomTab.Chat -> ChatScreen(
-                        chatViewModel = chatViewModel,
-                        voiceController = container.voiceController,
-                        onOpenDrawer = sessionsViewModel::openDrawer,
-                        onChangeModel = { modelPickerOpen = true }
-                    )
-                    BottomTab.Settings -> SettingsScreen(
-                        viewModel = settingsViewModel,
-                        editorViewModelFactory = { editor ->
-                            SettingsEditorViewModel(
-                                preferences = container.preferencesRepository,
-                                editor = editor,
-                                listModels = container.listModels
-                            )
-                        },
-                        onOpenNetworkInspector = { inspectorOpen = true }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // En ventanas anchas (escritorio, tablet apaisada) el drawer de sesiones se
+        // muestra permanente como panel lateral; en pantallas angostas vuelve a ser modal.
+        val permanentDrawer = maxWidth >= 840.dp
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            if (permanentDrawer) {
+                SessionDrawer(
+                    viewModel = sessionsViewModel,
+                    onOpenSettings = { selected = BottomTab.Settings },
+                    onNewSession = { selected = BottomTab.Chat },
+                    showScrim = false
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+            }
+
+            // imePadding al Column externo: con windowSoftInputMode=adjustResize en el manifest,
+            // el sistema redimensiona la ventana al tamaño correcto y imePadding no duplica.
+            Column(modifier = Modifier.weight(1f).fillMaxSize().imePadding()) {
+                Box(modifier = Modifier.weight(1f)) {
+                    when (selected) {
+                        BottomTab.Chat -> ChatScreen(
+                            chatViewModel = chatViewModel,
+                            voiceController = container.voiceController,
+                            onOpenDrawer = sessionsViewModel::openDrawer,
+                            onChangeModel = { modelPickerOpen = true },
+                            showMenuButton = !permanentDrawer
+                        )
+                        BottomTab.Settings -> SettingsScreen(
+                            viewModel = settingsViewModel,
+                            editorViewModelFactory = { editor ->
+                                SettingsEditorViewModel(
+                                    preferences = container.preferencesRepository,
+                                    editor = editor,
+                                    listModels = container.listModels
+                                )
+                            },
+                            onOpenNetworkInspector = { inspectorOpen = true }
+                        )
+                    }
+                }
+                if (!imeVisible) {
+                    AppBottomBar(
+                        selected = selected,
+                        onSelect = { selected = it },
+                        modifier = Modifier.navigationBarsPadding()
                     )
                 }
             }
-            if (!imeVisible) {
-                AppBottomBar(
-                    selected = selected,
-                    onSelect = { selected = it },
-                    modifier = Modifier.navigationBarsPadding()
-                )
-            }
         }
 
-        if (drawerState.drawerOpen) {
+        if (!permanentDrawer && drawerState.drawerOpen) {
             SessionDrawer(
                 viewModel = sessionsViewModel,
                 onOpenSettings = { selected = BottomTab.Settings },

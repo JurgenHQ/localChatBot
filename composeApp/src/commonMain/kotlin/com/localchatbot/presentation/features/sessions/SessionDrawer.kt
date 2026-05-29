@@ -50,6 +50,7 @@ fun SessionDrawer(
     viewModel: SessionsViewModel,
     onOpenSettings: () -> Unit,
     onNewSession: () -> Unit = {},
+    showScrim: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -71,6 +72,7 @@ fun SessionDrawer(
             onOpenSettings()
         },
         onDismiss = viewModel::closeDrawer,
+        showScrim = showScrim,
         modifier = modifier
     )
 }
@@ -88,9 +90,11 @@ fun SessionDrawerContent(
     onDismiss: () -> Unit,
     onRename: (String, String) -> Unit = { _, _ -> },
     onTogglePin: (String) -> Unit = {},
+    showScrim: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    Row(modifier = modifier.fillMaxSize()) {
+    val rowModifier = if (showScrim) modifier.fillMaxSize() else modifier.fillMaxHeight()
+    Row(modifier = rowModifier) {
         Column(
             modifier = Modifier
                 .fillMaxHeight()
@@ -184,13 +188,15 @@ fun SessionDrawerContent(
             }
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .weight(1f)
-                .background(Color.Black.copy(alpha = 0.35f))
-                .clickable(onClick = onDismiss)
-        )
+        if (showScrim) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .weight(1f)
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .clickable(onClick = onDismiss)
+            )
+        }
     }
 }
 
