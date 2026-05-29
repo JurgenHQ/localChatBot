@@ -121,6 +121,15 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "LocalChatBot"
             packageVersion = "1.0.0"
+            description = "Chat con un modelo LLM local en tu red"
+            vendor = "LocalChatBot"
+
+            macOS {
+                bundleID = "com.localchatbot.desktop"
+            }
+            linux {
+                packageName = "localchatbot"
+            }
         }
     }
 }
