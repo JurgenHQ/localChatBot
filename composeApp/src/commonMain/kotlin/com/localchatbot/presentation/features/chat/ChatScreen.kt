@@ -48,10 +48,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.preat.peekaboo.image.picker.SelectionMode
-import com.preat.peekaboo.image.picker.rememberImagePickerLauncher
+import com.localchatbot.core.image.rememberImagePicker
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
@@ -83,14 +81,7 @@ fun ChatScreen(
 ) {
     val state by chatViewModel.state.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-    val imagePicker = rememberImagePickerLauncher(
-        selectionMode = SelectionMode.Single,
-        scope = scope,
-        onResult = { byteArrays ->
-            byteArrays.firstOrNull()?.let(chatViewModel::onImagePicked)
-        }
-    )
+    val imagePicker = rememberImagePicker(onResult = chatViewModel::onImagePicked)
     var templatesOpen by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {

@@ -1,3 +1,4 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
@@ -17,6 +18,8 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
+
+    jvm("desktop")
 
     listOf(
         iosX64(),
@@ -56,17 +59,25 @@ kotlin {
             implementation(libs.multiplatform.settings.coroutines)
 
             implementation(libs.markdown.renderer.m3)
-            implementation(libs.peekaboo.image.picker)
         }
 
         androidMain.dependencies {
             implementation(compose.preview)
             implementation(libs.androidx.activityCompose)
             implementation(libs.ktor.client.okhttp)
+            implementation(libs.peekaboo.image.picker)
         }
 
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
+            implementation(libs.peekaboo.image.picker)
+        }
+
+        val desktopMain by getting
+        desktopMain.dependencies {
+            implementation(compose.desktop.currentOs)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.kotlinx.coroutines.swing)
         }
     }
 }
@@ -99,5 +110,17 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+compose.desktop {
+    application {
+        mainClass = "com.localchatbot.MainKt"
+
+        nativeDistributions {
+            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            packageName = "LocalChatBot"
+            packageVersion = "1.0.0"
+        }
     }
 }
