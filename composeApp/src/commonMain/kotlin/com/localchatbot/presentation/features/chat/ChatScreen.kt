@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.image.rememberImagePicker
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
@@ -101,7 +102,8 @@ fun ChatScreen(
             onRegenerate = chatViewModel::regenerateLastResponse,
             onOpenTemplates = { templatesOpen = true },
             onSaveImage = chatViewModel::saveImage,
-            onDismissError = chatViewModel::dismissError
+            onDismissError = chatViewModel::dismissError,
+            voiceSupported = PlatformCapabilities.voiceSupported
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -145,6 +147,7 @@ fun ChatContent(
     onOpenTemplates: () -> Unit = {},
     onSaveImage: (ByteArray) -> Unit = {},
     onDismissError: () -> Unit = {},
+    voiceSupported: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -284,7 +287,8 @@ fun ChatContent(
             onRemoveAttachment = onRemoveAttachment,
             onVoice = onVoice,
             onStop = onStop,
-            onTemplates = onOpenTemplates
+            onTemplates = onOpenTemplates,
+            voiceSupported = voiceSupported
         )
         Spacer(Modifier.height(Spacing.xs))
     }

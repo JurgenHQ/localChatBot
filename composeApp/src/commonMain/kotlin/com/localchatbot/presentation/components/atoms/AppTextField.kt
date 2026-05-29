@@ -18,6 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -83,8 +89,21 @@ fun ChatInputField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    placeholder: String = "Escribe un mensaje…"
+    placeholder: String = "Escribe un mensaje…",
+    onSubmit: (() -> Unit)? = null
 ) {
+    val submitOnEnter = Modifier.onPreviewKeyEvent { event ->
+        if (onSubmit != null &&
+            event.type == KeyEventType.KeyDown &&
+            event.key == Key.Enter &&
+            !event.isShiftPressed
+        ) {
+            onSubmit()
+            true
+        } else {
+            false
+        }
+    }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(Radius.md))
@@ -96,7 +115,7 @@ fun ChatInputField(
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().then(submitOnEnter),
             textStyle = TextStyle(
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = MaterialTheme.typography.bodyLarge.fontSize
