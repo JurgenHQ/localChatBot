@@ -43,9 +43,9 @@ class AppContainer {
     val imageSaver: ImageSaver = createImageSaver()
     private val openAiApi = OpenAiApi(httpClient, json, networkInspector)
     private val lmStudioApi = LmStudioApi(httpClient)
-    private val imageGenApi = ImageGenApi(httpClient)
+    private val imageGenApi = ImageGenApi(httpClient, json, networkInspector)
     private val diagramRenderApi = DiagramRenderApi(httpClient, json, networkInspector)
-    private val tavilyApi = TavilyApi(httpClient)
+    private val tavilyApi = TavilyApi(httpClient, json, networkInspector)
 
     /**
      * Scope a nivel de aplicación. Las operaciones que deben sobrevivir a la

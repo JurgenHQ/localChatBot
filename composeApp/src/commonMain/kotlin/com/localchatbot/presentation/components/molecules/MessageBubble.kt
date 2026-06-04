@@ -1,13 +1,9 @@
 package com.localchatbot.presentation.components.molecules
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -22,9 +18,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.foundation.border
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -38,10 +52,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.localchatbot.core.image.decodeImage
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.Role
 import com.localchatbot.presentation.components.atoms.AppLogo
+import com.localchatbot.presentation.components.util.SelectableOnDesktop
 import com.mikepenz.markdown.m3.Markdown
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -57,10 +73,12 @@ fun MessageBubble(
     onCopy: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onSaveImage: ((ByteArray) -> Unit)? = null,
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    highlightQuery: String? = null,
+    isCurrentMatch: Boolean = false
 ) {
     when (message.role) {
-        Role.User -> UserBubble(message, modifier, onResend, onEdit, onSaveImage, onTap)
+        Role.User -> UserBubble(message, modifier, onResend, onEdit, onSaveImage, onTap, highlightQuery, isCurrentMatch)
         Role.Assistant, Role.System -> {
             // Si el assistant no tiene contenido visible ni sources, es un mensaje
             // intermedio de tool_calls (necesario en el historial para el modelo,
@@ -69,7 +87,7 @@ fun MessageBubble(
                 !message.sources.isNullOrEmpty() ||
                 message.imageDataUrl != null
             if (hasVisibleContent) {
-                AssistantBubble(message, modifier, onCopy, onRegenerate, onSaveImage, onTap)
+                AssistantBubble(message, modifier, onCopy, onRegenerate, onSaveImage, onTap, highlightQuery, isCurrentMatch)
             } else {
                 Spacer(modifier = Modifier.height(0.dp))
             }
@@ -80,7 +98,6 @@ fun MessageBubble(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserBubble(
     message: ChatMessage,
@@ -88,9 +105,10 @@ private fun UserBubble(
     onResend: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
     onSaveImage: ((ByteArray) -> Unit)? = null,
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    highlightQuery: String? = null,
+    isCurrentMatch: Boolean = false
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val actionable = onResend != null || onEdit != null
 
@@ -110,59 +128,49 @@ private fun UserBubble(
                 )
             }
             if (message.content.isNotBlank() && message.content != "(imagen)") {
-                Box {
-                    Box(
-                        modifier = Modifier
-                            .clip(
-                                RoundedCornerShape(
-                                    topStart = 18.dp,
-                                    topEnd = 18.dp,
-                                    bottomStart = 18.dp,
-                                    bottomEnd = 6.dp
-                                )
+                val bubbleShape = RoundedCornerShape(
+                    topStart = 18.dp,
+                    topEnd = 18.dp,
+                    bottomStart = 18.dp,
+                    bottomEnd = 6.dp
+                )
+                Box(
+                    modifier = Modifier
+                        .clip(bubbleShape)
+                        .background(MaterialTheme.colorScheme.primary)
+                        .matchOutline(isCurrentMatch, bubbleShape)
+                        .then(
+                            if (PlatformCapabilities.isDesktop) Modifier
+                            else Modifier.clickable(
+                                interactionSource = interaction,
+                                indication = null,
+                                onClick = onTap
                             )
-                            .background(MaterialTheme.colorScheme.primary)
-                            .then(
-                                if (actionable) Modifier.combinedClickable(
-                                    interactionSource = interaction,
-                                    indication = null,
-                                    onClick = onTap,
-                                    onLongClick = { menuOpen = true }
-                                ) else Modifier.clickable(
-                                    interactionSource = interaction,
-                                    indication = null,
-                                    onClick = onTap
-                                )
-                            )
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                    ) {
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    SelectableOnDesktop {
                         Text(
-                            message.content,
+                            text = highlightedText(
+                                message.content,
+                                highlightQuery,
+                                isCurrentMatch
+                            ),
                             color = Color.White,
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { menuOpen = false }
+                }
+                if (actionable) {
+                    Row(
+                        modifier = Modifier.padding(top = Spacing.xs),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
                     ) {
                         if (onEdit != null) {
-                            DropdownMenuItem(
-                                text = { Text("Editar") },
-                                onClick = {
-                                    menuOpen = false
-                                    onEdit()
-                                }
-                            )
+                            BubbleActionIcon(Icons.Default.Edit, "Editar", onEdit)
                         }
                         if (onResend != null) {
-                            DropdownMenuItem(
-                                text = { Text("Reenviar") },
-                                onClick = {
-                                    menuOpen = false
-                                    onResend()
-                                }
-                            )
+                            BubbleActionIcon(Icons.AutoMirrored.Filled.Send, "Reenviar", onResend)
                         }
                     }
                 }
@@ -171,7 +179,6 @@ private fun UserBubble(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantBubble(
     message: ChatMessage,
@@ -179,9 +186,10 @@ private fun AssistantBubble(
     onCopy: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onSaveImage: ((ByteArray) -> Unit)? = null,
-    onTap: () -> Unit = {}
+    onTap: () -> Unit = {},
+    highlightQuery: String? = null,
+    isCurrentMatch: Boolean = false
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val actionable = onCopy != null || onRegenerate != null
 
@@ -191,55 +199,58 @@ private fun AssistantBubble(
         horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         AppLogo(size = 28.dp)
-        Box(modifier = Modifier.weight(1f)) {
-            Column(
-                modifier = Modifier
-                    .padding(top = 4.dp)
-                    .then(
-                        if (actionable) Modifier.combinedClickable(
-                            interactionSource = interaction,
-                            indication = null,
-                            onClick = onTap,
-                            onLongClick = { menuOpen = true }
-                        ) else Modifier.clickable(
-                            interactionSource = interaction,
-                            indication = null,
-                            onClick = onTap
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(top = 4.dp)
+                .then(
+                    if (PlatformCapabilities.isDesktop) Modifier
+                    else Modifier.clickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = onTap
+                    )
+                ),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            if (message.imageDataUrl != null) {
+                AttachedImage(dataUrl = message.imageDataUrl, onSave = onSaveImage)
+            }
+            if (message.content.isNotBlank()) {
+                val hasMatch = !highlightQuery.isNullOrBlank() &&
+                    message.content.contains(highlightQuery, ignoreCase = true)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .matchOutline(isCurrentMatch, RoundedCornerShape(8.dp))
+                        .background(
+                            if (isCurrentMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.10f)
+                            else if (hasMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
+                            else Color.Transparent
                         )
-                    ),
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-            ) {
-                if (message.imageDataUrl != null) {
-                    AttachedImage(dataUrl = message.imageDataUrl, onSave = onSaveImage)
-                }
-                if (message.content.isNotBlank()) {
-                    Markdown(content = message.content)
-                }
-                message.sources?.takeIf { it.isNotEmpty() }?.let { srcs ->
-                    SourcesRow(sources = srcs)
+                        .padding(if (hasMatch) 4.dp else 0.dp)
+                ) {
+                    SelectableOnDesktop {
+                        // Markdown no soporta inline-highlight directo. Cuando hay
+                        // match, el modelo todavía ve la salida con formato; el
+                        // resaltado se logra con el background/border del Box.
+                        Markdown(content = message.content)
+                    }
                 }
             }
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false }
-            ) {
-                if (onCopy != null) {
-                    DropdownMenuItem(
-                        text = { Text("Copiar") },
-                        onClick = {
-                            menuOpen = false
-                            onCopy()
-                        }
-                    )
-                }
-                if (onRegenerate != null) {
-                    DropdownMenuItem(
-                        text = { Text("Regenerar") },
-                        onClick = {
-                            menuOpen = false
-                            onRegenerate()
-                        }
-                    )
+            message.sources?.takeIf { it.isNotEmpty() }?.let { srcs ->
+                SourcesRow(sources = srcs)
+            }
+            if (actionable) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+                ) {
+                    if (onCopy != null) {
+                        BubbleActionIcon(Icons.Default.ContentCopy, "Copiar mensaje", onCopy)
+                    }
+                    if (onRegenerate != null) {
+                        BubbleActionIcon(Icons.Default.Refresh, "Regenerar", onRegenerate)
+                    }
                 }
             }
         }
@@ -374,3 +385,77 @@ private fun ImagePreviewDialog(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BubbleActionIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(contentDescription) } },
+        state = rememberTooltipState()
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onClick)
+                .padding(4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Construye un [AnnotatedString] resaltando todas las apariciones (case-insensitive)
+ * de [query] en [text]. Si la burbuja es el match activo el resaltado es naranja
+ * sólido; si la burbuja contiene un match pero NO es el activo, queda en amarillo
+ * suave para distinguir entre "match" y "match seleccionado".
+ */
+@Composable
+private fun highlightedText(
+    text: String,
+    query: String?,
+    isCurrentMatch: Boolean
+): AnnotatedString {
+    if (query.isNullOrBlank()) return AnnotatedString(text)
+    val activeBg = Color(0xFFFFC107)        // ámbar fuerte
+    val passiveBg = Color(0xFFFFF59D)       // amarillo suave
+    val bg = if (isCurrentMatch) activeBg else passiveBg
+    return buildAnnotatedString {
+        append(text)
+        var idx = 0
+        while (true) {
+            val found = text.indexOf(query, idx, ignoreCase = true)
+            if (found < 0) break
+            addStyle(
+                SpanStyle(
+                    background = bg,
+                    color = Color.Black,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                start = found,
+                end = found + query.length
+            )
+            idx = found + query.length
+        }
+    }
+}
+
+/**
+ * Aplica un borde llamativo cuando este mensaje es el match activo de la
+ * búsqueda. Para los matches NO activos no aplica nada (el highlight in-line
+ * en UserBubble + el tinte de fondo en AssistantBubble ya los marca).
+ */
+private fun Modifier.matchOutline(isCurrentMatch: Boolean, shape: Shape): Modifier =
+    if (isCurrentMatch) this.border(width = 2.dp, color = Color(0xFFFFC107), shape = shape)
+    else this

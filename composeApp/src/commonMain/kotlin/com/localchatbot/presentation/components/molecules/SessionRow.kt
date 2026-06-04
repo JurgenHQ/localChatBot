@@ -41,9 +41,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.presentation.components.util.ContextMenuEntry
+import com.localchatbot.presentation.components.util.WithContextMenu
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -99,19 +102,23 @@ private fun SessionRowContent(
     val interaction = remember { MutableInteractionSource() }
     val actionable = onRename != null || onTogglePin != null
 
-    Box {
+    val rowContent: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(Radius.md))
                 .background(MaterialTheme.colorScheme.surface)
                 .then(
-                    if (actionable) Modifier.combinedClickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        onClick = onClick,
-                        onLongClick = { menuOpen = true }
-                    ) else Modifier.clickable(onClick = onClick)
+                    if (PlatformCapabilities.isDesktop || !actionable) {
+                        Modifier.clickable(onClick = onClick)
+                    } else {
+                        Modifier.combinedClickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = onClick,
+                            onLongClick = { menuOpen = true }
+                        )
+                    }
                 )
                 .padding(horizontal = Spacing.lg, vertical = Spacing.md)
         ) {
@@ -149,27 +156,46 @@ private fun SessionRowContent(
                 )
             }
         }
-        DropdownMenu(
-            expanded = menuOpen,
-            onDismissRequest = { menuOpen = false }
-        ) {
-            if (onRename != null) {
-                DropdownMenuItem(
-                    text = { Text("Renombrar") },
-                    onClick = {
-                        menuOpen = false
-                        renameOpen = true
-                    }
-                )
+    }
+
+    if (PlatformCapabilities.isDesktop) {
+        WithContextMenu(items = {
+            buildList {
+                if (onRename != null) {
+                    add(ContextMenuEntry("Renombrar") { renameOpen = true })
+                }
+                if (onTogglePin != null) {
+                    add(ContextMenuEntry(if (session.pinned) "Desfijar" else "Fijar", onTogglePin))
+                }
             }
-            if (onTogglePin != null) {
-                DropdownMenuItem(
-                    text = { Text(if (session.pinned) "Desfijar" else "Fijar") },
-                    onClick = {
-                        menuOpen = false
-                        onTogglePin()
-                    }
-                )
+        }) {
+            rowContent()
+        }
+    } else {
+        Box {
+            rowContent()
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false }
+            ) {
+                if (onRename != null) {
+                    DropdownMenuItem(
+                        text = { Text("Renombrar") },
+                        onClick = {
+                            menuOpen = false
+                            renameOpen = true
+                        }
+                    )
+                }
+                if (onTogglePin != null) {
+                    DropdownMenuItem(
+                        text = { Text(if (session.pinned) "Desfijar" else "Fijar") },
+                        onClick = {
+                            menuOpen = false
+                            onTogglePin()
+                        }
+                    )
+                }
             }
         }
     }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -22,10 +23,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -157,6 +166,7 @@ fun ChatContent(
     val clipboard = LocalClipboardManager.current
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var currentMatchIndex by remember { mutableStateOf(0) }
     val keyboard = LocalSoftwareKeyboardController.current
 
     val messages = state.activeSession?.messages
@@ -178,27 +188,54 @@ fun ChatContent(
             onNewClick = onNewSession,
             onSubtitleClick = onChangeModel,
             onSearchClick = if (state.activeSession?.messages?.isNotEmpty() == true) {
-                { searchOpen = !searchOpen; if (!searchOpen) searchQuery = "" }
+                {
+                    searchOpen = !searchOpen
+                    if (!searchOpen) { searchQuery = ""; currentMatchIndex = 0 }
+                }
             } else null,
             showMenuButton = showMenuButton
         )
 
+        // Índices ABSOLUTOS dentro de active.messages que contienen la query.
+        // Los usamos tanto para el contador "N/M" como para hacer scroll.
+        val matchIndices: List<Int> = remember(searchOpen, searchQuery, state.activeSession?.id, state.activeSession?.messages?.size) {
+            if (!searchOpen || searchQuery.isBlank()) emptyList()
+            else state.activeSession?.messages
+                ?.mapIndexedNotNull { idx, m ->
+                    if (m.content.contains(searchQuery, ignoreCase = true)) idx else null
+                }
+                .orEmpty()
+        }
+        // Si la query cambia, volver al primer match.
+        LaunchedEffect(searchQuery) { currentMatchIndex = 0 }
+        // Scroll automático cuando cambia el match actual.
+        LaunchedEffect(currentMatchIndex, matchIndices) {
+            val msgIdx = matchIndices.getOrNull(currentMatchIndex) ?: return@LaunchedEffect
+            // +1 por el DayHeader en posición 0 de la LazyColumn.
+            listState.animateScrollToItem(msgIdx + 1)
+        }
+
         if (searchOpen) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                singleLine = true,
-                placeholder = { Text("Buscar en esta conversación") },
-                trailingIcon = {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = Spacing.sm)
-                            .pointerInput(Unit) { detectTapGestures { searchQuery = ""; searchOpen = false } }
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Cerrar búsqueda")
+            ChatSearchBar(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                matchCount = matchIndices.size,
+                currentDisplayIndex = if (matchIndices.isEmpty()) 0 else currentMatchIndex + 1,
+                onPrev = {
+                    if (matchIndices.isNotEmpty()) {
+                        currentMatchIndex = (currentMatchIndex - 1 + matchIndices.size) % matchIndices.size
                     }
                 },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm)
+                onNext = {
+                    if (matchIndices.isNotEmpty()) {
+                        currentMatchIndex = (currentMatchIndex + 1) % matchIndices.size
+                    }
+                },
+                onClose = {
+                    searchQuery = ""
+                    currentMatchIndex = 0
+                    searchOpen = false
+                }
             )
         }
 
@@ -229,15 +266,17 @@ fun ChatContent(
                 contentPadding = PaddingValues(vertical = Spacing.lg)
             ) {
                 item { DayHeader(epochMs = active.createdAtEpochMs) }
-                val visibleMessages = if (searchOpen && searchQuery.isNotBlank()) {
-                    active.messages.filter { it.content.contains(searchQuery, ignoreCase = true) }
-                } else {
-                    active.messages
-                }
+                // Mostramos todos los mensajes — la navegación por matches hace
+                // scroll a cada uno en lugar de filtrar la lista.
+                val visibleMessages = active.messages
                 val lastAssistantId = visibleMessages
                     .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
                     ?.id
-                items(visibleMessages, key = { it.id }) { msg ->
+                val activeQuery = if (searchOpen) searchQuery.takeIf { it.isNotBlank() } else null
+                itemsIndexed(visibleMessages, key = { _, msg -> msg.id }) { msgIdx, msg ->
+                    // Leemos currentMatchIndex (State) DENTRO del composable del
+                    // ítem → cada ítem se suscribe y recompone al navegar matches.
+                    val currentAbsIdx = matchIndices.getOrNull(currentMatchIndex) ?: -1
                     MessageBubble(
                         message = msg,
                         onResend = if (msg.role == Role.User && !state.sending) {
@@ -253,7 +292,9 @@ fun ChatContent(
                             msg.id == lastAssistantId && !state.sending
                         ) onRegenerate else null,
                         onSaveImage = if (msg.imageDataUrl != null) onSaveImage else null,
-                        onTap = { keyboard?.hide() }
+                        onTap = { keyboard?.hide() },
+                        highlightQuery = activeQuery,
+                        isCurrentMatch = msgIdx == currentAbsIdx
                     )
                 }
                 val lastVisible = active.messages.lastOrNull { it.role != Role.Tool }
@@ -552,4 +593,107 @@ private fun ChatWithMessagesDarkPreview() = PreviewSurface(themeMode = ThemeMode
         ),
         onOpenDrawer = {}, onNewSession = {}, onDraftChange = {}, onSend = {}, onAttach = {}
     )
+}
+
+@Composable
+private fun ChatSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    matchCount: Int,
+    currentDisplayIndex: Int,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onClose: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(Radius.md))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            Box(modifier = Modifier.weight(1f)) {
+                if (query.isEmpty()) {
+                    Text(
+                        "Buscar en esta conversación",
+                        style = LocalTextStyle.current.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    textStyle = LocalTextStyle.current.copy(
+                        color = MaterialTheme.colorScheme.onBackground
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (query.isNotEmpty()) {
+                Text(
+                    text = if (matchCount == 0) "0/0" else "$currentDisplayIndex/$matchCount",
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        SearchArrowButton(
+            icon = Icons.Default.KeyboardArrowUp,
+            contentDescription = "Anterior",
+            enabled = matchCount > 0,
+            onClick = onPrev
+        )
+        SearchArrowButton(
+            icon = Icons.Default.KeyboardArrowDown,
+            contentDescription = "Siguiente",
+            enabled = matchCount > 0,
+            onClick = onNext
+        )
+        SearchArrowButton(
+            icon = Icons.Default.Close,
+            contentDescription = "Cerrar búsqueda",
+            enabled = true,
+            onClick = onClose
+        )
+    }
+}
+
+@Composable
+private fun SearchArrowButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val tint = if (enabled) MaterialTheme.colorScheme.onBackground
+    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.sm))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(Spacing.sm),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = contentDescription, tint = tint)
+    }
 }

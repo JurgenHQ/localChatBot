@@ -126,6 +126,7 @@ compose.desktop {
 
             macOS {
                 bundleID = "com.localchatbot.desktop"
+                iconFile.set(project.file("src/desktopMain/resources/AppIcon.icns"))
             }
             linux {
                 packageName = "localchatbot"
