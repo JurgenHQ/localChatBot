@@ -198,8 +198,19 @@ class ChatRepositoryImpl(
     }
 
     private fun persist(list: List<ChatSession>) {
-        val raw = json.encodeToString(SessionsSerializer, list)
-        settings.putString(KEY_SESSIONS, raw)
+        // imageDataUrl son base64 de varios cientos de KB. Persistirlos haría que
+        // plataformas con límite de tamaño por clave (Java Preferences: 8 KB) fallen
+        // silenciosamente. Las imágenes son transitorias — si el usuario las necesita
+        // las guarda explícitamente con "Guardar imagen".
+        val stripped = list.map { session ->
+            session.copy(messages = session.messages.map { msg ->
+                if (msg.imageDataUrl != null) msg.copy(imageDataUrl = null) else msg
+            })
+        }
+        runCatching {
+            val raw = json.encodeToString(SessionsSerializer, stripped)
+            settings.putString(KEY_SESSIONS, raw)
+        }
     }
 
     private fun load(): List<ChatSession> {

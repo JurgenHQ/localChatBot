@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +29,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.fs.rememberDirectoryPicker
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
@@ -59,7 +62,11 @@ fun SettingsScreen(
             onConnectionModeChange = viewModel::onConnectionModeChange,
             onRetryConnection = viewModel::retryConnection,
             onClearHistory = viewModel::clearHistory,
-            onOpenNetworkInspector = onOpenNetworkInspector
+            onOpenNetworkInspector = onOpenNetworkInspector,
+            onPickWorkspace = viewModel::updateFsWorkspaceDir,
+            onClearWorkspace = { viewModel.updateFsWorkspaceDir(null) },
+            onToggleYolo = viewModel::toggleFsYoloMode,
+            onToggleAllowOutside = viewModel::toggleFsAllowOutsideWorkspace
         )
 
         state.openEditor?.let { editor ->
@@ -81,6 +88,10 @@ fun SettingsContent(
     onRetryConnection: () -> Unit,
     onClearHistory: () -> Unit,
     onOpenNetworkInspector: () -> Unit = {},
+    onPickWorkspace: (String) -> Unit = {},
+    onClearWorkspace: () -> Unit = {},
+    onToggleYolo: (Boolean) -> Unit = {},
+    onToggleAllowOutside: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -262,6 +273,16 @@ fun SettingsContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        if (PlatformCapabilities.isDesktop) {
+            FilesystemSection(
+                preferences = preferences,
+                onPickWorkspace = onPickWorkspace,
+                onClearWorkspace = onClearWorkspace,
+                onToggleYolo = onToggleYolo,
+                onToggleAllowOutside = onToggleAllowOutside
+            )
+        }
+
         SectionLabel("Desarrollador")
         SectionCard {
             SettingsRow(
@@ -291,6 +312,96 @@ fun SettingsContent(
                 style = MaterialTheme.typography.bodyLarge
             )
         }
+    }
+}
+
+@Composable
+private fun FilesystemSection(
+    preferences: AppPreferences,
+    onPickWorkspace: (String) -> Unit,
+    onClearWorkspace: () -> Unit,
+    onToggleYolo: (Boolean) -> Unit,
+    onToggleAllowOutside: (Boolean) -> Unit
+) {
+    val picker = rememberDirectoryPicker(onResult = onPickWorkspace)
+
+    SectionLabel("Acceso al sistema de archivos (desktop)")
+    SectionCard {
+        SettingsRow(
+            title = "Workspace",
+            onClick = { picker.launch() },
+            trailing = {
+                MonoValue(
+                    preferences.fsWorkspaceDir ?: "Sin configurar",
+                    maxChars = 22
+                )
+            }
+        )
+        if (preferences.fsWorkspaceDir != null) {
+            Divider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClearWorkspace)
+                    .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Quitar workspace",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+        Divider()
+        SwitchRow(
+            title = "Omitir confirmaciones (modo YOLO)",
+            checked = preferences.fsYoloMode,
+            onCheckedChange = onToggleYolo
+        )
+        Divider()
+        SwitchRow(
+            title = "Permitir acceso fuera del workspace",
+            checked = preferences.fsAllowOutsideWorkspace,
+            onCheckedChange = onToggleAllowOutside
+        )
+    }
+    Text(
+        buildString {
+            append("Habilita las tools de filesystem y shell para que el modelo cree archivos, ")
+            append("lea contenido y ejecute comandos. Cada acción pide aprobación a menos que ")
+            append("actives YOLO. La opción \"fuera del workspace\" permite paths absolutos y ")
+            append("rutas que escapan del directorio configurado — peligroso, úsalo con cuidado.")
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun SwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md)
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
     }
 }
 

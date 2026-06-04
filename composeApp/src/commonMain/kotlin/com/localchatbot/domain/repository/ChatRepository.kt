@@ -50,4 +50,11 @@ interface ModelRepository {
 
     /** Devuelve la longitud de contexto del modelo si el servidor la expone (LM Studio). */
     suspend fun fetchContextLength(baseUrl: String, modelId: String): Int?
+
+    /**
+     * Genera 3 prompts de conversación dinámicos para mostrar en el empty state
+     * del chat. Llamado en background tras cada respuesta exitosa del modelo.
+     * Categorías: desarrollo, noticias actuales, random creativo.
+     */
+    suspend fun generateSuggestions(baseUrl: String, model: String): Result<List<String>>
 }

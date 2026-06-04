@@ -58,6 +58,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.confirm.PendingConfirmation
+import com.localchatbot.core.confirm.ToolConfirmationController
+import com.localchatbot.core.fs.rememberDirectoryPicker
 import com.localchatbot.core.image.rememberImagePicker
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
@@ -68,6 +71,7 @@ import com.localchatbot.core.voice.VoiceMode
 import com.localchatbot.domain.model.Role
 import com.localchatbot.presentation.components.atoms.AppLogo
 import com.localchatbot.presentation.components.atoms.TypingIndicator
+import com.localchatbot.presentation.components.molecules.AgentControlsBar
 import com.localchatbot.presentation.components.molecules.ContextUsageBar
 import com.localchatbot.presentation.components.molecules.MessageBubble
 import com.localchatbot.presentation.components.organisms.ChatComposer
@@ -81,10 +85,24 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
+/**
+ * Fallback estático del empty state. Se muestra mientras el modelo aún no ha
+ * respondido por primera vez (no hay sugerencias dinámicas en cache). Tras la
+ * primera respuesta exitosa, [ChatViewModel.refreshSuggestions] reemplaza esta
+ * lista con 3 generadas por el modelo: una de desarrollo, una de noticias
+ * actuales y una random.
+ */
+private val DEFAULT_EMPTY_STATE_SUGGESTIONS = listOf(
+    "Explícame el patrón Repository",
+    "Revisa este snippet de Kotlin",
+    "Resume un texto largo"
+)
+
 @Composable
 fun ChatScreen(
     chatViewModel: ChatViewModel,
     voiceController: VoiceConversationController,
+    toolConfirmationController: ToolConfirmationController,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
     showMenuButton: Boolean = true,
@@ -92,7 +110,11 @@ fun ChatScreen(
 ) {
     val state by chatViewModel.state.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
+    val pendingConfirmation by toolConfirmationController.pending.collectAsStateWithLifecycle()
     val imagePicker = rememberImagePicker(onResult = chatViewModel::onImagePicked)
+    // Picker de directorio para los chips del agente. En móvil es no-op,
+    // pero como la barra solo se renderiza cuando isDesktop, da igual.
+    val workspacePicker = rememberDirectoryPicker(onResult = chatViewModel::updateFsWorkspaceDir)
     var templatesOpen by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -112,9 +134,14 @@ fun ChatScreen(
             onRegenerate = chatViewModel::regenerateLastResponse,
             onOpenTemplates = { templatesOpen = true },
             onSaveImage = chatViewModel::saveImage,
+            onPasteImage = chatViewModel::onImagePicked,
             onDismissError = chatViewModel::dismissError,
             voiceSupported = PlatformCapabilities.voiceSupported,
-            showMenuButton = showMenuButton
+            showMenuButton = showMenuButton,
+            showAgentBar = PlatformCapabilities.isDesktop,
+            onPickWorkspace = { workspacePicker.launch() },
+            onToggleSandbox = chatViewModel::toggleFsSandbox,
+            onToggleYolo = chatViewModel::toggleFsYoloMode
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -137,6 +164,13 @@ fun ChatScreen(
                 onDismiss = { templatesOpen = false }
             )
         }
+        pendingConfirmation?.let { pending ->
+            ToolConfirmationDialog(
+                pending = pending,
+                onApprove = { toolConfirmationController.resolve(pending.id, approved = true) },
+                onReject = { toolConfirmationController.resolve(pending.id, approved = false) }
+            )
+        }
     }
 }
 
@@ -157,9 +191,14 @@ fun ChatContent(
     onRegenerate: () -> Unit = {},
     onOpenTemplates: () -> Unit = {},
     onSaveImage: (ByteArray) -> Unit = {},
+    onPasteImage: ((ByteArray) -> Unit)? = null,
     onDismissError: () -> Unit = {},
     voiceSupported: Boolean = true,
     showMenuButton: Boolean = true,
+    showAgentBar: Boolean = false,
+    onPickWorkspace: () -> Unit = {},
+    onToggleSandbox: () -> Unit = {},
+    onToggleYolo: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -250,11 +289,7 @@ fun ChatContent(
         val active = state.activeSession
         if (active == null || active.messages.isEmpty()) {
             ChatEmptyState(
-                suggestions = listOf(
-                    "Explícame el patrón Repository",
-                    "Revisa este snippet de Kotlin",
-                    "Resume un texto largo"
-                ),
+                suggestions = state.dynamicSuggestions ?: DEFAULT_EMPTY_STATE_SUGGESTIONS,
                 onSuggestion = onDraftChange,
                 modifier = Modifier.weight(1f).then(dismissKeyboardModifier)
             )
@@ -333,7 +368,22 @@ fun ChatContent(
             onVoice = onVoice,
             onStop = onStop,
             onTemplates = onOpenTemplates,
-            voiceSupported = voiceSupported
+            voiceSupported = voiceSupported,
+            onPasteImage = onPasteImage,
+            agentBar = if (showAgentBar) {
+                {
+                    AgentControlsBar(
+                        workspaceDir = state.fsWorkspaceDir,
+                        // El chip de "Sandbox" muestra ON cuando los paths están
+                        // restringidos al workspace (allowOutside == false).
+                        sandboxOn = !state.fsAllowOutsideWorkspace,
+                        yoloOn = state.fsYoloMode,
+                        onPickWorkspace = onPickWorkspace,
+                        onToggleSandbox = onToggleSandbox,
+                        onToggleYolo = onToggleYolo
+                    )
+                }
+            } else null
         )
         Spacer(Modifier.height(Spacing.xs))
     }
@@ -529,6 +579,58 @@ private fun DayHeader(epochMs: Long) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
         textAlign = TextAlign.Center
+    )
+}
+
+@Composable
+private fun ToolConfirmationDialog(
+    pending: PendingConfirmation,
+    onApprove: () -> Unit,
+    onReject: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onReject,
+        title = {
+            Text(
+                pending.title,
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        text = {
+            val detail = pending.detail
+            if (detail.isNullOrBlank()) {
+                Text(
+                    "El modelo quiere ejecutar esta acción.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(Spacing.md)
+                ) {
+                    Text(
+                        text = detail,
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onApprove) {
+                Text("Aprobar", color = MaterialTheme.colorScheme.primary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReject) {
+                Text("Rechazar", color = MaterialTheme.colorScheme.error)
+            }
+        }
     )
 }
 

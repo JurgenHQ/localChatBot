@@ -43,6 +43,10 @@ class ToolRegistry(private val tools: List<Tool>) {
 
     fun allDefinitions(): List<ToolDefinition> = tools.map { it.definition }
 
+    /** Solo las definiciones de tools cuyo [Tool.isAvailable] devuelve true. */
+    suspend fun availableDefinitions(): List<ToolDefinition> =
+        tools.filter { it.isAvailable() }.map { it.definition }
+
     fun allTools(): List<Tool> = tools
 
     fun find(name: String): Tool? = tools.firstOrNull { it.name == name }

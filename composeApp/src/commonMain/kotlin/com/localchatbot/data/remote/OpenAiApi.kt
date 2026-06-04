@@ -2,15 +2,18 @@ package com.localchatbot.data.remote
 
 import com.localchatbot.core.debug.NetworkInspector
 import com.localchatbot.core.debug.NetworkTransaction
+import com.localchatbot.core.platform.PlatformCapabilities
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readUTF8Line
@@ -88,6 +91,18 @@ class OpenAiApi(
         try {
             client.preparePost(url) {
                 contentType(ContentType.Application.Json)
+                // Solo en desktop (CIO): fuerza conexión nueva por cada stream para
+                // evitar reusar una conexión que LM Studio ya cerró, lo que causaría
+                // EOF inmediato en llamadas rápidas (p. ej. YOLO mode sin delay de
+                // aprobación humana).
+                //
+                // En iOS (Darwin) este header provoca `-1005 / EPIPE` durante el
+                // streaming porque NSURLSession cierra la conexión más agresivamente;
+                // Darwin ya detecta conexiones muertas en su propio pool, así que
+                // dejamos que negocie keep-alive por defecto.
+                if (PlatformCapabilities.forceCloseHttpConnection) {
+                    header(HttpHeaders.Connection, "close")
+                }
                 setBody(finalRequest)
             }.execute { response ->
                 responseStatus = response.status.value

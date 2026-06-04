@@ -67,11 +67,32 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
         _state.value = _state.value.copy(imageServiceUrl = value)
     }
 
+    override suspend fun updateFsWorkspaceDir(value: String?) {
+        if (value.isNullOrBlank()) {
+            settings.remove(KEY_FS_WORKSPACE)
+            _state.value = _state.value.copy(fsWorkspaceDir = null)
+        } else {
+            settings.putString(KEY_FS_WORKSPACE, value)
+            _state.value = _state.value.copy(fsWorkspaceDir = value)
+        }
+    }
+
+    override suspend fun updateFsYoloMode(value: Boolean) {
+        settings.putBoolean(KEY_FS_YOLO, value)
+        _state.value = _state.value.copy(fsYoloMode = value)
+    }
+
+    override suspend fun updateFsAllowOutsideWorkspace(value: Boolean) {
+        settings.putBoolean(KEY_FS_ALLOW_OUTSIDE, value)
+        _state.value = _state.value.copy(fsAllowOutsideWorkspace = value)
+    }
+
     override suspend fun reset() {
         listOf(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
-            KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL
+            KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
+            KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -99,7 +120,10 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
                 val raw = settings.getStringOrNull(KEY_TEMPLATES) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(templatesSerializer, raw)
             }.getOrDefault(emptyList()),
-            imageServiceUrl = settings.getString(KEY_IMAGE_URL, default.imageServiceUrl)
+            imageServiceUrl = settings.getString(KEY_IMAGE_URL, default.imageServiceUrl),
+            fsWorkspaceDir = settings.getStringOrNull(KEY_FS_WORKSPACE),
+            fsYoloMode = settings.getBoolean(KEY_FS_YOLO, default.fsYoloMode),
+            fsAllowOutsideWorkspace = settings.getBoolean(KEY_FS_ALLOW_OUTSIDE, default.fsAllowOutsideWorkspace)
         )
     }
 
@@ -116,5 +140,8 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
         const val KEY_SYSTEM_PROMPT = "default_system_prompt"
         const val KEY_TEMPLATES = "prompt_templates"
         const val KEY_IMAGE_URL = "image_service_url"
+        const val KEY_FS_WORKSPACE = "fs_workspace_dir"
+        const val KEY_FS_YOLO = "fs_yolo_mode"
+        const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
     }
 }

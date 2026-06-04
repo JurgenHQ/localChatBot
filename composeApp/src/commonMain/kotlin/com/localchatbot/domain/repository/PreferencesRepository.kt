@@ -17,5 +17,8 @@ interface PreferencesRepository {
     suspend fun updateDefaultSystemPrompt(value: String)
     suspend fun setPromptTemplates(templates: List<PromptTemplate>)
     suspend fun updateImageServiceUrl(value: String)
+    suspend fun updateFsWorkspaceDir(value: String?)
+    suspend fun updateFsYoloMode(value: Boolean)
+    suspend fun updateFsAllowOutsideWorkspace(value: Boolean)
     suspend fun reset()
 }

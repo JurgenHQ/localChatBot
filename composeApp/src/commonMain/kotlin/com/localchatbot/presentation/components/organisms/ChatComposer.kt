@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -51,7 +52,14 @@ fun ChatComposer(
     onVoice: () -> Unit = {},
     onStop: () -> Unit = {},
     onTemplates: (() -> Unit)? = null,
-    voiceSupported: Boolean = true
+    voiceSupported: Boolean = true,
+    onPasteImage: ((ByteArray) -> Unit)? = null,
+    /**
+     * Slot opcional renderizado debajo de la fila del input (después del botón
+     * de adjuntar imagen y de plantillas). Se usa para los chips del agente
+     * (workspace / sandbox / YOLO) cuando aplica.
+     */
+    agentBar: (@Composable () -> Unit)? = null
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val dismissAndSend: () -> Unit = {
@@ -81,7 +89,8 @@ fun ChatComposer(
                 modifier = Modifier.weight(1f),
                 onSubmit = if (PlatformCapabilities.isDesktop) {
                     { if (hasContentNow && !sending) dismissAndSend() }
-                } else null
+                } else null,
+                onPasteImage = onPasteImage
             )
             val hasContent = value.isNotBlank() || attachedImageBytes != null
             when {
@@ -90,6 +99,10 @@ fun ChatComposer(
                 voiceSupported -> IconSquareButton(icon = Icons.Outlined.Mic, onClick = onVoice)
                 else -> SendIconButton(enabled = false, onClick = {})
             }
+        }
+        if (agentBar != null) {
+            Spacer(Modifier.size(Spacing.sm))
+            agentBar()
         }
     }
 }

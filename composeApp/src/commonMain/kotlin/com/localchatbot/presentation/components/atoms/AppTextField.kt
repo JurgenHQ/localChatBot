@@ -20,10 +20,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import com.localchatbot.core.clipboard.readClipboardImageBytes
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -90,19 +93,24 @@ fun ChatInputField(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     placeholder: String = "Escribe un mensaje…",
-    onSubmit: (() -> Unit)? = null
+    onSubmit: (() -> Unit)? = null,
+    onPasteImage: ((ByteArray) -> Unit)? = null
 ) {
     val submitOnEnter = Modifier.onPreviewKeyEvent { event ->
-        if (onSubmit != null &&
-            event.type == KeyEventType.KeyDown &&
-            event.key == Key.Enter &&
-            !event.isShiftPressed
-        ) {
+        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed && onSubmit != null) {
             onSubmit()
-            true
-        } else {
-            false
+            return@onPreviewKeyEvent true
         }
+        if (event.type == KeyEventType.KeyDown && event.key == Key.V &&
+            (event.isCtrlPressed || event.isMetaPressed) && onPasteImage != null
+        ) {
+            val bytes = readClipboardImageBytes()
+            if (bytes != null) {
+                onPasteImage(bytes)
+                return@onPreviewKeyEvent true
+            }
+        }
+        false
     }
     Box(
         modifier = modifier

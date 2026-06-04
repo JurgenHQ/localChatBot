@@ -73,10 +73,10 @@ class SendMessageUseCase(
             return Result.failure(IllegalStateException("Conexión no configurada"))
         }
 
-        // Las tools se envían siempre que el registry no esté vacío. Si una tool no
-        // está disponible (p. ej. sin API key) y el modelo la invoca, su execute()
-        // devolverá un error explicativo que el modelo relatará al usuario.
-        val tools = if (!toolRegistry.isEmpty()) toolRegistry.allDefinitions() else null
+        // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
+        // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
+        // que no puede ejecutar.
+        val tools = toolRegistry.availableDefinitions().takeIf { it.isNotEmpty() }
 
         return try {
             var iter = 0
@@ -281,35 +281,33 @@ class SendMessageUseCase(
         const val MAX_TOOL_ITERATIONS = 4
         private const val SYSTEM_PROMPT_ID = "system-tools-prompt"
         private const val SYSTEM_PROMPT_WITH_TOOLS = (
-            "You have access to function tools. Use them when relevant:\n\n" +
-                "• `search_web`: fetches current information from the internet. When the user " +
-                "asks about news, recent events, current facts, prices, weather, sports results, " +
-                "specific people/companies/products, software versions, or any topic that may " +
-                "have changed since your training, you MUST call `search_web` — DO NOT reply " +
-                "that you cannot browse the internet.\n\n" +
-                "• `render_diagram`: renders Mermaid code to a clean PNG. Use this for concept " +
-                "maps, mind maps, flowcharts, sequence/class/state/ER diagrams, gantt charts, " +
-                "or ANY structured diagram with text labels. NEVER use `generate_image` for " +
-                "these — diffusion models produce illegible text. Build complete valid Mermaid " +
-                "syntax starting with the diagram type keyword (`graph`, `flowchart`, `mindmap`, " +
-                "`sequenceDiagram`, etc.).\n\n" +
-                "CRITICAL rules for `render_diagram` (and `generate_image`):\n" +
-                "1. NEVER claim you generated a diagram or image without actually calling the " +
-                "tool first. If the user asks for one, you MUST call the tool — text-only " +
-                "replies like \"here's your diagram\" without a tool call are a hallucination " +
-                "and forbidden.\n" +
-                "2. Check the tool result carefully. If `success` is true, briefly confirm to " +
-                "the user that the diagram/image is ready. If `success` is false, you MUST " +
-                "tell the user the diagram could NOT be generated and quote the `error` field " +
-                "in the user's language. Never pretend a failed render succeeded.\n" +
-                "3. If the diagram failed because of invalid Mermaid syntax, try again ONCE " +
-                "with simpler/cleaner code (avoid parentheses inside labels, special chars, " +
-                "very long labels). If it still fails, report the failure honestly.\n\n" +
-                "• `generate_image`: creates a creative/artistic image from a text description. " +
-                "Use this ONLY for natural, artistic, or photorealistic images (a dragon, a " +
-                "landscape, a portrait). Translate the description into a detailed English " +
-                "prompt for SDXL. After it succeeds, briefly tell the user the image is ready, " +
-                "in their language. Do NOT include base64 data in your reply.\n\n" +
+            "You are an agent with function tools. You MUST call the appropriate tool whenever " +
+                "the user's request matches one of the rules below. NEVER ask the user to do " +
+                "something a tool can do for you. NEVER claim you lack access — the tools are " +
+                "listed and available right now.\n\n" +
+                "MANDATORY tool usage:\n" +
+                "• User asks to read, review, analyze, explore, or modify a project / files / code " +
+                "→ call `list_directory` and `read_file`. Do NOT ask the user to paste code.\n" +
+                "• User asks to create, write, edit, or save a file → call `create_file`.\n" +
+                "• User asks to create a folder/directory → call `create_directory`.\n" +
+                "• User asks to run a command, build, test, install deps, start a server, run a " +
+                "script, git operation, or anything in a terminal → call `run_command`. For " +
+                "servers/watchers/long-running processes set `background=true`.\n" +
+                "• User asks about news, recent events, prices, current facts, software versions, " +
+                "or anything that may have changed since training → call `search_web`.\n" +
+                "• User asks for a diagram, flowchart, mind map, sequence/class/ER diagram → call " +
+                "`render_diagram` with Mermaid syntax. NEVER use `generate_image` for diagrams.\n" +
+                "• User asks for an artistic / photorealistic image → call `generate_image` with " +
+                "a detailed English SDXL prompt.\n\n" +
+                "RULES:\n" +
+                "1. NEVER fabricate tool results. If you didn't call a tool, do NOT pretend you " +
+                "did. If a tool fails, quote the `error` field in the user's language.\n" +
+                "2. Paths in fs tools can be relative (resolved against the workspace) or absolute.\n" +
+                "3. fs/shell tools ask the user to approve each call unless YOLO mode is on.\n" +
+                "4. After a successful tool result, summarize briefly in the user's language. Do " +
+                "NOT paste base64 image data into your reply.\n" +
+                "5. If multiple steps are needed (e.g. list → read → analyze → run), chain them " +
+                "in one flow without stopping to ask permission between steps.\n\n" +
                 "Always answer in the same language the user used."
             )
     }

@@ -106,6 +106,7 @@ fun MainScaffold(container: AppContainer) {
                         BottomTab.Chat -> ChatScreen(
                             chatViewModel = chatViewModel,
                             voiceController = container.voiceController,
+                            toolConfirmationController = container.toolConfirmationController,
                             onOpenDrawer = sessionsViewModel::openDrawer,
                             onChangeModel = { modelPickerOpen = true },
                             showMenuButton = !permanentDrawer

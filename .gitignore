@@ -41,3 +41,6 @@ Pods/
 # Logs y temporales
 *.log
 *.tmp
+
+# Notas de sesión de trabajo
+working-session.md

@@ -125,6 +125,47 @@ class ModelRepositoryImpl(
     override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
         lmStudioApi.fetchContextLength(baseUrl, modelId)
 
+    override suspend fun generateSuggestions(
+        baseUrl: String,
+        model: String
+    ): Result<List<String>> {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", SUGGESTIONS_SYSTEM_PROMPT),
+                OpenAiMessage.text("user", SUGGESTIONS_USER_PROMPT)
+            ),
+            // Subimos un poco la temperatura para que las sugerencias varíen entre llamadas;
+            // si la dejamos al default del servidor (~0.7) tienden a repetirse.
+            temperature = 0.9
+        )
+        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+            val raw = response.choices.firstOrNull()?.message?.content?.asText()
+                ?: throw IllegalStateException("Respuesta vacía al pedir sugerencias")
+            parseSuggestionsArray(raw)
+                ?: throw IllegalStateException("No se pudo parsear el JSON de sugerencias: $raw")
+        }
+    }
+
+    /**
+     * El modelo a veces envuelve el JSON en bloques de código (```json … ```) o
+     * añade texto extra antes/después. Extraemos el primer array balanceado
+     * `[...]` y lo decodificamos. Si lo que queda dentro no son strings, devolvemos null.
+     */
+    private fun parseSuggestionsArray(raw: String): List<String>? {
+        val start = raw.indexOf('[')
+        val end = raw.lastIndexOf(']')
+        if (start < 0 || end <= start) return null
+        val slice = raw.substring(start, end + 1)
+        return runCatching {
+            val arr = suggestionsJson.parseToJsonElement(slice) as? JsonArray ?: return null
+            arr.map { (it as JsonPrimitive).content }
+                .filter { it.isNotBlank() }
+                .take(3)
+                .takeIf { it.size == 3 }
+        }.getOrNull()
+    }
+
     private fun ChatMessage.toDto(): OpenAiMessage {
         val roleString = when (role) {
             Role.User -> "user"
@@ -155,6 +196,8 @@ class ModelRepositoryImpl(
         else -> null
     }
 
+    private val suggestionsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
     private fun newId(): String =
         Clock.System.now().toEpochMilliseconds().toString(36) +
             "-" + Random.nextInt(0, 1_000_000).toString(36)
@@ -172,5 +215,24 @@ class ModelRepositoryImpl(
                 function = FunctionCall(name = resolvedName, arguments = arguments.toString())
             )
         }
+    }
+
+    private companion object {
+        const val SUGGESTIONS_SYSTEM_PROMPT =
+            "You generate short example prompts for a chat app. Reply with ONLY a JSON array " +
+                "of exactly 3 strings, no markdown fences, no commentary, no extra text."
+
+        val SUGGESTIONS_USER_PROMPT = """
+            Genera 3 ejemplos de prompts en español que un usuario podría tocar para empezar una conversación.
+            Cada uno debe ser una pregunta o instrucción concreta, en una sola frase, idealmente menos de 80 caracteres.
+
+            Categorías exactas y en este orden:
+            1. Desarrollo de software o programación.
+            2. Noticias o eventos actuales (algo que se beneficie de buscar en internet hoy).
+            3. Tema random, creativo, divertido o sorprendente.
+
+            Devuelve SOLO un JSON array con 3 strings. Ejemplo de formato:
+            ["...", "...", "..."]
+        """.trimIndent()
     }
 }
