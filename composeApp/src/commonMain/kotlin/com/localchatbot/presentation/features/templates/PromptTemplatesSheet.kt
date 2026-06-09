@@ -2,6 +2,7 @@ package com.localchatbot.presentation.features.templates
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.localchatbot.core.theme.Radius
@@ -52,7 +54,9 @@ fun PromptTemplatesSheet(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.4f))
-            .clickable(onClick = onDismiss)
+            // pointerInput, no clickable: clickable añade semántica de teclado en
+            // desktop (Espacio = click) y cerraba el sheet al escribir espacios.
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
     ) {
         Column(
             modifier = Modifier
@@ -61,7 +65,8 @@ fun PromptTemplatesSheet(
                 .heightIn(max = 560.dp)
                 .clip(RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg))
                 .background(MaterialTheme.colorScheme.background)
-                .clickable(enabled = false, onClick = {})
+                // Consume los taps para que no lleguen al scrim y cierren el sheet.
+                .pointerInput(Unit) { detectTapGestures { } }
                 .padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {

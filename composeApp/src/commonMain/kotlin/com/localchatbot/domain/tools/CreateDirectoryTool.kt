@@ -22,6 +22,7 @@ class CreateDirectoryTool(
 ) : Tool {
 
     override val name: String = TOOL_NAME
+    override val requiresConfirmation: Boolean = true
 
     override val activityLabel: String = "Creando directorio…"
 

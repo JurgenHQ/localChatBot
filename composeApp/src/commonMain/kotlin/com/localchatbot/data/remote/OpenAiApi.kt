@@ -88,6 +88,8 @@ class OpenAiApi(
         val rawTranscript = StringBuilder()
         var responseStatus: Int? = null
         var errorMessage: String? = null
+        var parseErrorCount = 0
+        var firstParseError: String? = null
         try {
             client.preparePost(url) {
                 contentType(ContentType.Application.Json)
@@ -119,12 +121,32 @@ class OpenAiApi(
                     if (payload == "[DONE]") return@execute
                     runCatching { json.decodeFromString<ChatCompletionChunk>(payload) }
                         .onSuccess { emit(it) }
+                        .onFailure { e ->
+                            // Antes esto era silencioso → si LM Studio emitía un
+                            // chunk con un formato inesperado (campo no-nullable
+                            // faltante, tipo distinto), TODOS los chunks del mismo
+                            // formato se descartaban sin que la UI recibiera ni
+                            // un token. Ahora lo dejamos visible en el inspector
+                            // y, si NO se emitió nada útil, levantamos el error
+                            // al final para que la UI muestre el problema.
+                            parseErrorCount++
+                            if (firstParseError == null) {
+                                firstParseError = "${e::class.simpleName}: ${e.message} | payload: ${payload.take(500)}"
+                            }
+                        }
                 }
             }
         } catch (t: Throwable) {
             errorMessage = t.message
             throw t
         } finally {
+            if (parseErrorCount > 0) {
+                rawTranscript.append("\n## PARSE_ERRORS ($parseErrorCount chunks) ##\n")
+                rawTranscript.append(firstParseError ?: "")
+                if (errorMessage == null) {
+                    errorMessage = "Parse error en stream ($parseErrorCount chunks descartados): $firstParseError"
+                }
+            }
             inspector?.record(
                 NetworkTransaction(
                     id = inspector.newId(),

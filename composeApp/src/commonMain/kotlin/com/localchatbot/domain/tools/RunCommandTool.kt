@@ -23,6 +23,7 @@ class RunCommandTool(
 ) : Tool {
 
     override val name: String = TOOL_NAME
+    override val requiresConfirmation: Boolean = true
 
     override val activityLabel: String = "Ejecutando comando…"
 
@@ -99,16 +100,26 @@ class RunCommandTool(
         val timeout = args["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 30
         val startupCheck = args["startup_check_seconds"]?.jsonPrimitive?.intOrNull ?: 5
 
+        // Comandos que matchean la denylist fuerzan el diálogo de confirmación
+        // incluso en YOLO mode — única defensa contra un modelo que alucina
+        // un comando destructivo cuando las confirmaciones están apagadas.
+        val dangerReason = DangerousCommands.match(command)
+
         val detail = buildString {
             append("$ ").append(command)
             append("\n\ncwd: ").append(resolvedDir)
             if (background) append("\nmodo: background (startup check ${startupCheck}s)")
             else append("\ntimeout: ${timeout}s")
+            if (dangerReason != null) {
+                append("\n\n⚠ PELIGROSO: ").append(dangerReason)
+                append("\nSe pide confirmación aunque YOLO esté activo.")
+            }
         }
 
         val approved = confirm.requestApproval(
-            title = "Ejecutar comando shell",
-            detail = detail
+            title = if (dangerReason != null) "⚠ Comando potencialmente destructivo" else "Ejecutar comando shell",
+            detail = detail,
+            force = dangerReason != null
         )
         if (!approved) return FsToolUtil.cancelledPayload(json)
 

@@ -1,5 +1,8 @@
 package com.localchatbot.presentation.navigation
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +45,9 @@ fun MainScaffold(container: AppContainer) {
     var selected by rememberSaveable { mutableStateOf(BottomTab.Chat) }
     var modelPickerOpen by rememberSaveable { mutableStateOf(false) }
     var inspectorOpen by rememberSaveable { mutableStateOf(false) }
+    // En layout ancho el panel de sesiones es permanente pero colapsable: el
+    // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
+    var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
 
     val chatViewModel = remember {
         ChatViewModel(
@@ -83,19 +89,25 @@ fun MainScaffold(container: AppContainer) {
         val permanentDrawer = maxWidth >= 840.dp
 
         Row(modifier = Modifier.fillMaxSize()) {
-            if (permanentDrawer) {
-                SessionDrawer(
-                    viewModel = sessionsViewModel,
-                    onOpenSettings = { selected = BottomTab.Settings },
-                    onNewSession = { selected = BottomTab.Chat },
-                    showScrim = false
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(1.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant)
-                )
+            AnimatedVisibility(
+                visible = permanentDrawer && !sidebarCollapsed,
+                enter = expandHorizontally(),
+                exit = shrinkHorizontally()
+            ) {
+                Row {
+                    SessionDrawer(
+                        viewModel = sessionsViewModel,
+                        onOpenSettings = { selected = BottomTab.Settings },
+                        onNewSession = { selected = BottomTab.Chat },
+                        showScrim = false
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
+                }
             }
 
             // imePadding al Column externo: con windowSoftInputMode=adjustResize en el manifest,
@@ -107,9 +119,15 @@ fun MainScaffold(container: AppContainer) {
                             chatViewModel = chatViewModel,
                             voiceController = container.voiceController,
                             toolConfirmationController = container.toolConfirmationController,
-                            onOpenDrawer = sessionsViewModel::openDrawer,
+                            todoTool = container.todoTool,
+                            // Con panel permanente el botón de menú colapsa/expande
+                            // el sidebar; en angosto abre el drawer modal.
+                            onOpenDrawer = {
+                                if (permanentDrawer) sidebarCollapsed = !sidebarCollapsed
+                                else sessionsViewModel.openDrawer()
+                            },
                             onChangeModel = { modelPickerOpen = true },
-                            showMenuButton = !permanentDrawer
+                            showMenuButton = true
                         )
                         BottomTab.Settings -> SettingsScreen(
                             viewModel = settingsViewModel,

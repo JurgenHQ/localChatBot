@@ -34,7 +34,13 @@ data class ChatMessage(
     /** Solo en role=Tool: nombre de la tool ejecutada, p.ej. "search_web". */
     val toolName: String? = null,
     /** Solo en role=Assistant final: fuentes web a renderizar como chips. */
-    val sources: List<WebSource>? = null
+    val sources: List<WebSource>? = null,
+    /**
+     * Razonamiento (chain-of-thought) emitido por modelos como Gemma 3/4, QwQ,
+     * DeepSeek-R1 o tipo o1. NO se envía de vuelta al modelo en siguientes turnos
+     * (es contenido interno). La UI lo muestra en un panel collapsible aparte.
+     */
+    val reasoning: String? = null
 )
 
 @Serializable

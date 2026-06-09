@@ -2,6 +2,7 @@ package com.localchatbot.presentation.features.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -60,11 +62,14 @@ fun SettingsEditorSheetContent(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Scrim con pointerInput en lugar de clickable: clickable añade semántica
+    // de teclado en desktop (Espacio/Enter = click con foco) y cerraba el sheet
+    // al escribir un espacio en los campos de texto.
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.4f))
-            .clickable(onClick = onDismiss)
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
     ) {
         Column(
             modifier = Modifier
@@ -72,7 +77,8 @@ fun SettingsEditorSheetContent(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg))
                 .background(MaterialTheme.colorScheme.background)
-                .clickable(enabled = false, onClick = {})
+                // Consume los taps para que no lleguen al scrim y cierren el sheet.
+                .pointerInput(Unit) { detectTapGestures { } }
                 .padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.lg)
         ) {

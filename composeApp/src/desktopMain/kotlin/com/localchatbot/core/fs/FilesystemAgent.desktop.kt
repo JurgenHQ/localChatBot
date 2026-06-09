@@ -175,6 +175,85 @@ actual class FilesystemAgent {
             }.getOrElse { e -> FsResult.Err(e.message ?: "Error listando directorio") }
         }
 
+    actual suspend fun editFile(
+        absPath: String,
+        oldString: String,
+        newString: String,
+        replaceAll: Boolean
+    ): FsResult = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = Paths.get(absPath)
+            if (!path.isRegularFile()) {
+                return@runCatching FsResult.Err("No es un archivo regular: $absPath")
+            }
+            if (oldString.isEmpty()) {
+                return@runCatching FsResult.Err("'old_string' no puede estar vacío")
+            }
+            if (oldString == newString) {
+                return@runCatching FsResult.Err("'old_string' y 'new_string' son idénticos")
+            }
+            val original = String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+            var occurrences = 0
+            var idx = original.indexOf(oldString)
+            while (idx >= 0) {
+                occurrences++
+                idx = original.indexOf(oldString, idx + oldString.length)
+            }
+            when {
+                occurrences == 0 -> return@runCatching FsResult.Err(
+                    "'old_string' no aparece en el archivo. Lee el archivo de nuevo y copia el texto exacto."
+                )
+                occurrences > 1 && !replaceAll -> return@runCatching FsResult.Err(
+                    "'old_string' aparece $occurrences veces. Amplía el texto para hacerlo único, " +
+                        "o pasa replace_all=true para reemplazar todas las ocurrencias."
+                )
+            }
+            val updated = original.replace(oldString, newString)
+            val bytes = updated.toByteArray(StandardCharsets.UTF_8)
+            Files.write(path, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
+            FsResult.Ok(buildJsonObject {
+                put("success", true)
+                put("path", absPath)
+                put("replacements", occurrences)
+                put("bytesWritten", bytes.size)
+            })
+        }.getOrElse { e -> FsResult.Err(e.message ?: "Error editando archivo") }
+    }
+
+    actual suspend fun deletePath(absPath: String, recursive: Boolean): FsResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val path = Paths.get(absPath)
+                if (!Files.exists(path)) {
+                    return@runCatching FsResult.Err("No existe: $absPath")
+                }
+                var deletedCount = 0
+                if (path.isDirectory()) {
+                    val isEmpty = Files.list(path).use { it.findFirst().isEmpty }
+                    if (!isEmpty && !recursive) {
+                        return@runCatching FsResult.Err(
+                            "El directorio no está vacío. Pasa recursive=true para borrarlo con su contenido."
+                        )
+                    }
+                    // walk emite padres antes que hijos; borramos en orden inverso.
+                    Files.walk(path).use { stream ->
+                        stream.sorted(Comparator.reverseOrder()).forEach {
+                            Files.delete(it)
+                            deletedCount++
+                        }
+                    }
+                } else {
+                    Files.delete(path)
+                    deletedCount = 1
+                }
+                FsResult.Ok(buildJsonObject {
+                    put("success", true)
+                    put("path", absPath)
+                    put("deletedEntries", deletedCount)
+                })
+            }.getOrElse { e -> FsResult.Err(e.message ?: "Error eliminando") }
+        }
+
     actual suspend fun runCommand(
         command: String,
         workingDir: String,

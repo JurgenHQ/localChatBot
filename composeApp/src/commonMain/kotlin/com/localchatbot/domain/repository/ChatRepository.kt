@@ -17,11 +17,19 @@ interface ChatRepository {
     suspend fun updateMessageToolCalls(sessionId: String, messageId: String, toolCalls: List<PersistedToolCall>)
     suspend fun updateMessageSources(sessionId: String, messageId: String, sources: List<WebSource>)
     suspend fun updateMessageImage(sessionId: String, messageId: String, imageDataUrl: String)
+    suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String)
     suspend fun updateTitle(sessionId: String, title: String)
+    suspend fun updateModel(sessionId: String, model: String)
     suspend fun setPinned(sessionId: String, pinned: Boolean)
     /** Elimina el mensaje indicado y todos los posteriores en esa sesión. */
     suspend fun deleteMessagesFrom(sessionId: String, messageId: String)
     suspend fun clearAll()
+
+    /**
+     * Fuerza la escritura inmediata de cualquier persistencia pendiente
+     * (la escritura a disco va con throttle). Llamar al cerrar la app.
+     */
+    fun flushPendingWrites()
 }
 
 interface ModelRepository {
@@ -57,4 +65,16 @@ interface ModelRepository {
      * Categorías: desarrollo, noticias actuales, random creativo.
      */
     suspend fun generateSuggestions(baseUrl: String, model: String): Result<List<String>>
+
+    /**
+     * Genera un título corto (3-6 palabras) para una sesión a partir del primer
+     * intercambio usuario→assistant. Llamado en background tras la primera
+     * respuesta; si falla se conserva el título placeholder.
+     */
+    suspend fun generateTitle(
+        baseUrl: String,
+        model: String,
+        userText: String,
+        assistantText: String
+    ): Result<String>
 }

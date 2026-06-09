@@ -1,5 +1,6 @@
 package com.localchatbot.data.repository
 
+import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ChatCompletionRequest
 import com.localchatbot.data.remote.FunctionCall
 import com.localchatbot.data.remote.LmStudioApi
@@ -22,7 +23,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.random.Random
 
 class ModelRepositoryImpl(
     private val api: OpenAiApi,
@@ -86,14 +86,20 @@ class ModelRepositoryImpl(
         // Acumuladores para tool_calls que llegan fragmentados.
         val builders = mutableMapOf<Int, ToolCallBuilder>()
         var finalFinishReason: String? = null
+        var actualModel: String? = null
 
         api.streamChatCompletion(baseUrl, req).collect { chunk ->
+            if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
             val choice = chunk.choices.firstOrNull() ?: return@collect
             val delta = choice.delta
             delta?.content?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ContentDelta(it)) }
+            delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ReasoningDelta(it)) }
 
             delta?.toolCalls?.forEach { d ->
-                val builder = builders.getOrPut(d.index) { ToolCallBuilder() }
+                // Si el server omite `index` (algunos modelos lo hacen cuando solo
+                // hay un tool_call), asumimos 0 — equivalente al primero.
+                val idx = d.index ?: 0
+                val builder = builders.getOrPut(idx) { ToolCallBuilder() }
                 d.id?.let { builder.id = it }
                 d.function?.name?.let { builder.name = it }
                 d.function?.arguments?.let { builder.arguments.append(it) }
@@ -106,7 +112,7 @@ class ModelRepositoryImpl(
             .sortedBy { it.key }
             .mapNotNull { (_, b) -> b.build() }
 
-        emit(StreamEvent.Finish(reason = finalFinishReason, toolCalls = toolCalls))
+        emit(StreamEvent.Finish(reason = finalFinishReason, toolCalls = toolCalls, actualModel = actualModel))
     }
 
     override suspend fun ping(baseUrl: String): Result<Long> = api.ping(baseUrl)
@@ -145,6 +151,54 @@ class ModelRepositoryImpl(
             parseSuggestionsArray(raw)
                 ?: throw IllegalStateException("No se pudo parsear el JSON de sugerencias: $raw")
         }
+    }
+
+    override suspend fun generateTitle(
+        baseUrl: String,
+        model: String,
+        userText: String,
+        assistantText: String
+    ): Result<String> {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", TITLE_SYSTEM_PROMPT),
+                OpenAiMessage.text(
+                    "user",
+                    "Usuario: ${userText.take(500)}\n\nAssistant: ${assistantText.take(500)}"
+                )
+            ),
+            // Baja temperatura: queremos un título estable y literal, no creativo.
+            temperature = 0.2
+        )
+        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+            val raw = response.choices.firstOrNull()?.message?.content?.asText()
+                ?: throw IllegalStateException("Respuesta vacía al pedir título")
+            sanitizeTitle(raw)
+                ?: throw IllegalStateException("Título inutilizable: $raw")
+        }
+    }
+
+    /**
+     * El modelo a veces envuelve el título en comillas, markdown o añade
+     * razonamiento previo. Nos quedamos con la última línea no vacía que
+     * parezca un título (sin restos de código tipo `foo()`, flechas o JSON)
+     * y la recortamos a 60 chars. Bloques <think>…</think> se descartan enteros.
+     */
+    private fun sanitizeTitle(raw: String): String? {
+        val withoutThink = raw.replace(Regex("(?s)<think>.*?(</think>|$)"), "")
+        val candidates = withoutThink.lineSequence()
+            .map { it.trim().removeSurrounding("\"").removeSurrounding("'").trim('*', '#', '`', ' ') }
+            .filter { it.isNotBlank() }
+            .toList()
+        // Preferir una línea sin pinta de código/diagrama; si todas la tienen, usar la última.
+        val codeLike = Regex("""[(){}<>;=→↓↑`]|\w+\.\w+\(""")
+        val line = candidates.lastOrNull { !it.contains(codeLike) }
+            ?: candidates.lastOrNull()
+            ?: return null
+        val cleaned = line.removeSuffix(".").trim()
+        if (cleaned.isBlank()) return null
+        return if (cleaned.length <= 60) cleaned else cleaned.take(60).substringBeforeLast(' ').ifBlank { cleaned.take(60) }
     }
 
     /**
@@ -198,10 +252,6 @@ class ModelRepositoryImpl(
 
     private val suggestionsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
-    private fun newId(): String =
-        Clock.System.now().toEpochMilliseconds().toString(36) +
-            "-" + Random.nextInt(0, 1_000_000).toString(36)
-
     private class ToolCallBuilder {
         var id: String? = null
         var name: String? = null
@@ -218,6 +268,12 @@ class ModelRepositoryImpl(
     }
 
     private companion object {
+        const val TITLE_SYSTEM_PROMPT =
+            "You write titles for chat conversations. Given the first user message and the " +
+                "assistant reply, respond with ONLY the title: 3 to 6 words, in the same " +
+                "language the user wrote in, no quotes, no trailing period, no markdown, " +
+                "no explanation."
+
         const val SUGGESTIONS_SYSTEM_PROMPT =
             "You generate short example prompts for a chat app. Reply with ONLY a JSON array " +
                 "of exactly 3 strings, no markdown fences, no commentary, no extra text."

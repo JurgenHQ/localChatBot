@@ -1,88 +1,52 @@
 package com.localchatbot.presentation.features.chat
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalTextStyle
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Row
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.localchatbot.core.confirm.PendingConfirmation
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.fs.rememberDirectoryPicker
 import com.localchatbot.core.image.rememberImagePicker
 import com.localchatbot.core.platform.PlatformCapabilities
-import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.core.voice.VoiceConversationController
 import com.localchatbot.core.voice.VoiceMode
 import com.localchatbot.domain.model.Role
-import com.localchatbot.presentation.components.atoms.AppLogo
-import com.localchatbot.presentation.components.atoms.TypingIndicator
+import com.localchatbot.domain.tools.TodoItem
+import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.presentation.components.molecules.AgentControlsBar
 import com.localchatbot.presentation.components.molecules.ContextUsageBar
-import com.localchatbot.presentation.components.molecules.MessageBubble
+import com.localchatbot.presentation.components.molecules.TodoProgressPanel
 import com.localchatbot.presentation.components.organisms.ChatComposer
+import com.localchatbot.presentation.components.organisms.ChatMessageList
+import com.localchatbot.presentation.components.organisms.ChatSearchBar
 import com.localchatbot.presentation.components.organisms.ChatTopBar
+import com.localchatbot.presentation.components.organisms.ErrorBanner
+import com.localchatbot.presentation.components.organisms.ToolConfirmationDialog
 import com.localchatbot.presentation.features.templates.PromptTemplatesSheet
 import com.localchatbot.presentation.features.voice.VoiceConversationSheet
 import com.localchatbot.presentation.preview.PreviewData
 import com.localchatbot.presentation.preview.PreviewSurface
-import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 /**
@@ -103,6 +67,7 @@ fun ChatScreen(
     chatViewModel: ChatViewModel,
     voiceController: VoiceConversationController,
     toolConfirmationController: ToolConfirmationController,
+    todoTool: TodoTool,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
     showMenuButton: Boolean = true,
@@ -111,15 +76,26 @@ fun ChatScreen(
     val state by chatViewModel.state.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
     val pendingConfirmation by toolConfirmationController.pending.collectAsStateWithLifecycle()
+    val allTodos by todoTool.state.collectAsStateWithLifecycle()
+    val activeSessionId = state.activeSession?.id
+    val todoItems = remember(allTodos, activeSessionId) {
+        if (activeSessionId == null) emptyList() else allTodos[activeSessionId].orEmpty()
+    }
     val imagePicker = rememberImagePicker(onResult = chatViewModel::onImagePicked)
     // Picker de directorio para los chips del agente. En móvil es no-op,
     // pero como la barra solo se renderiza cuando isDesktop, da igual.
     val workspacePicker = rememberDirectoryPicker(onResult = chatViewModel::updateFsWorkspaceDir)
     var templatesOpen by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     Box(modifier = modifier.fillMaxSize()) {
         ChatContent(
             state = state,
+            todoItems = todoItems,
+            onClearTodos = {
+                val sid = activeSessionId ?: return@ChatContent
+                scope.launch { todoTool.clearSession(sid) }
+            },
             onOpenDrawer = onOpenDrawer,
             onNewSession = chatViewModel::newSession,
             onDraftChange = chatViewModel::onDraftChange,
@@ -177,6 +153,8 @@ fun ChatScreen(
 @Composable
 fun ChatContent(
     state: ChatUiState,
+    todoItems: List<TodoItem> = emptyList(),
+    onClearTodos: () -> Unit = {},
     onOpenDrawer: () -> Unit,
     onNewSession: () -> Unit,
     onDraftChange: (String) -> Unit,
@@ -281,6 +259,7 @@ fun ChatContent(
         if (state.activeSession != null && state.tokensUsed > 0 && !searchOpen) {
             ContextUsageBar(tokensUsed = state.tokensUsed, tokensMax = state.tokensMax)
         }
+        TodoProgressPanel(items = todoItems, onClearTodos = onClearTodos)
 
         val dismissKeyboardModifier = Modifier.pointerInput(Unit) {
             detectTapGestures(onTap = { keyboard?.hide() })
@@ -294,59 +273,20 @@ fun ChatContent(
                 modifier = Modifier.weight(1f).then(dismissKeyboardModifier)
             )
         } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().then(dismissKeyboardModifier),
-                verticalArrangement = Arrangement.spacedBy(Spacing.md),
-                contentPadding = PaddingValues(vertical = Spacing.lg)
-            ) {
-                item { DayHeader(epochMs = active.createdAtEpochMs) }
-                // Mostramos todos los mensajes — la navegación por matches hace
-                // scroll a cada uno en lugar de filtrar la lista.
-                val visibleMessages = active.messages
-                val lastAssistantId = visibleMessages
-                    .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
-                    ?.id
-                val activeQuery = if (searchOpen) searchQuery.takeIf { it.isNotBlank() } else null
-                itemsIndexed(visibleMessages, key = { _, msg -> msg.id }) { msgIdx, msg ->
-                    // Leemos currentMatchIndex (State) DENTRO del composable del
-                    // ítem → cada ítem se suscribe y recompone al navegar matches.
-                    val currentAbsIdx = matchIndices.getOrNull(currentMatchIndex) ?: -1
-                    MessageBubble(
-                        message = msg,
-                        onResend = if (msg.role == Role.User && !state.sending) {
-                            { onResendMessage(msg.id) }
-                        } else null,
-                        onEdit = if (msg.role == Role.User && !state.sending) {
-                            { onEditMessage(msg.id) }
-                        } else null,
-                        onCopy = if (msg.role == Role.Assistant && msg.content.isNotBlank()) {
-                            { clipboard.setText(AnnotatedString(msg.content)) }
-                        } else null,
-                        onRegenerate = if (
-                            msg.id == lastAssistantId && !state.sending
-                        ) onRegenerate else null,
-                        onSaveImage = if (msg.imageDataUrl != null) onSaveImage else null,
-                        onTap = { keyboard?.hide() },
-                        highlightQuery = activeQuery,
-                        isCurrentMatch = msgIdx == currentAbsIdx
-                    )
-                }
-                val lastVisible = active.messages.lastOrNull { it.role != Role.Tool }
-                val activity = state.toolActivity
-                val showTyping = state.sending && activity == null && (
-                    lastVisible == null ||
-                    lastVisible.role == Role.User ||
-                    (lastVisible.role == Role.Assistant && lastVisible.content.isBlank())
-                )
-                if (activity != null) {
-                    item {
-                        ToolActivityRow(label = activity.label, detail = activity.detail)
-                    }
-                } else if (showTyping) {
-                    item { AssistantTypingRow() }
-                }
-            }
+            ChatMessageList(
+                session = active,
+                listState = listState,
+                sending = state.sending,
+                toolActivity = state.toolActivity,
+                highlightQuery = if (searchOpen) searchQuery.takeIf { it.isNotBlank() } else null,
+                currentMatchAbsIndex = matchIndices.getOrNull(currentMatchIndex) ?: -1,
+                onResendMessage = onResendMessage,
+                onEditMessage = onEditMessage,
+                onRegenerate = onRegenerate,
+                onSaveImage = onSaveImage,
+                onTapMessage = { keyboard?.hide() },
+                modifier = Modifier.weight(1f).fillMaxWidth().then(dismissKeyboardModifier)
+            )
         }
 
         state.errorMessage?.let { msg ->
@@ -387,251 +327,6 @@ fun ChatContent(
         )
         Spacer(Modifier.height(Spacing.xs))
     }
-}
-
-@Composable
-private fun AssistantTypingRow() {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        AppLogo(size = 28.dp)
-        Box(modifier = Modifier.padding(top = 8.dp)) {
-            TypingIndicator()
-        }
-    }
-}
-
-/**
- * Banner compacto para mostrar errores sobre el composer. Diseñado a propósito
- * con altura limitada (1 línea de resumen + acciones) para que un mensaje muy
- * largo — típico de errores HTTP con cuerpo o stack traces — no empuje el
- * composer fuera de la pantalla y bloquee la interacción con el teclado.
- *
- * Si el mensaje no cabe en una línea, aparece "Detalles" para abrir un diálogo
- * scrollable con el texto completo.
- */
-@Composable
-private fun ErrorBanner(
-    message: String,
-    onDismiss: () -> Unit,
-    onCopy: () -> Unit
-) {
-    var detailsOpen by remember(message) { mutableStateOf(false) }
-
-    val firstLine = message.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-    val isLong = message.length > 120 || message.contains('\n')
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Spacing.lg, vertical = Spacing.sm)
-            .clip(RoundedCornerShape(Radius.md))
-            .background(MaterialTheme.colorScheme.errorContainer)
-            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        Icon(
-            imageVector = Icons.Default.ErrorOutline,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onErrorContainer,
-            modifier = Modifier.height(20.dp)
-        )
-        Text(
-            text = firstLine.ifBlank { "Error" },
-            modifier = Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        if (isLong) {
-            TextButton(
-                onClick = { detailsOpen = true },
-                contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp)
-            ) {
-                Text(
-                    "Detalles",
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    style = MaterialTheme.typography.labelLarge
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(Radius.sm))
-                .clickable(onClick = onDismiss)
-                .padding(Spacing.xs),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Cerrar",
-                tint = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.height(18.dp)
-            )
-        }
-    }
-
-    if (detailsOpen) {
-        ErrorDetailsDialog(
-            message = message,
-            onCopy = onCopy,
-            onDismiss = { detailsOpen = false }
-        )
-    }
-}
-
-@Composable
-private fun ErrorDetailsDialog(
-    message: String,
-    onCopy: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Detalles del error", style = MaterialTheme.typography.titleMedium)
-        },
-        text = {
-            // Caja con altura máxima para que en errores enormes la tarjeta del
-            // diálogo no crezca fuera de pantalla; el contenido scrollea dentro.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 360.dp)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(Spacing.md)
-            ) {
-                Text(
-                    text = message,
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cerrar") }
-        },
-        dismissButton = {
-            TextButton(onClick = {
-                onCopy()
-                onDismiss()
-            }) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ContentCopy,
-                        contentDescription = null,
-                        modifier = Modifier.height(16.dp)
-                    )
-                    Text("Copiar")
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun ToolActivityRow(label: String, detail: String?) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        AppLogo(size = 28.dp)
-        Column(
-            modifier = Modifier.weight(1f).padding(top = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (!detail.isNullOrBlank()) {
-                Text(
-                    text = "\"${detail}\"",
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2
-                )
-            }
-            TypingIndicator(dotSize = 6.dp)
-        }
-    }
-}
-
-@Composable
-private fun DayHeader(epochMs: Long) {
-    val dt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
-    val h = dt.hour.toString().padStart(2, '0')
-    val m = dt.minute.toString().padStart(2, '0')
-    Text(
-        text = "HOY  ·  $h:$m",
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-        textAlign = TextAlign.Center
-    )
-}
-
-@Composable
-private fun ToolConfirmationDialog(
-    pending: PendingConfirmation,
-    onApprove: () -> Unit,
-    onReject: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onReject,
-        title = {
-            Text(
-                pending.title,
-                style = MaterialTheme.typography.titleMedium
-            )
-        },
-        text = {
-            val detail = pending.detail
-            if (detail.isNullOrBlank()) {
-                Text(
-                    "El modelo quiere ejecutar esta acción.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp)
-                        .clip(RoundedCornerShape(Radius.sm))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(Spacing.md)
-                ) {
-                    Text(
-                        text = detail,
-                        modifier = Modifier.verticalScroll(rememberScrollState()),
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onApprove) {
-                Text("Aprobar", color = MaterialTheme.colorScheme.primary)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onReject) {
-                Text("Rechazar", color = MaterialTheme.colorScheme.error)
-            }
-        }
-    )
 }
 
 @Preview
@@ -695,107 +390,4 @@ private fun ChatWithMessagesDarkPreview() = PreviewSurface(themeMode = ThemeMode
         ),
         onOpenDrawer = {}, onNewSession = {}, onDraftChange = {}, onSend = {}, onAttach = {}
     )
-}
-
-@Composable
-private fun ChatSearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    matchCount: Int,
-    currentDisplayIndex: Int,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-    onClose: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(Radius.md))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-        ) {
-            Icon(
-                Icons.Default.Search,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-            Box(modifier = Modifier.weight(1f)) {
-                if (query.isEmpty()) {
-                    Text(
-                        "Buscar en esta conversación",
-                        style = LocalTextStyle.current.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                }
-                BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                    textStyle = LocalTextStyle.current.copy(
-                        color = MaterialTheme.colorScheme.onBackground
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (query.isNotEmpty()) {
-                Text(
-                    text = if (matchCount == 0) "0/0" else "$currentDisplayIndex/$matchCount",
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        SearchArrowButton(
-            icon = Icons.Default.KeyboardArrowUp,
-            contentDescription = "Anterior",
-            enabled = matchCount > 0,
-            onClick = onPrev
-        )
-        SearchArrowButton(
-            icon = Icons.Default.KeyboardArrowDown,
-            contentDescription = "Siguiente",
-            enabled = matchCount > 0,
-            onClick = onNext
-        )
-        SearchArrowButton(
-            icon = Icons.Default.Close,
-            contentDescription = "Cerrar búsqueda",
-            enabled = true,
-            onClick = onClose
-        )
-    }
-}
-
-@Composable
-private fun SearchArrowButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val tint = if (enabled) MaterialTheme.colorScheme.onBackground
-    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(Radius.sm))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(Spacing.sm),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(icon, contentDescription = contentDescription, tint = tint)
-    }
 }

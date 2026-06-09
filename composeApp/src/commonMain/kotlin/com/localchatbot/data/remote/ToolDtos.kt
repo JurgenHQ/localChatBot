@@ -33,7 +33,11 @@ data class FunctionCall(
 
 @Serializable
 data class ToolCallDelta(
-    val index: Int,
+    // Algunos servers/modelos (LM Studio con ciertos modelos, Ollama, fine-tunes
+    // sin el formato estricto de OpenAI) omiten `index` cuando solo hay un tool_call.
+    // Lo dejamos nullable para evitar que el chunk completo falle al parsear: el
+    // consumidor asume 0 si falta.
+    val index: Int? = null,
     val id: String? = null,
     val type: String? = null,
     val function: FunctionCallDelta? = null

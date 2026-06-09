@@ -15,16 +15,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
- * Tool que crea (o sobrescribe) un archivo de texto en el workspace.
- *
- * Patrón estándar:
- * 1. Parse del JSON.
- * 2. Resolución y validación del path (sandbox).
- * 3. Solicitud de aprobación al usuario (skip si YOLO).
- * 4. Llamada al [FilesystemAgent].
- * 5. Serialización del resultado a JSON para el modelo.
+ * Tool que edita un archivo existente reemplazando un fragmento exacto de texto.
+ * Mucho más barato en tokens (y menos arriesgado) que reescribir el archivo
+ * entero con `create_file`: el modelo solo emite el fragmento viejo y el nuevo.
  */
-class CreateFileTool(
+class EditFileTool(
     private val agent: FilesystemAgent,
     private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
@@ -34,7 +29,7 @@ class CreateFileTool(
     override val name: String = TOOL_NAME
     override val requiresConfirmation: Boolean = true
 
-    override val activityLabel: String = "Creando archivo…"
+    override val activityLabel: String = "Editando archivo…"
 
     override fun activityDetail(argumentsJson: String): String? = runCatching {
         json.parseToJsonElement(argumentsJson).jsonObject["path"]?.jsonPrimitive?.content
@@ -46,11 +41,12 @@ class CreateFileTool(
         type = "function",
         function = FunctionDefinition(
             name = TOOL_NAME,
-            description = "Creates a UTF-8 text file at the given path. Path can be absolute or " +
-                "relative to the configured workspace. Parent directories are created automatically. " +
-                "By default fails if the file already exists; pass overwrite=true to replace it. " +
-                "Use this for source code, config files, notes — anything text-based. The user is " +
-                "asked to approve every call (unless YOLO mode is on).",
+            description = "Edits an existing UTF-8 text file by replacing an exact string. " +
+                "`old_string` must match the file content EXACTLY (including whitespace and " +
+                "indentation) and must appear exactly once — include surrounding lines to make " +
+                "it unique. Pass replace_all=true to replace every occurrence instead. " +
+                "ALWAYS prefer this over rewriting a whole file with create_file when changing " +
+                "part of an existing file. Read the file first to copy the exact text.",
             parameters = buildJsonObject {
                 put("type", "object")
                 put("properties", buildJsonObject {
@@ -58,18 +54,23 @@ class CreateFileTool(
                         put("type", "string")
                         put("description", "Target file path. Relative paths resolve against the workspace.")
                     })
-                    put("content", buildJsonObject {
+                    put("old_string", buildJsonObject {
                         put("type", "string")
-                        put("description", "UTF-8 text content to write.")
+                        put("description", "Exact text to replace. Must be unique in the file unless replace_all=true.")
                     })
-                    put("overwrite", buildJsonObject {
+                    put("new_string", buildJsonObject {
+                        put("type", "string")
+                        put("description", "Replacement text.")
+                    })
+                    put("replace_all", buildJsonObject {
                         put("type", "boolean")
-                        put("description", "If true, overwrite an existing file. Defaults to false.")
+                        put("description", "If true, replace every occurrence of old_string. Defaults to false.")
                     })
                 })
                 put("required", buildJsonArray {
                     add(JsonPrimitive("path"))
-                    add(JsonPrimitive("content"))
+                    add(JsonPrimitive("old_string"))
+                    add(JsonPrimitive("new_string"))
                 })
                 put("additionalProperties", false)
             }
@@ -82,9 +83,11 @@ class CreateFileTool(
 
         val path = args["path"]?.jsonPrimitive?.content
             ?: return FsToolUtil.errorPayload(json, "Argumento 'path' faltante")
-        val content = args["content"]?.jsonPrimitive?.content
-            ?: return FsToolUtil.errorPayload(json, "Argumento 'content' faltante")
-        val overwrite = args["overwrite"]?.jsonPrimitive?.booleanOrNull == true
+        val oldString = args["old_string"]?.jsonPrimitive?.content
+            ?: return FsToolUtil.errorPayload(json, "Argumento 'old_string' faltante")
+        val newString = args["new_string"]?.jsonPrimitive?.content
+            ?: return FsToolUtil.errorPayload(json, "Argumento 'new_string' faltante")
+        val replaceAll = args["replace_all"]?.jsonPrimitive?.booleanOrNull == true
 
         val abs = FsToolUtil.resolvePath(agent, preferences, json, path).getOrElse { e ->
             return FsToolUtil.errorPayload(json, e.message ?: "Path inválido")
@@ -92,22 +95,23 @@ class CreateFileTool(
 
         val detail = buildString {
             append(abs)
-            append("\n\n")
-            append(content.take(800))
-            if (content.length > 800) append("\n…")
-            if (overwrite) append("\n\n⚠ overwrite=true — se reemplaza el archivo existente")
+            append("\n\n− ").append(oldString.take(400))
+            if (oldString.length > 400) append("\n…")
+            append("\n\n+ ").append(newString.take(400))
+            if (newString.length > 400) append("\n…")
+            if (replaceAll) append("\n\n⚠ replace_all=true — se reemplazan todas las ocurrencias")
         }
 
         val approved = confirm.requestApproval(
-            title = "Crear archivo",
+            title = "Editar archivo",
             detail = detail
         )
         if (!approved) return FsToolUtil.cancelledPayload(json)
 
-        return FsToolUtil.fsResultToJson(json, agent.createFile(abs, content, overwrite))
+        return FsToolUtil.fsResultToJson(json, agent.editFile(abs, oldString, newString, replaceAll))
     }
 
     companion object {
-        const val TOOL_NAME = "create_file"
+        const val TOOL_NAME = "edit_file"
     }
 }

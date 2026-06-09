@@ -43,7 +43,15 @@ fun main() {
         )
         // Reusamos el mismo AppContainer entre App() y cualquier configuración
         // de ventana (no creamos uno nuevo al recomponer).
-        val container = remember { AppContainer() }
+        val container = remember {
+            AppContainer().also { c ->
+                // La persistencia de sesiones escribe con throttle de 250ms;
+                // sin este hook, las últimas mutaciones se pierden al cerrar.
+                Runtime.getRuntime().addShutdownHook(
+                    Thread { c.chatRepository.flushPendingWrites() }
+                )
+            }
+        }
         Window(
             onCloseRequest = ::exitApplication,
             state = windowState,

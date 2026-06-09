@@ -14,7 +14,7 @@ import kotlinx.serialization.json.JsonObject
  * 2. Las operaciones (`createFile`, `readFile`, `runCommand`, etc.) reciben ya
  *    el path absoluto ya resuelto.
  *
- * La separación permite que las 5 tools compartan el mismo código de validación
+ * La separación permite que las tools de fs/shell compartan el mismo código de validación
  * sin duplicar lógica en cada una.
  */
 expect class FilesystemAgent() {
@@ -49,6 +49,25 @@ expect class FilesystemAgent() {
 
     /** Lista las entradas (no recursivo) del directorio en [absPath]. */
     suspend fun listDirectory(absPath: String): FsResult
+
+    /**
+     * Edita el archivo en [absPath] reemplazando [oldString] por [newString].
+     * Si [replaceAll] es false, [oldString] debe aparecer exactamente una vez —
+     * si aparece 0 o más de 1 vez retorna [FsResult.Err] (evita reemplazos
+     * ambiguos). Con [replaceAll] true reemplaza todas las ocurrencias.
+     */
+    suspend fun editFile(
+        absPath: String,
+        oldString: String,
+        newString: String,
+        replaceAll: Boolean
+    ): FsResult
+
+    /**
+     * Elimina el archivo en [absPath]. Si es un directorio, solo lo elimina
+     * cuando está vacío o cuando [recursive] es true (borra todo su contenido).
+     */
+    suspend fun deletePath(absPath: String, recursive: Boolean): FsResult
 
     /**
      * Ejecuta [command] en una shell con [workingDir] como cwd.

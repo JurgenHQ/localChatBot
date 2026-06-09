@@ -107,7 +107,7 @@ class ChatViewModel(
             ?: 0
         ChatUiState(
             activeSession = active,
-            modelName = prefs.connection.model,
+            modelName = active?.model?.takeIf { it.isNotBlank() } ?: prefs.connection.model,
             draft = local.draft,
             sending = activeId != null && activeId in streamingIds,
             errorMessage = local.errorMessage,
@@ -135,13 +135,19 @@ class ChatViewModel(
             }
         }
 
-        // Cuando cambian la conexión o el modelo, intentar leer el context length real
-        // del servidor (LM Studio lo expone). Si no, mantenemos el default.
+        // Cuando cambian la conexión, el modelo configurado, o el modelo real devuelto
+        // por el servidor (activeSession.model), re-fetchear el context length.
         viewModelScope.launch {
-            preferences.preferences
-                .map { it.connection }
-                .distinctUntilChanged { a, b -> a.baseUrl() == b.baseUrl() && a.model == b.model }
-                .collect { cfg ->
+            combine(
+                preferences.preferences.map { it.connection },
+                state.map { it.activeSession?.model.orEmpty() }
+            ) { cfg, sessionModel -> cfg to sessionModel }
+                .distinctUntilChanged { a, b ->
+                    a.first.baseUrl() == b.first.baseUrl() &&
+                    a.first.model == b.first.model &&
+                    a.second == b.second
+                }
+                .collect { (cfg, _) ->
                     if (!cfg.isValid()) {
                         _tokensMax.value = DEFAULT_CONTEXT_LENGTH
                         return@collect
@@ -254,8 +260,13 @@ class ChatViewModel(
     }
 
     /**
-     * Carga el contenido (texto e imagen) de un mensaje del usuario en el composer para editarlo,
-     * eliminándolo junto con sus respuestas. Tras editar y pulsar enviar, se manda como nuevo.
+     * Carga el contenido (texto e imagen) de un mensaje del usuario en el composer
+     * para que el usuario pueda modificarlo y enviarlo como **mensaje nuevo**.
+     *
+     * **No toca el historial**: el mensaje original y todas las respuestas
+     * posteriores quedan intactos. Al pulsar enviar, el texto se manda como un
+     * mensaje nuevo al final de la conversación, igual que si lo hubieras
+     * escrito desde cero.
      */
     @OptIn(ExperimentalEncodingApi::class)
     fun editMessage(messageId: String) {
@@ -272,15 +283,12 @@ class ChatViewModel(
             ?.takeIf { it.isNotEmpty() }
             ?.let { runCatching { Base64.decode(it) }.getOrNull() }
 
-        applicationScope.launch {
-            chatRepository.deleteMessagesFrom(activeId, messageId)
-            _local.update {
-                it.copy(
-                    draft = text,
-                    attachedImageBytes = imageBytes,
-                    errorMessage = null
-                )
-            }
+        _local.update {
+            it.copy(
+                draft = text,
+                attachedImageBytes = imageBytes,
+                errorMessage = null
+            )
         }
     }
 

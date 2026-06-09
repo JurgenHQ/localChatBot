@@ -4,6 +4,7 @@ import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
 import com.localchatbot.domain.model.WebSource
+import com.localchatbot.core.util.newId
 import com.localchatbot.domain.repository.ChatRepository
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
@@ -17,7 +18,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import kotlinx.serialization.json.Json
-import kotlin.random.Random
 
 class ChatRepositoryImpl(
     private val settings: Settings,
@@ -136,9 +136,29 @@ class ChatRepositoryImpl(
         }
     }
 
+    override suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String) {
+        mutate { list ->
+            list.map { s ->
+                if (s.id != sessionId) s
+                else s.copy(
+                    messages = s.messages.map { m ->
+                        if (m.id == messageId) m.copy(reasoning = reasoning) else m
+                    },
+                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
+                )
+            }
+        }
+    }
+
     override suspend fun updateTitle(sessionId: String, title: String) {
         mutate { list ->
             list.map { s -> if (s.id == sessionId) s.copy(title = title) else s }
+        }
+    }
+
+    override suspend fun updateModel(sessionId: String, model: String) {
+        mutate { list ->
+            list.map { s -> if (s.id == sessionId) s.copy(model = model) else s }
         }
     }
 
@@ -167,8 +187,21 @@ class ChatRepositoryImpl(
     override suspend fun clearAll() {
         // Cancela cualquier persistencia pendiente y limpia inmediatamente.
         pendingPersist?.cancel()
-        settings.remove(KEY_SESSIONS)
+        _sessions.value.forEach { settings.remove(sessionKey(it.id)) }
+        settings.remove(KEY_SESSION_IDS)
+        settings.remove(KEY_SESSIONS_LEGACY)
         _sessions.value = emptyList()
+        lastPersisted = emptyMap()
+    }
+
+    /**
+     * Escritura síncrona inmediata de lo pendiente. Llamado desde el shutdown
+     * hook de desktop: sin esto, los últimos [PERSIST_THROTTLE_MS] ms de
+     * mutaciones se perdían al cerrar la app.
+     */
+    override fun flushPendingWrites() {
+        pendingPersist?.cancel()
+        persist(_sessions.value)
     }
 
     private fun mutate(transform: (List<ChatSession>) -> List<ChatSession>) {
@@ -197,34 +230,75 @@ class ChatRepositoryImpl(
         }
     }
 
+    /**
+     * Snapshot (por referencia) de la última lista persistida. Las funciones
+     * `mutate` solo crean instancias nuevas para las sesiones que tocan
+     * (`else s` devuelve la misma referencia), así que comparar referencias
+     * por id detecta exactamente las sesiones sucias — solo esas se
+     * serializan, en lugar de la lista entera en cada escritura.
+     */
+    private var lastPersisted: Map<String, ChatSession> = _sessions.value.associateBy { it.id }
+
     private fun persist(list: List<ChatSession>) {
-        // imageDataUrl son base64 de varios cientos de KB. Persistirlos haría que
-        // plataformas con límite de tamaño por clave (Java Preferences: 8 KB) fallen
-        // silenciosamente. Las imágenes son transitorias — si el usuario las necesita
-        // las guarda explícitamente con "Guardar imagen".
-        val stripped = list.map { session ->
-            session.copy(messages = session.messages.map { msg ->
-                if (msg.imageDataUrl != null) msg.copy(imageDataUrl = null) else msg
-            })
-        }
         runCatching {
-            val raw = json.encodeToString(SessionsSerializer, stripped)
-            settings.putString(KEY_SESSIONS, raw)
+            val dirty = list.filter { lastPersisted[it.id] !== it }
+            val deletedIds = lastPersisted.keys - list.map { it.id }.toSet()
+
+            dirty.forEach { session ->
+                // imageDataUrl son base64 de varios cientos de KB. No se persisten:
+                // son transitorias — si el usuario las necesita las guarda
+                // explícitamente con "Guardar imagen".
+                val stripped = session.copy(messages = session.messages.map { msg ->
+                    if (msg.imageDataUrl != null) msg.copy(imageDataUrl = null) else msg
+                })
+                settings.putString(sessionKey(session.id), json.encodeToString(ChatSession.serializer(), stripped))
+            }
+            deletedIds.forEach { settings.remove(sessionKey(it)) }
+
+            if (dirty.isNotEmpty() || deletedIds.isNotEmpty()) {
+                settings.putString(KEY_SESSION_IDS, json.encodeToString(IdsSerializer, list.map { it.id }))
+            }
+            lastPersisted = list.associateBy { it.id }
         }
     }
 
+    /**
+     * Carga el índice de IDs y cada sesión desde su propia clave. Si existe la
+     * clave legacy (toda la lista en un único JSON, formato anterior), migra a
+     * clave-por-sesión y elimina la clave vieja — solo cuando la decodificación
+     * tuvo éxito, para no destruir datos ante un JSON corrupto.
+     */
     private fun load(): List<ChatSession> {
-        val raw = settings.getStringOrNull(KEY_SESSIONS) ?: return emptyList()
-        return runCatching { json.decodeFromString(SessionsSerializer, raw) }.getOrDefault(emptyList())
+        migrateLegacyIfNeeded()
+        val idsRaw = settings.getStringOrNull(KEY_SESSION_IDS) ?: return emptyList()
+        val ids = runCatching { json.decodeFromString(IdsSerializer, idsRaw) }.getOrDefault(emptyList())
+        return ids.mapNotNull { id ->
+            settings.getStringOrNull(sessionKey(id))?.let { raw ->
+                runCatching { json.decodeFromString(ChatSession.serializer(), raw) }.getOrNull()
+            }
+        }
     }
 
-    private fun newId(): String =
-        Clock.System.now().toEpochMilliseconds().toString(36) +
-            "-" + Random.nextInt(0, 1_000_000).toString(36)
+    private fun migrateLegacyIfNeeded() {
+        val raw = settings.getStringOrNull(KEY_SESSIONS_LEGACY) ?: return
+        val list = runCatching { json.decodeFromString(SessionsSerializer, raw) }.getOrNull() ?: return
+        runCatching {
+            list.forEach { session ->
+                settings.putString(sessionKey(session.id), json.encodeToString(ChatSession.serializer(), session))
+            }
+            settings.putString(KEY_SESSION_IDS, json.encodeToString(IdsSerializer, list.map { it.id }))
+            settings.remove(KEY_SESSIONS_LEGACY)
+        }
+    }
+
+    private fun sessionKey(id: String): String = "$KEY_SESSION_PREFIX$id"
 
     private companion object {
-        const val KEY_SESSIONS = "chat_sessions"
+        const val KEY_SESSIONS_LEGACY = "chat_sessions"
+        const val KEY_SESSION_IDS = "chat_session_ids"
+        const val KEY_SESSION_PREFIX = "chat_session_"
         const val PERSIST_THROTTLE_MS = 250L
         val SessionsSerializer = kotlinx.serialization.builtins.ListSerializer(ChatSession.serializer())
+        val IdsSerializer = kotlinx.serialization.builtins.ListSerializer(kotlinx.serialization.serializer<String>())
     }
 }

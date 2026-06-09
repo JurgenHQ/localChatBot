@@ -7,14 +7,19 @@ import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/** Tool que lee un archivo de texto. Trunca a 200 KB para no inflar el contexto. */
-class ReadFileTool(
+/**
+ * Tool que elimina un archivo o directorio del workspace. Siempre pide
+ * confirmación al usuario (incluso el detail resalta el borrado recursivo)
+ * porque la operación es irreversible.
+ */
+class DeleteFileTool(
     private val agent: FilesystemAgent,
     private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
@@ -24,7 +29,7 @@ class ReadFileTool(
     override val name: String = TOOL_NAME
     override val requiresConfirmation: Boolean = true
 
-    override val activityLabel: String = "Leyendo archivo…"
+    override val activityLabel: String = "Eliminando…"
 
     override fun activityDetail(argumentsJson: String): String? = runCatching {
         json.parseToJsonElement(argumentsJson).jsonObject["path"]?.jsonPrimitive?.content
@@ -36,16 +41,19 @@ class ReadFileTool(
         type = "function",
         function = FunctionDefinition(
             name = TOOL_NAME,
-            description = "Reads a UTF-8 text file. Path can be absolute or relative to the workspace. " +
-                "Truncated at 200 KB; the response includes `truncated=true` if the file is larger — " +
-                "use `run_command` with `head`/`tail` for slices of bigger files. The user is asked " +
-                "to approve every call (unless YOLO) — files may contain sensitive data.",
+            description = "Deletes a file or directory. Directories are only deleted when empty " +
+                "unless recursive=true (which removes all contents). This is irreversible — the " +
+                "user is asked to approve every call.",
             parameters = buildJsonObject {
                 put("type", "object")
                 put("properties", buildJsonObject {
                     put("path", buildJsonObject {
                         put("type", "string")
-                        put("description", "Target file path.")
+                        put("description", "File or directory to delete. Relative paths resolve against the workspace.")
+                    })
+                    put("recursive", buildJsonObject {
+                        put("type", "boolean")
+                        put("description", "If true, delete a non-empty directory with all its contents. Defaults to false.")
                     })
                 })
                 put("required", buildJsonArray { add(JsonPrimitive("path")) })
@@ -60,21 +68,28 @@ class ReadFileTool(
 
         val path = args["path"]?.jsonPrimitive?.content
             ?: return FsToolUtil.errorPayload(json, "Argumento 'path' faltante")
+        val recursive = args["recursive"]?.jsonPrimitive?.booleanOrNull == true
 
         val abs = FsToolUtil.resolvePath(agent, preferences, json, path).getOrElse { e ->
             return FsToolUtil.errorPayload(json, e.message ?: "Path inválido")
         }
 
+        val detail = buildString {
+            append(abs)
+            if (recursive) append("\n\n⚠ recursive=true — se borra el directorio CON TODO su contenido")
+            append("\n\nEsta acción es irreversible.")
+        }
+
         val approved = confirm.requestApproval(
-            title = "Leer archivo",
-            detail = abs
+            title = "Eliminar archivo/directorio",
+            detail = detail
         )
         if (!approved) return FsToolUtil.cancelledPayload(json)
 
-        return FsToolUtil.fsResultToJson(json, agent.readFile(abs))
+        return FsToolUtil.fsResultToJson(json, agent.deletePath(abs, recursive))
     }
 
     companion object {
-        const val TOOL_NAME = "read_file"
+        const val TOOL_NAME = "delete_file"
     }
 }

@@ -12,7 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * Helpers compartidos por las 5 tools de filesystem/shell.
+ * Helpers compartidos por las tools de filesystem/shell.
  *
  * Centraliza:
  * - Construcción de payloads de error JSON.

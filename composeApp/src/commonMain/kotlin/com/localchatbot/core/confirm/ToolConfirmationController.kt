@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Coordina solicitudes de aprobación humana entre las tools (capa de datos)
@@ -18,6 +20,9 @@ import kotlinx.coroutines.flow.update
  *
  * Cuando `prefs.current().fsYoloMode` está activo, el método retorna `true`
  * inmediatamente sin tocar el state flow — la tool se ejecuta sin diálogo.
+ * Excepción: con [force] true el diálogo se muestra siempre, incluso en YOLO
+ * (usado por run_command cuando el comando matchea la denylist de patrones
+ * destructivos).
  */
 class ToolConfirmationController(
     private val prefs: PreferencesRepository
@@ -28,22 +33,30 @@ class ToolConfirmationController(
 
     private var counter: Long = 0
 
-    suspend fun requestApproval(title: String, detail: String?): Boolean {
-        if (prefs.current().fsYoloMode) return true
-        val deferred = CompletableDeferred<Boolean>()
-        val confirmation = PendingConfirmation(
-            id = nextId(),
-            title = title,
-            detail = detail,
-            response = deferred
-        )
-        _pending.update { confirmation }
-        return try {
-            deferred.await()
-        } finally {
-            // Si dos tools se cruzaran (no debería pasar, pero por defensa) solo
-            // limpiamos cuando seguimos siendo la confirmación visible.
-            _pending.update { current -> if (current?.id == confirmation.id) null else current }
+    /**
+     * Serializa las solicitudes: el slot de UI es único, y en YOLO la ruta de
+     * ejecución de tools es paralela — sin mutex, dos confirmaciones forzadas
+     * simultáneas (denylist) se pisarían y una quedaría suspendida para siempre.
+     */
+    private val mutex = Mutex()
+
+    suspend fun requestApproval(title: String, detail: String?, force: Boolean = false): Boolean {
+        if (!force && prefs.current().fsYoloMode) return true
+        return mutex.withLock {
+            val deferred = CompletableDeferred<Boolean>()
+            val confirmation = PendingConfirmation(
+                id = nextId(),
+                title = title,
+                detail = detail,
+                response = deferred
+            )
+            _pending.update { confirmation }
+            try {
+                deferred.await()
+            } finally {
+                // Solo limpiamos cuando seguimos siendo la confirmación visible.
+                _pending.update { current -> if (current?.id == confirmation.id) null else current }
+            }
         }
     }
 

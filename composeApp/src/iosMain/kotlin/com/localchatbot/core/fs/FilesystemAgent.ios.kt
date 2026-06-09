@@ -21,6 +21,12 @@ actual class FilesystemAgent {
     actual suspend fun listDirectory(absPath: String): FsResult =
         FsResult.Err("Filesystem tools no disponibles en iOS")
 
+    actual suspend fun editFile(absPath: String, oldString: String, newString: String, replaceAll: Boolean): FsResult =
+        FsResult.Err("Filesystem tools no disponibles en iOS")
+
+    actual suspend fun deletePath(absPath: String, recursive: Boolean): FsResult =
+        FsResult.Err("Filesystem tools no disponibles en iOS")
+
     actual suspend fun runCommand(command: String, workingDir: String, timeoutSeconds: Int, background: Boolean, startupCheckSeconds: Int): FsResult =
         FsResult.Err("Filesystem tools no disponibles en iOS")
 }

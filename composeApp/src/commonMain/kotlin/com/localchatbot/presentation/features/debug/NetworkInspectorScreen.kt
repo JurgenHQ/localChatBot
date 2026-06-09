@@ -514,13 +514,15 @@ private fun CodeBlock(
                 val annotated = remember(content, query, currentOffset, highlightAll, highlightCurrent) {
                     buildHighlight(content, query, currentOffset, highlightAll, highlightCurrent)
                 }
-                Text(
-                    text = annotated,
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    onTextLayout = onLayout
-                )
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    Text(
+                        text = annotated,
+                        softWrap = false,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        onTextLayout = onLayout
+                    )
+                }
             }
         }
     }

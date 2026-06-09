@@ -27,11 +27,14 @@ import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.tools.CreateDirectoryTool
 import com.localchatbot.domain.tools.CreateFileTool
+import com.localchatbot.domain.tools.DeleteFileTool
 import com.localchatbot.domain.tools.DiagramRenderTool
+import com.localchatbot.domain.tools.EditFileTool
 import com.localchatbot.domain.tools.ImageGenerationTool
 import com.localchatbot.domain.tools.ListDirectoryTool
 import com.localchatbot.domain.tools.ReadFileTool
 import com.localchatbot.domain.tools.RunCommandTool
+import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.WebSearchTool
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
@@ -93,7 +96,10 @@ class AppContainer {
      */
     val toolConfirmationController = ToolConfirmationController(preferencesRepository)
 
+    val todoTool = TodoTool(activeSessionStore)
     private val createFileTool = CreateFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val editFileTool = EditFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val deleteFileTool = DeleteFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val createDirectoryTool = CreateDirectoryTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val readFileTool = ReadFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val listDirectoryTool = ListDirectoryTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
@@ -101,10 +107,13 @@ class AppContainer {
 
     val toolRegistry = ToolRegistry(
         listOf(
+            todoTool,
             webSearchTool,
             imageGenerationTool,
             diagramRenderTool,
             createFileTool,
+            editFileTool,
+            deleteFileTool,
             createDirectoryTool,
             readFileTool,
             listDirectoryTool,
@@ -119,7 +128,8 @@ class AppContainer {
         prefs = preferencesRepository,
         toolRegistry = toolRegistry,
         streamingStateStore = streamingStateStore,
-        json = json
+        json = json,
+        scope = applicationScope
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
