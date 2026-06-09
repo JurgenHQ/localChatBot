@@ -68,14 +68,16 @@ class ModelRepositoryImpl(
         baseUrl: String,
         model: String,
         messages: List<ChatMessage>,
-        tools: List<ToolDefinition>?
+        tools: List<ToolDefinition>?,
+        maxTokens: Int?
     ): Flow<StreamEvent> = flow {
         val req = ChatCompletionRequest(
             model = model,
             messages = messages.map { it.toDto() },
             stream = true,
             tools = tools,
-            toolChoice = if (tools.isNullOrEmpty()) null else "auto"
+            toolChoice = if (tools.isNullOrEmpty()) null else "auto",
+            maxTokens = maxTokens
             // Temperatura: dejamos el default del servidor (suele ser ~0.7) para que
             // las conversaciones normales suenen naturales. El precio es que la
             // decisión "¿invoco la tool?" no es 100% determinista — pero cuando hay

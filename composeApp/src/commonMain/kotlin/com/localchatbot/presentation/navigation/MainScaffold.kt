@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.di.AppContainer
 import com.localchatbot.presentation.components.organisms.AppBottomBar
 import com.localchatbot.presentation.components.organisms.BottomTab
@@ -127,6 +128,9 @@ fun MainScaffold(container: AppContainer) {
                                 else sessionsViewModel.openDrawer()
                             },
                             onChangeModel = { modelPickerOpen = true },
+                            onCarMode = if (PlatformCapabilities.carModeSupported) {
+                                { container.carSessionManager.startCarMode() }
+                            } else null,
                             showMenuButton = true
                         )
                         BottomTab.Settings -> SettingsScreen(

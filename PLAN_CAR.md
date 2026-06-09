@@ -46,42 +46,39 @@ abordar CarPlay cuando Apple conceda el entitlement.
 La app ya tiene TTS y reconocimiento de voz (`expect/actual` en `core/`), lo que adelanta
 gran parte del trabajo.
 
-- [ ] **Perfil de herramientas por contexto**: añadir un parámetro al tool loop de
-      `SendMessageUseCase` (`UseCases.kt`) para filtrar el `ToolRegistry` según el contexto
-      de la petición. En modo coche solo `search_web` tiene sentido; deshabilitar
-      `generate_image`, `render_diagram`, filesystem tools, `run_command` y `manage_todos`.
-- [ ] **`CarSessionManager`** en `commonMain`: sesión de chat dedicada ("modo coche") que
-      reutiliza `SendMessageUseCase` con:
-      - System prompt específico: respuestas en 1–2 frases, sin markdown, sin listas.
-      - `max_tokens` bajo.
-      - Perfil de herramientas "coche".
-- [ ] **`CarMessageStore`** en `core/` (análogo a `ActiveSessionStore`): expone los mensajes
-      del asistente como `Flow` para que las capas Android/iOS los conviertan en
-      notificaciones/mensajes del sistema.
-- [ ] **Modo respuesta completa**: en el coche no se renderiza token a token; acumular el
-      streaming y emitir la respuesta completa para lectura por TTS.
+- [x] **Perfil de herramientas por contexto**: `ChatRequestOverrides` (system prompt,
+      `max_tokens`, `allowedToolNames`) como parámetro opcional de `SendMessageUseCase`;
+      `ToolRegistry.availableDefinitions(allowedNames)` filtra por nombre. En modo coche
+      solo `search_web`.
+- [x] **`CarSessionManager`** en `core/car/`: sesión dedicada "Modo coche" que reutiliza
+      `SendMessageUseCase` con `CAR_OVERRIDES` (1–2 frases, sin markdown, `max_tokens=160`,
+      solo `search_web`). Errores con mensajes pensados para TTS.
+- [x] **`CarMessageStore`** en `core/car/`: `conversation: StateFlow` (hilo reciente) +
+      `incoming: SharedFlow` (eventos one-shot para notificaciones).
+- [x] **Modo respuesta completa**: `CarSessionManager.handleUserUtterance` espera el final
+      del use case y publica la respuesta completa pasada por `markdownToSpeech`.
 
 ## Fase 2 — Android Auto (`androidMain`) (2–3 semanas)
 
 Mensajería en Android Auto = notificaciones `MessagingStyle`. No se necesita
 `androidx.car.app` ni UI propia.
 
-- [ ] **Manifest**: declarar soporte Auto en `AndroidManifest.xml`:
-      - `<meta-data android:name="com.google.android.gms.car.application"
-        android:resource="@xml/automotive_app_desc"/>`
-      - Crear `res/xml/automotive_app_desc.xml` con `<uses name="notification"/>`.
-- [ ] **`CarNotificationService`**: observar `CarMessageStore` y publicar notificaciones
-      `MessagingStyle` con:
-      - Acción **Reply** con `RemoteInput` (respuesta por voz).
-      - Acción **Mark as read** (obligatoria para Android Auto).
-      - `CarAppExtender` (recomendado).
-- [ ] **`BroadcastReceiver`s** de reply/read: el reply recibe el texto dictado y lo pasa a
-      `SendMessageUseCase` a través de `ChatForegroundService` (ya existe y mantiene los
-      streams vivos). La respuesta del modelo se publica como nueva notificación que Auto
-      lee por TTS.
+- [x] **Manifest**: meta-data `com.google.android.gms.car.application` +
+      `res/xml/automotive_app_desc.xml` con `<uses name="notification"/>`.
+- [x] **`CarNotificationPublisher`** (en vez de service): colecciona
+      `CarMessageStore.incoming` desde `Application.onCreate` y publica notificaciones
+      `MessagingStyle` con Reply (`RemoteInput`, `SEMANTIC_ACTION_REPLY`,
+      `showsUserInterface=false`) y Mark-as-read (acción invisible,
+      `SEMANTIC_ACTION_MARK_AS_READ`). Sin `CarAppExtender`: las semantic actions cubren
+      los requisitos de Auto sin dependencia extra.
+- [x] **`CarReplyReceiver` / `CarMarkAsReadReceiver`**: el reply arranca
+      `ChatForegroundService` (vía `backgroundExecutor`) y lanza
+      `CarSessionManager.handleUserUtterance` en `applicationScope`; errores se publican
+      al store para lectura por voz. `AppContainer` pasó a singleton de proceso en
+      `LocalChatBotApp` para que los receivers lo alcancen sin Activity.
 - [ ] **Pruebas con DHU** (Desktop Head Unit, en `sdk/extras/google/auto/`): ciclo completo
       voz → LLM → TTS desde el escritorio.
-- [ ] Decisión consciente: **no** hacer UI con Car App Library (categorías POI/IoT) — un
+- [x] Decisión consciente: **no** hacer UI con Car App Library (categorías POI/IoT) — un
       chatbot no pasaría revisión en esas categorías.
 
 ## Fase 3 — CarPlay / iOS (3–4 semanas, bloqueada por el entitlement)

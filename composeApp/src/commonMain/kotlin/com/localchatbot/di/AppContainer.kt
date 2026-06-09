@@ -2,6 +2,8 @@ package com.localchatbot.di
 
 import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.background.createBackgroundExecutor
+import com.localchatbot.core.car.CarMessageStore
+import com.localchatbot.core.car.CarSessionManager
 import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.debug.NetworkInspector
 import com.localchatbot.core.fs.FilesystemAgent
@@ -133,6 +135,14 @@ class AppContainer {
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
+
+    val carMessageStore = CarMessageStore()
+    val carSessionManager = CarSessionManager(
+        chats = chatRepository,
+        sendMessage = sendMessage,
+        createSession = createSession,
+        store = carMessageStore
+    )
 
     val voiceController = VoiceConversationController(
         recognizer = SpeechRecognizer(),

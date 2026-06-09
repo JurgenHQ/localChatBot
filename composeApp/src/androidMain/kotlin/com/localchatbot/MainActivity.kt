@@ -11,6 +11,6 @@ class MainActivity : ComponentActivity() {
         VoicePermissionBridge.register(this)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContent { App() }
+        setContent { App(container = (application as LocalChatBotApp).container) }
     }
 }

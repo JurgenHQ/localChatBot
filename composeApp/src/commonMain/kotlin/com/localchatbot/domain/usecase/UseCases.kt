@@ -5,6 +5,7 @@ import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ToolCall
 import com.localchatbot.domain.model.ChatMessage
+import com.localchatbot.domain.model.ChatRequestOverrides
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
 import com.localchatbot.domain.model.Role
@@ -59,7 +60,12 @@ class SendMessageUseCase(
      * ejecuta cada tool, persiste su resultado como mensaje role=Tool, y vuelve a hacer
      * streaming hasta que el modelo termine sin más tool_calls. Tope MAX_TOOL_ITERATIONS.
      */
-    suspend operator fun invoke(sessionId: String, text: String, imageDataUrl: String? = null): Result<Unit> {
+    suspend operator fun invoke(
+        sessionId: String,
+        text: String,
+        imageDataUrl: String? = null,
+        overrides: ChatRequestOverrides? = null
+    ): Result<Unit> {
         val now = Clock.System.now().toEpochMilliseconds()
         val userMsg = ChatMessage(
             id = newId(),
@@ -87,7 +93,8 @@ class SendMessageUseCase(
         // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
         // que no puede ejecutar.
-        val tools = toolRegistry.availableDefinitions().takeIf { it.isNotEmpty() }
+        val tools = toolRegistry.availableDefinitions(overrides?.allowedToolNames)
+            .takeIf { it.isNotEmpty() }
 
         return try {
             var iter = 0
@@ -130,8 +137,8 @@ class SendMessageUseCase(
                     return newAssistantId
                 }
 
-                val messagesForApi = buildMessagesForApi(currentMessages, tools != null)
-                model.streamChatWithTools(cfg.baseUrl(), cfg.model, messagesForApi, tools)
+                val messagesForApi = buildMessagesForApi(currentMessages, tools != null, overrides)
+                model.streamChatWithTools(cfg.baseUrl(), cfg.model, messagesForApi, tools, overrides?.maxTokens)
                     .onEach { event ->
                         when (event) {
                             is StreamEvent.ContentDelta -> {
@@ -353,15 +360,22 @@ class SendMessageUseCase(
 
     private suspend fun buildMessagesForApi(
         currentMessages: List<ChatMessage>,
-        hasTools: Boolean
+        hasTools: Boolean,
+        overrides: ChatRequestOverrides? = null
     ): List<ChatMessage> {
         val cfg = prefs.current()
-        val userSystem = cfg.defaultSystemPrompt.trim()
-        val yolo = cfg.fsYoloMode
         val model = cfg.connection.model
-        val toolPrompt = if (hasTools) buildAgentPrompt(yolo) else ""
         val suffix = buildModelSuffix(model)
-        val combined = listOf(userSystem, toolPrompt, suffix).filter { it.isNotBlank() }.joinToString("\n\n")
+        // Un system prompt override reemplaza TODO (user system + agent prompt):
+        // los contextos especiales (modo coche) definen su propio comportamiento
+        // y no quieren el agent prompt completo con tools que no ofrecen.
+        val combined = if (overrides?.systemPrompt != null) {
+            listOf(overrides.systemPrompt.trim(), suffix).filter { it.isNotBlank() }.joinToString("\n\n")
+        } else {
+            val userSystem = cfg.defaultSystemPrompt.trim()
+            val toolPrompt = if (hasTools) buildAgentPrompt(cfg.fsYoloMode) else ""
+            listOf(userSystem, toolPrompt, suffix).filter { it.isNotBlank() }.joinToString("\n\n")
+        }
 
         // Strip leading system message before windowing — it's re-injected below.
         val history = if (currentMessages.firstOrNull()?.role == Role.System) {

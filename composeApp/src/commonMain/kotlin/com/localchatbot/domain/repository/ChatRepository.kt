@@ -49,7 +49,8 @@ interface ModelRepository {
         baseUrl: String,
         model: String,
         messages: List<ChatMessage>,
-        tools: List<ToolDefinition>?
+        tools: List<ToolDefinition>?,
+        maxTokens: Int? = null
     ): Flow<StreamEvent>
 
     suspend fun ping(baseUrl: String): Result<Long>

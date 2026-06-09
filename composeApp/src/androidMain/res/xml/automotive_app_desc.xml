@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declara la integración con Android Auto: solo notificaciones de mensajería
+     (MessagingStyle). Sin UI propia — la dibuja el sistema del coche. -->
+<automotiveApp>
+    <uses name="notification" />
+</automotiveApp>

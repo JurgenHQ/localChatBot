@@ -57,9 +57,14 @@ class ToolRegistry(private val tools: List<Tool>) {
 
     fun allDefinitions(): List<ToolDefinition> = tools.map { it.definition }
 
-    /** Solo las definiciones de tools cuyo [Tool.isAvailable] devuelve true. */
-    suspend fun availableDefinitions(): List<ToolDefinition> =
-        tools.filter { it.isAvailable() }.map { it.definition }
+    /**
+     * Solo las definiciones de tools cuyo [Tool.isAvailable] devuelve true.
+     * Si [allowedNames] no es null, además se filtra por nombre — usado por
+     * perfiles de contexto (p. ej. modo coche: solo `search_web`).
+     */
+    suspend fun availableDefinitions(allowedNames: Set<String>? = null): List<ToolDefinition> =
+        tools.filter { (allowedNames == null || it.name in allowedNames) && it.isAvailable() }
+            .map { it.definition }
 
     fun allTools(): List<Tool> = tools
 

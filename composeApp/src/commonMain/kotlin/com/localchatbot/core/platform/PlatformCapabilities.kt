@@ -20,4 +20,7 @@ expect object PlatformCapabilities {
      * más agresivamente de lo necesario.
      */
     val forceCloseHttpConnection: Boolean
+
+    /** true si el target soporta modo coche (Android Auto vía notificaciones de mensajería). */
+    val carModeSupported: Boolean
 }

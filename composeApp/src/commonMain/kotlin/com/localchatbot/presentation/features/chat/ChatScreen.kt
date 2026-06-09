@@ -70,6 +70,7 @@ fun ChatScreen(
     todoTool: TodoTool,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
+    onCarMode: (() -> Unit)? = null,
     showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -106,6 +107,7 @@ fun ChatScreen(
             onResendMessage = chatViewModel::resendMessage,
             onEditMessage = chatViewModel::editMessage,
             onChangeModel = onChangeModel,
+            onCarMode = onCarMode,
             onStop = chatViewModel::stop,
             onRegenerate = chatViewModel::regenerateLastResponse,
             onOpenTemplates = { templatesOpen = true },
@@ -165,6 +167,7 @@ fun ChatContent(
     onResendMessage: (String) -> Unit = {},
     onEditMessage: (String) -> Unit = {},
     onChangeModel: () -> Unit = {},
+    onCarMode: (() -> Unit)? = null,
     onStop: () -> Unit = {},
     onRegenerate: () -> Unit = {},
     onOpenTemplates: () -> Unit = {},
@@ -204,6 +207,7 @@ fun ChatContent(
             onMenuClick = onOpenDrawer,
             onNewClick = onNewSession,
             onSubtitleClick = onChangeModel,
+            onCarClick = onCarMode,
             onSearchClick = if (state.activeSession?.messages?.isNotEmpty() == true) {
                 {
                     searchOpen = !searchOpen

@@ -46,6 +46,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Android Auto: integración solo-notificaciones (mensajería). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <receiver
+            android:name=".core.car.CarReplyReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".core.car.CarMarkAsReadReceiver"
+            android:exported="false" />
+
     </application>
 
 </manifest>

@@ -15,7 +15,8 @@ data class ChatCompletionRequest(
     val stream: Boolean = false,
     val temperature: Double? = null,
     val tools: List<ToolDefinition>? = null,
-    @SerialName("tool_choice") val toolChoice: String? = null
+    @SerialName("tool_choice") val toolChoice: String? = null,
+    @SerialName("max_tokens") val maxTokens: Int? = null
 )
 
 @Serializable

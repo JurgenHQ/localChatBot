@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
@@ -35,6 +36,7 @@ fun ChatTopBar(
     modifier: Modifier = Modifier,
     onSubtitleClick: (() -> Unit)? = null,
     onSearchClick: (() -> Unit)? = null,
+    onCarClick: (() -> Unit)? = null,
     showMenuButton: Boolean = true
 ) {
     Row(
@@ -74,6 +76,11 @@ fun ChatTopBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (onCarClick != null) {
+            Box(modifier = Modifier.size(44.dp).clickable(onClick = onCarClick), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.DirectionsCar, contentDescription = "Modo coche", tint = MaterialTheme.colorScheme.onBackground)
+            }
         }
         if (onSearchClick != null) {
             Box(modifier = Modifier.size(44.dp).clickable(onClick = onSearchClick), contentAlignment = Alignment.Center) {
