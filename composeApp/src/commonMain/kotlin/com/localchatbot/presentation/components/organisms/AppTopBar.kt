@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.localchatbot.core.theme.Spacing
 
@@ -32,7 +34,8 @@ fun ChatTopBar(
     onNewClick: () -> Unit,
     modifier: Modifier = Modifier,
     onSubtitleClick: (() -> Unit)? = null,
-    onSearchClick: (() -> Unit)? = null
+    onSearchClick: (() -> Unit)? = null,
+    showMenuButton: Boolean = true
 ) {
     Row(
         modifier = modifier
@@ -41,8 +44,12 @@ fun ChatTopBar(
             .padding(horizontal = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(modifier = Modifier.size(44.dp).clickable(onClick = onMenuClick), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.Menu, contentDescription = "Menú", tint = MaterialTheme.colorScheme.onBackground)
+        if (showMenuButton) {
+            Box(modifier = Modifier.size(44.dp).clickable(onClick = onMenuClick), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Menu, contentDescription = "Menú", tint = MaterialTheme.colorScheme.onBackground)
+            }
+        } else {
+            Spacer(Modifier.size(44.dp))
         }
         Column(
             modifier = Modifier.weight(1f),
@@ -53,7 +60,9 @@ fun ChatTopBar(
                 title,
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 subtitle,
@@ -61,7 +70,9 @@ fun ChatTopBar(
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = if (onSubtitleClick != null) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         if (onSearchClick != null) {

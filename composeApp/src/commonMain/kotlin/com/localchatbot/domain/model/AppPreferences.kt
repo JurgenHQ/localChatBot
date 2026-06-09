@@ -25,7 +25,25 @@ data class AppPreferences(
      * (vía ComfyUI/SDXL) como renderizado de diagramas (vía mermaid-cli).
      * Si está vacío, se deriva como `http://<connection.ip>:8080` automáticamente.
      */
-    val imageServiceUrl: String = ""
+    val imageServiceUrl: String = "",
+    /**
+     * Workspace para las tools de filesystem/shell. Solo se considera disponible
+     * cuando está configurado un directorio absoluto. Se usa también como
+     * working_dir por defecto para `run_command`.
+     */
+    val fsWorkspaceDir: String? = null,
+    /**
+     * Si está activo, las tools de filesystem/shell se ejecutan sin pedir
+     * confirmación al usuario por cada llamada. Modo "Claude Code" — peligroso
+     * pero conveniente.
+     */
+    val fsYoloMode: Boolean = false,
+    /**
+     * Si está activo, las tools pueden operar sobre paths fuera de
+     * [fsWorkspaceDir] (incluyendo absolutos). Por defecto está apagado y la
+     * tool retorna error sin pedir confirmación si la ruta escapa.
+     */
+    val fsAllowOutsideWorkspace: Boolean = false
 ) {
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()
@@ -53,7 +71,10 @@ data class AppPreferences(
             tavilyApiKey = "",
             defaultSystemPrompt = "",
             promptTemplates = emptyList(),
-            imageServiceUrl = ""
+            imageServiceUrl = "",
+            fsWorkspaceDir = null,
+            fsYoloMode = false,
+            fsAllowOutsideWorkspace = false
         )
     }
 }

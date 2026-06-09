@@ -23,6 +23,8 @@ interface Tool {
      * Etiqueta corta para mostrar en la UI mientras la tool corre.
      * Si null, no se muestra indicador específico (cae al typing indicator genérico).
      */
+    val requiresConfirmation: Boolean get() = false
+
     val activityLabel: String? get() = null
 
     /**
@@ -39,9 +41,25 @@ interface Tool {
     fun consumeProducedImage(): String? = null
 }
 
+private const val MAX_TOOL_OUTPUT_CHARS = 8_000
+private const val TRUNCATION_HEAD = 3_000
+private const val TRUNCATION_TAIL = 1_000
+
+fun truncateToolOutput(result: String): String {
+    if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result
+    val omitted = result.length - TRUNCATION_HEAD - TRUNCATION_TAIL
+    return result.take(TRUNCATION_HEAD) +
+        "\n[… $omitted chars truncados …]\n" +
+        result.takeLast(TRUNCATION_TAIL)
+}
+
 class ToolRegistry(private val tools: List<Tool>) {
 
     fun allDefinitions(): List<ToolDefinition> = tools.map { it.definition }
+
+    /** Solo las definiciones de tools cuyo [Tool.isAvailable] devuelve true. */
+    suspend fun availableDefinitions(): List<ToolDefinition> =
+        tools.filter { it.isAvailable() }.map { it.definition }
 
     fun allTools(): List<Tool> = tools
 

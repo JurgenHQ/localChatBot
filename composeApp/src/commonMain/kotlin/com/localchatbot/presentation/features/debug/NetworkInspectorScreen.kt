@@ -23,7 +23,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -37,7 +39,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +50,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.boundsInParent
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -476,11 +482,18 @@ private fun CodeBlock(
     minContentHeight: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            if (content.isNotBlank()) CopyButton(content)
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -501,13 +514,15 @@ private fun CodeBlock(
                 val annotated = remember(content, query, currentOffset, highlightAll, highlightCurrent) {
                     buildHighlight(content, query, currentOffset, highlightAll, highlightCurrent)
                 }
-                Text(
-                    text = annotated,
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    onTextLayout = onLayout
-                )
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    Text(
+                        text = annotated,
+                        softWrap = false,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        onTextLayout = onLayout
+                    )
+                }
             }
         }
     }
@@ -538,6 +553,42 @@ private fun buildHighlight(
         val end = (start + len).coerceAtMost(content.length)
         val bg = if (start == currentOffset) highlightCurrent else highlightAll
         addStyle(SpanStyle(background = bg), start, end)
+    }
+}
+
+@Composable
+private fun CopyButton(text: String) {
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var copied by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.sm))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable {
+                clipboard.setText(AnnotatedString(text))
+                scope.launch {
+                    copied = true
+                    delay(1500)
+                    copied = false
+                }
+            }
+            .padding(horizontal = Spacing.sm, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+            contentDescription = if (copied) "Copiado" else "Copiar",
+            tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = if (copied) "Copiado" else "Copiar",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

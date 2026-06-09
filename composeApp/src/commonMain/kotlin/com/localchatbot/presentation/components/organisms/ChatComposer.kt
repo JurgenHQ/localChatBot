@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.localchatbot.core.image.decodeImage
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.presentation.components.atoms.ChatInputField
@@ -49,7 +51,15 @@ fun ChatComposer(
     onRemoveAttachment: () -> Unit = {},
     onVoice: () -> Unit = {},
     onStop: () -> Unit = {},
-    onTemplates: (() -> Unit)? = null
+    onTemplates: (() -> Unit)? = null,
+    voiceSupported: Boolean = true,
+    onPasteImage: ((ByteArray) -> Unit)? = null,
+    /**
+     * Slot opcional renderizado debajo de la fila del input (después del botón
+     * de adjuntar imagen y de plantillas). Se usa para los chips del agente
+     * (workspace / sandbox / YOLO) cuando aplica.
+     */
+    agentBar: (@Composable () -> Unit)? = null
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val dismissAndSend: () -> Unit = {
@@ -72,17 +82,27 @@ fun ChatComposer(
             if (onTemplates != null) {
                 IconSquareButton(icon = Icons.Outlined.Bookmarks, onClick = onTemplates)
             }
+            val hasContentNow = value.isNotBlank() || attachedImageBytes != null
             ChatInputField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                onSubmit = if (PlatformCapabilities.isDesktop) {
+                    { if (hasContentNow && !sending) dismissAndSend() }
+                } else null,
+                onPasteImage = onPasteImage
             )
             val hasContent = value.isNotBlank() || attachedImageBytes != null
             when {
                 sending -> StopIconButton(onClick = onStop)
                 hasContent -> SendIconButton(enabled = true, onClick = dismissAndSend)
-                else -> IconSquareButton(icon = Icons.Outlined.Mic, onClick = onVoice)
+                voiceSupported -> IconSquareButton(icon = Icons.Outlined.Mic, onClick = onVoice)
+                else -> SendIconButton(enabled = false, onClick = {})
             }
+        }
+        if (agentBar != null) {
+            Spacer(Modifier.size(Spacing.sm))
+            agentBar()
         }
     }
 }

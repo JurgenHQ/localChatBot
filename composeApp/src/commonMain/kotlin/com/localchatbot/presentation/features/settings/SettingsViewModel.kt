@@ -76,6 +76,18 @@ class SettingsViewModel(
 
     fun clearHistory() = viewModelScope.launch { chats.clearAll() }
 
+    fun updateFsWorkspaceDir(value: String?) {
+        viewModelScope.launch { preferences.updateFsWorkspaceDir(value) }
+    }
+
+    fun toggleFsYoloMode(value: Boolean) {
+        viewModelScope.launch { preferences.updateFsYoloMode(value) }
+    }
+
+    fun toggleFsAllowOutsideWorkspace(value: Boolean) {
+        viewModelScope.launch { preferences.updateFsAllowOutsideWorkspace(value) }
+    }
+
     private suspend fun refreshStatus(cfg: ConnectionConfig) {
         if (!cfg.isValid()) {
             _status.value = ConnectionStatus.Unknown

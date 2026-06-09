@@ -83,6 +83,7 @@ data class ModelsResponse(
 @Serializable
 data class ChatCompletionChunk(
     val id: String? = null,
+    val model: String? = null,
     val choices: List<ChunkChoice> = emptyList()
 ) {
     @Serializable
@@ -96,6 +97,11 @@ data class ChatCompletionChunk(
     data class Delta(
         val role: String? = null,
         val content: String? = null,
+        // Modelos con chain-of-thought (Gemma 3/4, QwQ, DeepSeek-R1, o1-like) emiten
+        // su razonamiento aquí en lugar de en `content`. Si el modelo NUNCA emite
+        // `content` (común con prompts mal calibrados o context length pequeño), la UI
+        // se quedaba vacía. Lo capturamos para poder mostrarlo al usuario.
+        @SerialName("reasoning_content") val reasoningContent: String? = null,
         @SerialName("tool_calls") val toolCalls: List<ToolCallDelta>? = null
     )
 }

@@ -65,8 +65,18 @@ class DiagramRenderTool(
                 "asks for a concept map, mind map, flowchart, sequence/class/state/ER diagram, " +
                 "gantt chart, or any structured diagram. DO NOT use `generate_image` for these — " +
                 "diffusion models produce illegible text. Build complete, valid Mermaid syntax " +
-                "(starting with the diagram type keyword: `graph`, `flowchart`, `mindmap`, " +
+                "(starting with the diagram type keyword: `flowchart`, `mindmap`, " +
                 "`sequenceDiagram`, `classDiagram`, `stateDiagram`, `erDiagram`, `gantt`, `pie`). " +
+                "ESCAPING RULES — follow strictly to avoid parse errors: " +
+                "(1) Any node label containing parentheses (), brackets [], curly braces {}, " +
+                "colons :, quotes, or special characters MUST be wrapped in double quotes: " +
+                "A[\"label with (parens) or [brackets]\"] — never leave special chars unquoted in labels. " +
+                "(2) Prefer `flowchart` over `graph` — more robust parser. " +
+                "(3) Do NOT use parallelogram shapes [/text/] or [\\text\\] — parser may reject them. " +
+                "(4) In `sequenceDiagram`, quote participant names that contain spaces or special chars. " +
+                "(5) In `classDiagram`, escape method signatures: use +methodName(param) without extra parens in labels. " +
+                "(6) In `mindmap`, avoid parentheses inside node text — use plain text or double-quote the node. " +
+                "(7) Generate the richest, most complete diagram the syntax allows — do NOT simplify just to be safe. " +
                 "After it succeeds, briefly confirm to the user in their language that the diagram " +
                 "is ready. Do NOT include the Mermaid code or base64 in your reply.",
             parameters = buildJsonObject {

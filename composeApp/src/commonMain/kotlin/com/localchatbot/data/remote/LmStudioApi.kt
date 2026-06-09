@@ -21,7 +21,12 @@ class LmStudioApi(private val client: HttpClient) {
      *  - el JSON no trae los campos esperados.
      */
     suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? = runCatching {
-        val match = fetchAllModels(baseUrl)?.firstOrNull { it.id == modelId } ?: return@runCatching null
+        val all = fetchAllModels(baseUrl) ?: return@runCatching null
+        // Exact match first; if not found, use the first loaded model — LM Studio
+        // uses whatever is loaded regardless of the model ID in the request.
+        val match = all.firstOrNull { it.id == modelId }
+            ?: all.firstOrNull { it.state.equals("loaded", ignoreCase = true) }
+            ?: return@runCatching null
         match.loadedContextLength ?: match.maxContextLength
     }.getOrNull()
 

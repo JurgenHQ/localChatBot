@@ -39,7 +39,18 @@ data class ChatUiState(
     val tokensUsed: Int = 0,
     /** Tamaño máximo del contexto asumido para el indicador visual. */
     val tokensMax: Int = 8192,
-    val promptTemplates: List<com.localchatbot.domain.model.PromptTemplate> = emptyList()
+    val promptTemplates: List<com.localchatbot.domain.model.PromptTemplate> = emptyList(),
+    /**
+     * Sugerencias dinámicas para el empty state, generadas por el modelo tras
+     * cada respuesta exitosa. Si null, la UI muestra una lista estática.
+     */
+    val dynamicSuggestions: List<String>? = null,
+    /** Workspace configurado para las tools de filesystem (null = sin configurar). */
+    val fsWorkspaceDir: String? = null,
+    /** Si true, las tools de fs se ejecutan sin diálogo de confirmación. */
+    val fsYoloMode: Boolean = false,
+    /** Si true, las tools de fs aceptan paths fuera del workspace. */
+    val fsAllowOutsideWorkspace: Boolean = false
 ) {
     val hasAttachment: Boolean get() = attachedImageBytes != null
 }
@@ -65,6 +76,16 @@ class ChatViewModel(
     /** Longitud de contexto real del modelo cargado (8192 como fallback). */
     private val _tokensMax = MutableStateFlow(DEFAULT_CONTEXT_LENGTH)
 
+    /**
+     * Cache en memoria de las 3 sugerencias dinámicas del empty state.
+     * - null mientras nunca se hayan generado: la UI cae al fallback estático.
+     * - tras la primera respuesta exitosa, se refresca en background.
+     */
+    private val _suggestions = MutableStateFlow<List<String>?>(null)
+
+    /** Job de la generación en curso para evitar dobles llamadas concurrentes. */
+    private var suggestionsJob: Job? = null
+
     val state: StateFlow<ChatUiState> = combine(
         combine(
             chatRepository.sessions,
@@ -74,8 +95,9 @@ class ChatViewModel(
         streamingStateStore.streaming,
         streamingStateStore.activity,
         _local,
-        _tokensMax
-    ) { (sessions, activeId, prefs), streamingIds, activityMap, local, tokensMax ->
+        combine(_tokensMax, _suggestions) { tokensMax, suggestions -> tokensMax to suggestions }
+    ) { (sessions, activeId, prefs), streamingIds, activityMap, local, tokensAndSuggestions ->
+        val (tokensMax, dynamicSuggestions) = tokensAndSuggestions
         val active = sessions.firstOrNull { it.id == activeId }
         // Las imágenes (imageDataUrl) se adjuntan out-of-band: no pasan por el contexto
         // del modelo ni consumen tokens, así que solo contamos el texto.
@@ -85,7 +107,7 @@ class ChatViewModel(
             ?: 0
         ChatUiState(
             activeSession = active,
-            modelName = prefs.connection.model,
+            modelName = active?.model?.takeIf { it.isNotBlank() } ?: prefs.connection.model,
             draft = local.draft,
             sending = activeId != null && activeId in streamingIds,
             errorMessage = local.errorMessage,
@@ -93,7 +115,11 @@ class ChatViewModel(
             toolActivity = activeId?.let(activityMap::get),
             tokensUsed = (totalChars + 3) / 4,
             tokensMax = tokensMax,
-            promptTemplates = prefs.promptTemplates
+            promptTemplates = prefs.promptTemplates,
+            dynamicSuggestions = dynamicSuggestions,
+            fsWorkspaceDir = prefs.fsWorkspaceDir,
+            fsYoloMode = prefs.fsYoloMode,
+            fsAllowOutsideWorkspace = prefs.fsAllowOutsideWorkspace
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
 
@@ -109,13 +135,19 @@ class ChatViewModel(
             }
         }
 
-        // Cuando cambian la conexión o el modelo, intentar leer el context length real
-        // del servidor (LM Studio lo expone). Si no, mantenemos el default.
+        // Cuando cambian la conexión, el modelo configurado, o el modelo real devuelto
+        // por el servidor (activeSession.model), re-fetchear el context length.
         viewModelScope.launch {
-            preferences.preferences
-                .map { it.connection }
-                .distinctUntilChanged { a, b -> a.baseUrl() == b.baseUrl() && a.model == b.model }
-                .collect { cfg ->
+            combine(
+                preferences.preferences.map { it.connection },
+                state.map { it.activeSession?.model.orEmpty() }
+            ) { cfg, sessionModel -> cfg to sessionModel }
+                .distinctUntilChanged { a, b ->
+                    a.first.baseUrl() == b.first.baseUrl() &&
+                    a.first.model == b.first.model &&
+                    a.second == b.second
+                }
+                .collect { (cfg, _) ->
                     if (!cfg.isValid()) {
                         _tokensMax.value = DEFAULT_CONTEXT_LENGTH
                         return@collect
@@ -124,6 +156,10 @@ class ChatViewModel(
                     _tokensMax.value = real ?: DEFAULT_CONTEXT_LENGTH
                 }
         }
+
+        // Genera sugerencias dinámicas una sola vez al arrancar el VM.
+        // Mientras la app esté abierta el valor queda en memoria y no se vuelve a pedir.
+        refreshSuggestions()
     }
 
     private companion object {
@@ -224,8 +260,13 @@ class ChatViewModel(
     }
 
     /**
-     * Carga el contenido (texto e imagen) de un mensaje del usuario en el composer para editarlo,
-     * eliminándolo junto con sus respuestas. Tras editar y pulsar enviar, se manda como nuevo.
+     * Carga el contenido (texto e imagen) de un mensaje del usuario en el composer
+     * para que el usuario pueda modificarlo y enviarlo como **mensaje nuevo**.
+     *
+     * **No toca el historial**: el mensaje original y todas las respuestas
+     * posteriores quedan intactos. Al pulsar enviar, el texto se manda como un
+     * mensaje nuevo al final de la conversación, igual que si lo hubieras
+     * escrito desde cero.
      */
     @OptIn(ExperimentalEncodingApi::class)
     fun editMessage(messageId: String) {
@@ -242,20 +283,42 @@ class ChatViewModel(
             ?.takeIf { it.isNotEmpty() }
             ?.let { runCatching { Base64.decode(it) }.getOrNull() }
 
-        applicationScope.launch {
-            chatRepository.deleteMessagesFrom(activeId, messageId)
-            _local.update {
-                it.copy(
-                    draft = text,
-                    attachedImageBytes = imageBytes,
-                    errorMessage = null
-                )
-            }
+        _local.update {
+            it.copy(
+                draft = text,
+                attachedImageBytes = imageBytes,
+                errorMessage = null
+            )
         }
     }
 
     fun savePromptTemplates(list: List<com.localchatbot.domain.model.PromptTemplate>) {
         applicationScope.launch { preferences.setPromptTemplates(list) }
+    }
+
+    /** Cambia el workspace para las fs tools desde la barra del chat. */
+    fun updateFsWorkspaceDir(value: String?) {
+        applicationScope.launch { preferences.updateFsWorkspaceDir(value) }
+    }
+
+    /** Toggle del modo YOLO desde la barra del chat. */
+    fun toggleFsYoloMode() {
+        applicationScope.launch {
+            val current = preferences.current().fsYoloMode
+            preferences.updateFsYoloMode(!current)
+        }
+    }
+
+    /**
+     * Toggle del sandbox: la flag persistida es `fsAllowOutsideWorkspace` (true =
+     * sandbox apagado). El chip de la UI muestra "Sandbox ON" cuando
+     * allowOutside es false, así que aquí simplemente invertimos el flag.
+     */
+    fun toggleFsSandbox() {
+        applicationScope.launch {
+            val current = preferences.current().fsAllowOutsideWorkspace
+            preferences.updateFsAllowOutsideWorkspace(!current)
+        }
     }
 
     /** Guarda los bytes recibidos como imagen en la galería del dispositivo. */
@@ -270,6 +333,24 @@ class ChatViewModel(
     }
 
     fun dismissError() = _local.update { it.copy(errorMessage = null) }
+
+    /**
+     * Pide al modelo 3 sugerencias frescas para el empty state. Se ignora si
+     * ya hay una llamada en curso o si la conexión no está configurada.
+     * Se ejecuta en applicationScope para que no se cancele al destruir el VM.
+     */
+    private fun refreshSuggestions() {
+        if (suggestionsJob?.isActive == true) return
+        suggestionsJob = applicationScope.launch {
+            val cfg = preferences.current().connection
+            if (!cfg.isValid()) return@launch
+            modelRepository.generateSuggestions(cfg.baseUrl(), cfg.model)
+                .onSuccess { list -> _suggestions.value = list }
+            // Si falla, mantenemos las sugerencias previas (o el fallback estático
+            // si nunca se generaron). No mostramos error al usuario — es un
+            // refresco best-effort en background, no algo que pidió.
+        }
+    }
 
     private data class LocalState(
         val draft: String = "",

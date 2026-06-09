@@ -2,7 +2,9 @@ package com.localchatbot.di
 
 import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.background.createBackgroundExecutor
+import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.debug.NetworkInspector
+import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.core.image.ImageSaver
 import com.localchatbot.core.image.createImageSaver
 import com.localchatbot.core.network.HttpClientFactory
@@ -23,8 +25,16 @@ import com.localchatbot.data.repository.PreferencesRepositoryImpl
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.domain.tools.CreateDirectoryTool
+import com.localchatbot.domain.tools.CreateFileTool
+import com.localchatbot.domain.tools.DeleteFileTool
 import com.localchatbot.domain.tools.DiagramRenderTool
+import com.localchatbot.domain.tools.EditFileTool
 import com.localchatbot.domain.tools.ImageGenerationTool
+import com.localchatbot.domain.tools.ListDirectoryTool
+import com.localchatbot.domain.tools.ReadFileTool
+import com.localchatbot.domain.tools.RunCommandTool
+import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.WebSearchTool
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
@@ -43,9 +53,9 @@ class AppContainer {
     val imageSaver: ImageSaver = createImageSaver()
     private val openAiApi = OpenAiApi(httpClient, json, networkInspector)
     private val lmStudioApi = LmStudioApi(httpClient)
-    private val imageGenApi = ImageGenApi(httpClient)
+    private val imageGenApi = ImageGenApi(httpClient, json, networkInspector)
     private val diagramRenderApi = DiagramRenderApi(httpClient, json, networkInspector)
-    private val tavilyApi = TavilyApi(httpClient)
+    private val tavilyApi = TavilyApi(httpClient, json, networkInspector)
 
     /**
      * Scope a nivel de aplicación. Las operaciones que deben sobrevivir a la
@@ -72,7 +82,44 @@ class AppContainer {
     private val webSearchTool = WebSearchTool(tavilyApi, preferencesRepository, json)
     private val imageGenerationTool = ImageGenerationTool(imageGenApi, preferencesRepository, json)
     private val diagramRenderTool = DiagramRenderTool(diagramRenderApi, preferencesRepository, json)
-    val toolRegistry = ToolRegistry(listOf(webSearchTool, imageGenerationTool, diagramRenderTool))
+
+    /**
+     * Agente local de filesystem y shell (solo desktop tiene impl real).
+     * Expuesto como propiedad pública para que la UI pueda observarlo si lo
+     * necesita en el futuro; las tools lo reciben por constructor.
+     */
+    val filesystemAgent: FilesystemAgent = FilesystemAgent()
+
+    /**
+     * Coordina las solicitudes de aprobación humana entre las tools (capa
+     * datos/dominio) y la UI. Se observa desde [com.localchatbot.presentation.features.chat.ChatScreen].
+     */
+    val toolConfirmationController = ToolConfirmationController(preferencesRepository)
+
+    val todoTool = TodoTool(activeSessionStore)
+    private val createFileTool = CreateFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val editFileTool = EditFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val deleteFileTool = DeleteFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val createDirectoryTool = CreateDirectoryTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val readFileTool = ReadFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val listDirectoryTool = ListDirectoryTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val runCommandTool = RunCommandTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+
+    val toolRegistry = ToolRegistry(
+        listOf(
+            todoTool,
+            webSearchTool,
+            imageGenerationTool,
+            diagramRenderTool,
+            createFileTool,
+            editFileTool,
+            deleteFileTool,
+            createDirectoryTool,
+            readFileTool,
+            listDirectoryTool,
+            runCommandTool
+        )
+    )
 
     val createSession = CreateSessionUseCase(chatRepository, preferencesRepository)
     val sendMessage = SendMessageUseCase(
@@ -81,7 +128,8 @@ class AppContainer {
         prefs = preferencesRepository,
         toolRegistry = toolRegistry,
         streamingStateStore = streamingStateStore,
-        json = json
+        json = json,
+        scope = applicationScope
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)

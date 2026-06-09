@@ -1,5 +1,6 @@
 package com.localchatbot.data.repository
 
+import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ChatCompletionRequest
 import com.localchatbot.data.remote.FunctionCall
 import com.localchatbot.data.remote.LmStudioApi
@@ -22,7 +23,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.random.Random
 
 class ModelRepositoryImpl(
     private val api: OpenAiApi,
@@ -86,14 +86,20 @@ class ModelRepositoryImpl(
         // Acumuladores para tool_calls que llegan fragmentados.
         val builders = mutableMapOf<Int, ToolCallBuilder>()
         var finalFinishReason: String? = null
+        var actualModel: String? = null
 
         api.streamChatCompletion(baseUrl, req).collect { chunk ->
+            if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
             val choice = chunk.choices.firstOrNull() ?: return@collect
             val delta = choice.delta
             delta?.content?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ContentDelta(it)) }
+            delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ReasoningDelta(it)) }
 
             delta?.toolCalls?.forEach { d ->
-                val builder = builders.getOrPut(d.index) { ToolCallBuilder() }
+                // Si el server omite `index` (algunos modelos lo hacen cuando solo
+                // hay un tool_call), asumimos 0 — equivalente al primero.
+                val idx = d.index ?: 0
+                val builder = builders.getOrPut(idx) { ToolCallBuilder() }
                 d.id?.let { builder.id = it }
                 d.function?.name?.let { builder.name = it }
                 d.function?.arguments?.let { builder.arguments.append(it) }
@@ -106,7 +112,7 @@ class ModelRepositoryImpl(
             .sortedBy { it.key }
             .mapNotNull { (_, b) -> b.build() }
 
-        emit(StreamEvent.Finish(reason = finalFinishReason, toolCalls = toolCalls))
+        emit(StreamEvent.Finish(reason = finalFinishReason, toolCalls = toolCalls, actualModel = actualModel))
     }
 
     override suspend fun ping(baseUrl: String): Result<Long> = api.ping(baseUrl)
@@ -124,6 +130,95 @@ class ModelRepositoryImpl(
 
     override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
         lmStudioApi.fetchContextLength(baseUrl, modelId)
+
+    override suspend fun generateSuggestions(
+        baseUrl: String,
+        model: String
+    ): Result<List<String>> {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", SUGGESTIONS_SYSTEM_PROMPT),
+                OpenAiMessage.text("user", SUGGESTIONS_USER_PROMPT)
+            ),
+            // Subimos un poco la temperatura para que las sugerencias varíen entre llamadas;
+            // si la dejamos al default del servidor (~0.7) tienden a repetirse.
+            temperature = 0.9
+        )
+        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+            val raw = response.choices.firstOrNull()?.message?.content?.asText()
+                ?: throw IllegalStateException("Respuesta vacía al pedir sugerencias")
+            parseSuggestionsArray(raw)
+                ?: throw IllegalStateException("No se pudo parsear el JSON de sugerencias: $raw")
+        }
+    }
+
+    override suspend fun generateTitle(
+        baseUrl: String,
+        model: String,
+        userText: String,
+        assistantText: String
+    ): Result<String> {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", TITLE_SYSTEM_PROMPT),
+                OpenAiMessage.text(
+                    "user",
+                    "Usuario: ${userText.take(500)}\n\nAssistant: ${assistantText.take(500)}"
+                )
+            ),
+            // Baja temperatura: queremos un título estable y literal, no creativo.
+            temperature = 0.2
+        )
+        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+            val raw = response.choices.firstOrNull()?.message?.content?.asText()
+                ?: throw IllegalStateException("Respuesta vacía al pedir título")
+            sanitizeTitle(raw)
+                ?: throw IllegalStateException("Título inutilizable: $raw")
+        }
+    }
+
+    /**
+     * El modelo a veces envuelve el título en comillas, markdown o añade
+     * razonamiento previo. Nos quedamos con la última línea no vacía que
+     * parezca un título (sin restos de código tipo `foo()`, flechas o JSON)
+     * y la recortamos a 60 chars. Bloques <think>…</think> se descartan enteros.
+     */
+    private fun sanitizeTitle(raw: String): String? {
+        val withoutThink = raw.replace(Regex("(?s)<think>.*?(</think>|$)"), "")
+        val candidates = withoutThink.lineSequence()
+            .map { it.trim().removeSurrounding("\"").removeSurrounding("'").trim('*', '#', '`', ' ') }
+            .filter { it.isNotBlank() }
+            .toList()
+        // Preferir una línea sin pinta de código/diagrama; si todas la tienen, usar la última.
+        val codeLike = Regex("""[(){}<>;=→↓↑`]|\w+\.\w+\(""")
+        val line = candidates.lastOrNull { !it.contains(codeLike) }
+            ?: candidates.lastOrNull()
+            ?: return null
+        val cleaned = line.removeSuffix(".").trim()
+        if (cleaned.isBlank()) return null
+        return if (cleaned.length <= 60) cleaned else cleaned.take(60).substringBeforeLast(' ').ifBlank { cleaned.take(60) }
+    }
+
+    /**
+     * El modelo a veces envuelve el JSON en bloques de código (```json … ```) o
+     * añade texto extra antes/después. Extraemos el primer array balanceado
+     * `[...]` y lo decodificamos. Si lo que queda dentro no son strings, devolvemos null.
+     */
+    private fun parseSuggestionsArray(raw: String): List<String>? {
+        val start = raw.indexOf('[')
+        val end = raw.lastIndexOf(']')
+        if (start < 0 || end <= start) return null
+        val slice = raw.substring(start, end + 1)
+        return runCatching {
+            val arr = suggestionsJson.parseToJsonElement(slice) as? JsonArray ?: return null
+            arr.map { (it as JsonPrimitive).content }
+                .filter { it.isNotBlank() }
+                .take(3)
+                .takeIf { it.size == 3 }
+        }.getOrNull()
+    }
 
     private fun ChatMessage.toDto(): OpenAiMessage {
         val roleString = when (role) {
@@ -155,9 +250,7 @@ class ModelRepositoryImpl(
         else -> null
     }
 
-    private fun newId(): String =
-        Clock.System.now().toEpochMilliseconds().toString(36) +
-            "-" + Random.nextInt(0, 1_000_000).toString(36)
+    private val suggestionsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     private class ToolCallBuilder {
         var id: String? = null
@@ -172,5 +265,30 @@ class ModelRepositoryImpl(
                 function = FunctionCall(name = resolvedName, arguments = arguments.toString())
             )
         }
+    }
+
+    private companion object {
+        const val TITLE_SYSTEM_PROMPT =
+            "You write titles for chat conversations. Given the first user message and the " +
+                "assistant reply, respond with ONLY the title: 3 to 6 words, in the same " +
+                "language the user wrote in, no quotes, no trailing period, no markdown, " +
+                "no explanation."
+
+        const val SUGGESTIONS_SYSTEM_PROMPT =
+            "You generate short example prompts for a chat app. Reply with ONLY a JSON array " +
+                "of exactly 3 strings, no markdown fences, no commentary, no extra text."
+
+        val SUGGESTIONS_USER_PROMPT = """
+            Genera 3 ejemplos de prompts en español que un usuario podría tocar para empezar una conversación.
+            Cada uno debe ser una pregunta o instrucción concreta, en una sola frase, idealmente menos de 80 caracteres.
+
+            Categorías exactas y en este orden:
+            1. Desarrollo de software o programación.
+            2. Noticias o eventos actuales (algo que se beneficie de buscar en internet hoy).
+            3. Tema random, creativo, divertido o sorprendente.
+
+            Devuelve SOLO un JSON array con 3 strings. Ejemplo de formato:
+            ["...", "...", "..."]
+        """.trimIndent()
     }
 }
