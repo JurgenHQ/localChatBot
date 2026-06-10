@@ -6,8 +6,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.awt.FileDialog
+import java.awt.Frame
 import java.io.File
-import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
 
 @Composable
@@ -27,28 +28,14 @@ private class DesktopDirectoryPicker(
         }
     }
 
-    /**
-     * Compose Desktop bindea `Dispatchers.Main` al AWT EDT. Usar
-     * `SwingUtilities.invokeAndWait` desde el propio EDT lanza
-     * "Cannot call invokeAndWait from the event dispatcher thread".
-     *
-     * El patrón seguro es despachar el diálogo con `invokeLater` (que sí
-     * funciona desde dentro del EDT — encola el bloque para la siguiente
-     * iteración del event loop) y bridgear el resultado a la corutina
-     * vía un [CompletableDeferred].
-     */
     private suspend fun chooseDirectory(): File? {
         val deferred = CompletableDeferred<File?>()
         SwingUtilities.invokeLater {
-            val chooser = JFileChooser().apply {
-                dialogTitle = "Elegir workspace"
-                fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-            }
-            val result = if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
-                chooser.selectedFile
-            } else {
-                null
-            }
+            System.setProperty("apple.awt.fileDialogForDirectories", "true")
+            val dialog = FileDialog(null as Frame?, "Elegir workspace", FileDialog.LOAD)
+            dialog.isVisible = true
+            System.setProperty("apple.awt.fileDialogForDirectories", "false")
+            val result = if (dialog.file != null) File(dialog.directory, dialog.file) else null
             deferred.complete(result)
         }
         return deferred.await()

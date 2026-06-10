@@ -1,5 +1,6 @@
 package com.localchatbot.domain.usecase
 
+import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.network.isTransientNetworkError
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.util.newId
@@ -13,6 +14,10 @@ import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.repository.StreamEvent
+import com.localchatbot.domain.model.InstalledSkill
+import com.localchatbot.domain.model.SkillDefinition
+import com.localchatbot.domain.skill.SkillCatalog
+import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.truncateToolOutput
 import kotlinx.coroutines.CancellationException
@@ -52,14 +57,21 @@ class SendMessageUseCase(
      * Scope de aplicación para trabajo fire-and-forget que no debe retrasar
      * el retorno del use case (generación de título en background).
      */
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val scriptToolFactory: ScriptToolFactory? = null,
+    private val confirm: ToolConfirmationController? = null
 ) {
     /**
      * Persiste el mensaje del usuario y consume el stream. Si el modelo emite tool_calls,
      * ejecuta cada tool, persiste su resultado como mensaje role=Tool, y vuelve a hacer
      * streaming hasta que el modelo termine sin más tool_calls. Tope MAX_TOOL_ITERATIONS.
      */
-    suspend operator fun invoke(sessionId: String, text: String, imageDataUrl: String? = null): Result<Unit> {
+    suspend operator fun invoke(
+        sessionId: String,
+        text: String,
+        imageDataUrl: String? = null,
+        systemPromptOverride: String? = null
+    ): Result<Unit> {
         val now = Clock.System.now().toEpochMilliseconds()
         val userMsg = ChatMessage(
             id = newId(),
@@ -87,10 +99,17 @@ class SendMessageUseCase(
         // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
         // que no puede ejecutar.
-        val tools = toolRegistry.availableDefinitions().takeIf { it.isNotEmpty() }
+        val scriptTools = scriptToolFactory?.buildEnabledTools() ?: emptyList()
+        val tools = (toolRegistry.availableDefinitions() + scriptTools.map { it.definition })
+            .takeIf { it.isNotEmpty() }
 
         return try {
             var iter = 0
+            // Instrucción efímera para re-promptear al modelo cuando anunció una
+            // acción pero no emitió el tool_call. NO se persiste como mensaje visible:
+            // se inyecta solo en la siguiente request vía buildMessagesForApi y se limpia.
+            var pendingNudge: String? = null
+            var autoContinues = 0
             var lastAssistantId: String? = null
             // ID del último mensaje assistant creado en CUALQUIER iteración
             // (incluyendo los "anunciadores" de tool_calls con content vacío).
@@ -130,7 +149,8 @@ class SendMessageUseCase(
                     return newAssistantId
                 }
 
-                val messagesForApi = buildMessagesForApi(currentMessages, tools != null)
+                val messagesForApi = buildMessagesForApi(currentMessages, tools != null, systemPromptOverride, pendingNudge)
+                pendingNudge = null
                 model.streamChatWithTools(cfg.baseUrl(), cfg.model, messagesForApi, tools)
                     .onEach { event ->
                         when (event) {
@@ -206,11 +226,14 @@ class SendMessageUseCase(
                     // simultáneas perderían una).
                     val yolo = prefs.current().fsYoloMode
                     val needsSequential = !yolo && finalToolCalls.any { c ->
-                        toolRegistry.find(c.function.name)?.requiresConfirmation == true
+                        (toolRegistry.find(c.function.name)
+                            ?: scriptTools.firstOrNull { it.name == c.function.name })
+                            ?.requiresConfirmation == true
                     }
 
                     suspend fun executeCall(call: ToolCall): Pair<ToolCall, String> {
                         val tool = toolRegistry.find(call.function.name)
+                            ?: scriptTools.firstOrNull { it.name == call.function.name }
                         val label = tool?.activityLabel
                         if (label != null && tool.isAvailable()) {
                             streamingStateStore.markActivity(
@@ -252,7 +275,27 @@ class SendMessageUseCase(
                     continue
                 }
 
-                // El modelo terminó sin pedir más tools.
+                // El modelo terminó sin pedir más tools. Pero a veces ANUNCIA una
+                // acción ("Voy a corregir el archivo X…") sin emitir el tool_call.
+                // Detectamos ese caso y reusamos el flujo de confirmación: en YOLO
+                // se continúa solo, si no se abre el popup; al aprobar, re-prompteamos
+                // para que el modelo ejecute lo que prometió. Tope anti-bucle.
+                if (tools != null &&
+                    autoContinues < MAX_AUTO_CONTINUES &&
+                    looksLikeStalledAction(buffer.toString())
+                ) {
+                    val approved = confirm?.requestApproval(
+                        title = "Continuar acción anunciada",
+                        detail = buffer.toString().trim().take(160)
+                    ) ?: false
+                    if (approved) {
+                        autoContinues++
+                        pendingNudge = STALLED_ACTION_NUDGE
+                        iter++
+                        continue
+                    }
+                }
+
                 lastAssistantId = assistantId
                 break
             }
@@ -353,15 +396,20 @@ class SendMessageUseCase(
 
     private suspend fun buildMessagesForApi(
         currentMessages: List<ChatMessage>,
-        hasTools: Boolean
+        hasTools: Boolean,
+        systemPromptOverride: String? = null,
+        ephemeralNudge: String? = null
     ): List<ChatMessage> {
         val cfg = prefs.current()
         val userSystem = cfg.defaultSystemPrompt.trim()
         val yolo = cfg.fsYoloMode
         val model = cfg.connection.model
-        val toolPrompt = if (hasTools) buildAgentPrompt(yolo) else ""
+        val allSkills = SkillCatalog.allFor(cfg.customSkills)
+        val skillsIndex = buildSkillsIndex(cfg.installedSkills.filter { it.enabled }, allSkills)
+        val toolPrompt = if (hasTools) buildAgentPrompt(yolo, skillsIndex) else ""
         val suffix = buildModelSuffix(model)
-        val combined = listOf(userSystem, toolPrompt, suffix).filter { it.isNotBlank() }.joinToString("\n\n")
+        val combined = listOf(userSystem, systemPromptOverride?.trim(), toolPrompt, suffix)
+            .filterNot { it.isNullOrBlank() }.joinToString("\n\n")
 
         // Strip leading system message before windowing — it's re-injected below.
         val history = if (currentMessages.firstOrNull()?.role == Role.System) {
@@ -405,7 +453,20 @@ class SendMessageUseCase(
             )
         } else emptyList()
 
-        if (combined.isBlank()) return truncationNotice + windowed
+        // Instrucción efímera (re-prompt tras una acción anunciada sin ejecutar).
+        // Va al FINAL para ser lo último que ve el modelo antes de responder.
+        val nudge = ephemeralNudge?.let {
+            listOf(
+                ChatMessage(
+                    id = "stalled-action-nudge",
+                    role = Role.System,
+                    content = it,
+                    timestampEpochMs = 0L
+                )
+            )
+        } ?: emptyList()
+
+        if (combined.isBlank()) return truncationNotice + windowed + nudge
 
         val systemMsg = ChatMessage(
             id = SYSTEM_PROMPT_ID,
@@ -413,7 +474,7 @@ class SendMessageUseCase(
             content = combined,
             timestampEpochMs = 0L
         )
-        return listOf(systemMsg) + truncationNotice + windowed
+        return listOf(systemMsg) + truncationNotice + windowed + nudge
     }
 
     private suspend fun executeWithRetry(tool: com.localchatbot.domain.tools.Tool, argumentsJson: String): String {
@@ -467,6 +528,45 @@ class SendMessageUseCase(
          */
         const val MAX_TOOL_ITERATIONS = 200
 
+        /**
+         * Tope de veces que re-prompteamos al modelo cuando anuncia una acción
+         * sin emitir el tool_call. Acota el daño de un modelo que insiste en
+         * narrar sin actuar (evita popups / iteraciones infinitas).
+         */
+        private const val MAX_AUTO_CONTINUES = 3
+
+        private const val STALLED_ACTION_NUDGE =
+            "Anunciaste una acción pero no llamaste a ninguna tool. Ejecútala AHORA " +
+                "llamando a la tool correspondiente (read_file, edit_file, create_file, " +
+                "run_command, etc.). No vuelvas a describir la acción sin llamar a la tool."
+
+        /**
+         * Heurística: ¿el mensaje final del modelo ANUNCIA una acción que requiere
+         * una tool pero no la ejecutó? Cubre narración en futuro/imperativo y los
+         * gerundios que el prompt de agente exige antes de cada tool call (regla 6).
+         * Solo se usa cuando hay tools disponibles y el modelo terminó sin tool_calls.
+         */
+        fun looksLikeStalledAction(content: String): Boolean {
+            val text = content.trim()
+            if (text.isBlank()) return false
+            return STALLED_ACTION_REGEX.containsMatchIn(text)
+        }
+
+        private val STALLED_ACTION_REGEX = Regex(
+            "(?i)\\b(" +
+                // Español — futuro / intención
+                "voy a|vamos a|déjame|dejame|permíteme|permiteme|" +
+                "procederé|procedere|ejecutaré|ejecutare|leeré|leere|crearé|creare|" +
+                "editaré|editare|modificaré|modificare|corregiré|corregire|revisaré|revisare|" +
+                "ahora (voy|procedo|ejecuto|leo|edito|creo|reviso|corrijo)|" +
+                // Español — gerundios de narración (regla 6 del agent prompt)
+                "leyendo|editando|ejecutando|creando|corrigiendo|modificando|revisando|listando|instalando|" +
+                // Inglés
+                "i'?ll |i will |let me |i'?m going to|i am going to|going to (read|edit|create|run|fix|modify|check|list)|" +
+                "reading|editing|executing|creating|fixing|modifying|running the|listing|installing" +
+                ")\\b"
+        )
+
         /** Default conservador cuando el servidor no expone el context length. */
         private const val DEFAULT_CONTEXT_TOKENS = 8192
 
@@ -501,7 +601,17 @@ class SendMessageUseCase(
         private const val RETRY_DELAY_MS = 1_000L
         private const val SYSTEM_PROMPT_ID = "system-tools-prompt"
 
-        fun buildAgentPrompt(yoloMode: Boolean): String {
+        fun buildSkillsIndex(enabledSkills: List<InstalledSkill>, allSkills: List<SkillDefinition>): String {
+            if (enabledSkills.isEmpty()) return ""
+            val lines = enabledSkills.mapNotNull { installed ->
+                allSkills.firstOrNull { it.id == installed.skillId }?.let { "• ${it.id}: ${it.description}" }
+            }
+            if (lines.isEmpty()) return ""
+            return "Available skills (call `use_skill` with the skill_id to load full instructions):\n" +
+                lines.joinToString("\n")
+        }
+
+        fun buildAgentPrompt(yoloMode: Boolean, skillsIndex: String = ""): String {
             val rule3 = if (yoloMode) {
                 "Execute tools immediately without asking for permission. Narrate actions as " +
                     "statements ('Leyendo X…', 'Ejecutando Y…'). NEVER ask the user for " +
@@ -549,7 +659,8 @@ class SendMessageUseCase(
                 "7. When given a complex multi-step task → call `manage_todos` operation=add for " +
                 "each step first, then execute them in order, calling `manage_todos` " +
                 "operation=complete after each step succeeds.\n\n" +
-                "Always answer in the same language the user used."
+                "Always answer in the same language the user used." +
+                (if (skillsIndex.isNotBlank()) "\n\n$skillsIndex" else "")
         }
     }
 }

@@ -8,10 +8,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.awt.FileDialog
+import java.awt.Frame
 import java.io.File
-import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
-import javax.swing.filechooser.FileNameExtensionFilter
 
 @Composable
 actual fun rememberImagePicker(onResult: (ByteArray) -> Unit): ImagePickerLauncher {
@@ -33,26 +33,19 @@ private class DesktopImagePicker(
         }
     }
 
-    /**
-     * Despacha el diálogo al EDT con [SwingUtilities.invokeLater] (que sí es
-     * válido desde dentro del EDT) y bridgea el resultado de vuelta a la
-     * corutina con un [CompletableDeferred]. Antes usábamos
-     * `withContext(Dispatchers.Main) + invokeAndWait`, que tira
-     * "Cannot call invokeAndWait from the event dispatcher thread" porque
-     * en Compose Desktop `Dispatchers.Main` está bindeado al propio EDT.
-     */
     private suspend fun chooseFile(): File? {
         val deferred = CompletableDeferred<File?>()
         SwingUtilities.invokeLater {
-            val chooser = JFileChooser().apply {
-                dialogTitle = "Seleccionar imagen"
-                fileFilter = FileNameExtensionFilter("Imágenes", "png", "jpg", "jpeg", "gif", "webp", "bmp")
+            val dialog = FileDialog(null as Frame?, "Seleccionar imagen", FileDialog.LOAD).apply {
+                setFilenameFilter { _, name ->
+                    name.lowercase().let {
+                        it.endsWith(".png") || it.endsWith(".jpg") || it.endsWith(".jpeg") ||
+                            it.endsWith(".gif") || it.endsWith(".webp") || it.endsWith(".bmp")
+                    }
+                }
             }
-            val result = if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
-                chooser.selectedFile
-            } else {
-                null
-            }
+            dialog.isVisible = true
+            val result = if (dialog.file != null) File(dialog.directory, dialog.file) else null
             deferred.complete(result)
         }
         return deferred.await()

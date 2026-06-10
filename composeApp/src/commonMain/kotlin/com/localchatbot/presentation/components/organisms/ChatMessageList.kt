@@ -52,20 +52,36 @@ fun ChatMessageList(
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
+    val visibleMessages = session.messages
+    val lastAssistantId = visibleMessages
+        .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
+        ?.id
+    val lastVisible = visibleMessages.lastOrNull { it.role != Role.Tool }
+    val showTyping = sending && toolActivity == null && (
+        lastVisible == null ||
+        lastVisible.role == Role.User ||
+        (lastVisible.role == Role.Assistant && lastVisible.content.isBlank())
+    )
+
     LazyColumn(
         state = listState,
         modifier = modifier,
+        reverseLayout = true,
         verticalArrangement = Arrangement.spacedBy(Spacing.md),
         contentPadding = PaddingValues(vertical = Spacing.lg)
     ) {
-        item { DayHeader(epochMs = session.createdAtEpochMs) }
-        // Mostramos todos los mensajes — la navegación por matches hace
-        // scroll a cada uno en lugar de filtrar la lista.
-        val visibleMessages = session.messages
-        val lastAssistantId = visibleMessages
-            .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
-            ?.id
-        itemsIndexed(visibleMessages, key = { _, msg -> msg.id }) { msgIdx, msg ->
+        // Con reverseLayout = true el primer item queda abajo.
+        // Orden: typing/activity → mensajes invertidos → DayHeader arriba.
+        if (toolActivity != null) {
+            item(key = "tool_activity") {
+                ToolActivityRow(label = toolActivity.label, detail = toolActivity.detail)
+            }
+        } else if (showTyping) {
+            item(key = "typing") { AssistantTypingRow() }
+        }
+
+        itemsIndexed(visibleMessages.reversed(), key = { _, msg -> msg.id }) { reversedIdx, msg ->
+            val originalIdx = visibleMessages.size - 1 - reversedIdx
             MessageBubble(
                 message = msg,
                 onResend = if (msg.role == Role.User && !sending) {
@@ -83,22 +99,11 @@ fun ChatMessageList(
                 onSaveImage = if (msg.imageDataUrl != null) onSaveImage else null,
                 onTap = onTapMessage,
                 highlightQuery = highlightQuery,
-                isCurrentMatch = msgIdx == currentMatchAbsIndex
+                isCurrentMatch = originalIdx == currentMatchAbsIndex
             )
         }
-        val lastVisible = session.messages.lastOrNull { it.role != Role.Tool }
-        val showTyping = sending && toolActivity == null && (
-            lastVisible == null ||
-            lastVisible.role == Role.User ||
-            (lastVisible.role == Role.Assistant && lastVisible.content.isBlank())
-        )
-        if (toolActivity != null) {
-            item {
-                ToolActivityRow(label = toolActivity.label, detail = toolActivity.detail)
-            }
-        } else if (showTyping) {
-            item { AssistantTypingRow() }
-        }
+
+        item(key = "day_header") { DayHeader(epochMs = session.createdAtEpochMs) }
     }
 }
 

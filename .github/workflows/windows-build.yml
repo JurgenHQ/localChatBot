@@ -1,0 +1,40 @@
+name: Windows MSI
+
+on:
+  push:
+    branches: [main]
+
+# Necesario para que la action pueda crear/actualizar el release y mover el tag.
+permissions:
+  contents: write
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Package MSI
+        run: ./gradlew :composeApp:packageMsi --no-daemon
+
+      # Pre-release rodante: sobrescribe el tag fijo `latest` y reemplaza el
+      # .msi adjunto en cada push a main. Link de descarga permanente y único.
+      - name: Publish rolling pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          # Mueve el tag `latest` al commit recién pusheado.
+          target_commitish: ${{ github.sha }}
+          files: composeApp/build/compose/binaries/main/msi/*.msi
+          fail_on_unmatched_files: true

@@ -43,7 +43,9 @@ data class AppPreferences(
      * [fsWorkspaceDir] (incluyendo absolutos). Por defecto está apagado y la
      * tool retorna error sin pedir confirmación si la ruta escapa.
      */
-    val fsAllowOutsideWorkspace: Boolean = false
+    val fsAllowOutsideWorkspace: Boolean = false,
+    val installedSkills: List<InstalledSkill> = emptyList(),
+    val customSkills: List<SkillDefinition> = emptyList()
 ) {
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()
@@ -74,7 +76,9 @@ data class AppPreferences(
             imageServiceUrl = "",
             fsWorkspaceDir = null,
             fsYoloMode = false,
-            fsAllowOutsideWorkspace = false
+            fsAllowOutsideWorkspace = false,
+            installedSkills = emptyList(),
+            customSkills = emptyList()
         )
     }
 }

@@ -117,7 +117,9 @@ fun ChatScreen(
             showAgentBar = PlatformCapabilities.isDesktop,
             onPickWorkspace = { workspacePicker.launch() },
             onToggleSandbox = chatViewModel::toggleFsSandbox,
-            onToggleYolo = chatViewModel::toggleFsYoloMode
+            onToggleYolo = chatViewModel::toggleFsYoloMode,
+            onSelectSkill = chatViewModel::selectSkill,
+            onClearSkill = chatViewModel::clearPendingSkill
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -177,6 +179,8 @@ fun ChatContent(
     onPickWorkspace: () -> Unit = {},
     onToggleSandbox: () -> Unit = {},
     onToggleYolo: () -> Unit = {},
+    onSelectSkill: (com.localchatbot.domain.model.SkillDefinition) -> Unit = {},
+    onClearSkill: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -187,14 +191,10 @@ fun ChatContent(
     val keyboard = LocalSoftwareKeyboardController.current
 
     val messages = state.activeSession?.messages
-    // Anclar el último mensaje del usuario arriba para que el assistant aparezca llenando hacia abajo.
-    val lastUserMessageIndex = messages?.indexOfLast { it.role == Role.User } ?: -1
-    val lastUserMessageId = if (lastUserMessageIndex >= 0) messages?.get(lastUserMessageIndex)?.id else null
-    LaunchedEffect(lastUserMessageId) {
-        if (lastUserMessageIndex >= 0) {
-            // +1 por el DayHeader que ocupa la posición 0 en la LazyColumn.
-            listState.animateScrollToItem(index = lastUserMessageIndex + 1, scrollOffset = 0)
-        }
+    // Con reverseLayout = true el índice 0 es siempre el fondo (mensaje más reciente).
+    val messageCount = messages?.size ?: 0
+    LaunchedEffect(messageCount) {
+        if (messageCount > 0) listState.animateScrollToItem(0)
     }
 
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
@@ -226,10 +226,12 @@ fun ChatContent(
         // Si la query cambia, volver al primer match.
         LaunchedEffect(searchQuery) { currentMatchIndex = 0 }
         // Scroll automático cuando cambia el match actual.
+        // Con reverseLayout: mensaje en posición msgIdx del original
+        // → posición invertida = (total - 1 - msgIdx) en la LazyColumn.
         LaunchedEffect(currentMatchIndex, matchIndices) {
             val msgIdx = matchIndices.getOrNull(currentMatchIndex) ?: return@LaunchedEffect
-            // +1 por el DayHeader en posición 0 de la LazyColumn.
-            listState.animateScrollToItem(msgIdx + 1)
+            val total = messages?.size ?: return@LaunchedEffect
+            listState.animateScrollToItem(total - 1 - msgIdx)
         }
 
         if (searchOpen) {
@@ -310,6 +312,10 @@ fun ChatContent(
             onTemplates = onOpenTemplates,
             voiceSupported = voiceSupported,
             onPasteImage = onPasteImage,
+            pendingSkill = state.pendingSkill,
+            installedSkills = state.installedEnabledSkills,
+            onSelectSkill = onSelectSkill,
+            onClearSkill = onClearSkill,
             agentBar = if (showAgentBar) {
                 {
                     AgentControlsBar(

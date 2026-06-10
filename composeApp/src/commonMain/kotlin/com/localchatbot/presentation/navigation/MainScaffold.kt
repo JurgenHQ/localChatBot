@@ -39,12 +39,15 @@ import com.localchatbot.presentation.features.settings.SettingsEditorSheet
 import com.localchatbot.presentation.features.settings.SettingsEditorViewModel
 import com.localchatbot.presentation.features.settings.SettingsScreen
 import com.localchatbot.presentation.features.settings.SettingsViewModel
+import com.localchatbot.presentation.features.skills.SkillsScreen
+import com.localchatbot.presentation.features.skills.SkillsViewModel
 
 @Composable
 fun MainScaffold(container: AppContainer) {
     var selected by rememberSaveable { mutableStateOf(BottomTab.Chat) }
     var modelPickerOpen by rememberSaveable { mutableStateOf(false) }
     var inspectorOpen by rememberSaveable { mutableStateOf(false) }
+    var skillsOpen by rememberSaveable { mutableStateOf(false) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -77,6 +80,9 @@ fun MainScaffold(container: AppContainer) {
             chats = container.chatRepository,
             checkConnection = container.checkConnection
         )
+    }
+    val skillsViewModel = remember {
+        SkillsViewModel(preferences = container.preferencesRepository, skillFileStore = container.skillFileStore)
     }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
@@ -138,7 +144,8 @@ fun MainScaffold(container: AppContainer) {
                                     listModels = container.listModels
                                 )
                             },
-                            onOpenNetworkInspector = { inspectorOpen = true }
+                            onOpenNetworkInspector = { inspectorOpen = true },
+                            onOpenSkills = { skillsOpen = true }
                         )
                     }
                 }
@@ -164,6 +171,13 @@ fun MainScaffold(container: AppContainer) {
             NetworkInspectorScreen(
                 inspector = container.networkInspector,
                 onClose = { inspectorOpen = false }
+            )
+        }
+
+        if (skillsOpen) {
+            SkillsScreen(
+                viewModel = skillsViewModel,
+                onClose = { skillsOpen = false }
             )
         }
 

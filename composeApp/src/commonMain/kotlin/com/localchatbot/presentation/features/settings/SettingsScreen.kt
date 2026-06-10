@@ -50,6 +50,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
+    onOpenSkills: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -63,6 +64,7 @@ fun SettingsScreen(
             onRetryConnection = viewModel::retryConnection,
             onClearHistory = viewModel::clearHistory,
             onOpenNetworkInspector = onOpenNetworkInspector,
+            onOpenSkills = onOpenSkills,
             onPickWorkspace = viewModel::updateFsWorkspaceDir,
             onClearWorkspace = { viewModel.updateFsWorkspaceDir(null) },
             onToggleYolo = viewModel::toggleFsYoloMode,
@@ -88,6 +90,7 @@ fun SettingsContent(
     onRetryConnection: () -> Unit,
     onClearHistory: () -> Unit,
     onOpenNetworkInspector: () -> Unit = {},
+    onOpenSkills: () -> Unit = {},
     onPickWorkspace: (String) -> Unit = {},
     onClearWorkspace: () -> Unit = {},
     onToggleYolo: (Boolean) -> Unit = {},
@@ -282,6 +285,26 @@ fun SettingsContent(
                 onToggleAllowOutside = onToggleAllowOutside
             )
         }
+
+        SectionLabel("Skills")
+        SectionCard {
+            SettingsRow(
+                title = "Skills instalados",
+                onClick = onOpenSkills,
+                trailing = {
+                    val activeCount = preferences.installedSkills.count { it.enabled }
+                    MonoValue(
+                        if (activeCount == 0) "Ninguno activo" else "$activeCount activo${if (activeCount != 1) "s" else ""}",
+                        maxChars = 16
+                    )
+                }
+            )
+        }
+        Text(
+            "Amplía el comportamiento del agente con instrucciones especializadas. El modelo los carga bajo demanda.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         SectionLabel("Desarrollador")
         SectionCard {

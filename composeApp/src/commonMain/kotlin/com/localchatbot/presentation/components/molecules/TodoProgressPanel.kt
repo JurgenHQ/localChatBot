@@ -65,15 +65,9 @@ fun TodoProgressPanel(
         val arrowAngle by animateFloatAsState(if (expanded) 180f else 0f)
         val progress = if (total == 0) 0f else done.toFloat() / total
 
-        val panelColor = if (allDone)
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-        else
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(panelColor)
         ) {
             // Header — siempre visible, click para expandir/colapsar
             Row(
@@ -170,13 +164,6 @@ private fun TodoRow(item: TodoItem) {
         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.sm))
-            .background(
-                if (item.done)
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                else
-                    MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-            )
             .padding(horizontal = Spacing.md, vertical = Spacing.xs)
     ) {
         Box(
