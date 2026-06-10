@@ -7,6 +7,8 @@ import com.localchatbot.core.image.ImageSaver
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.SkillDefinition
+import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -50,7 +52,11 @@ data class ChatUiState(
     /** Si true, las tools de fs se ejecutan sin diálogo de confirmación. */
     val fsYoloMode: Boolean = false,
     /** Si true, las tools de fs aceptan paths fuera del workspace. */
-    val fsAllowOutsideWorkspace: Boolean = false
+    val fsAllowOutsideWorkspace: Boolean = false,
+    /** Skill activa vía /skill en el composer. Persiste hasta que el usuario pulsa la X del badge. */
+    val pendingSkill: SkillDefinition? = null,
+    /** Skills instalados y habilitados disponibles para invocación explícita /skill. */
+    val installedEnabledSkills: List<SkillDefinition> = emptyList()
 ) {
     val hasAttachment: Boolean get() = attachedImageBytes != null
 }
@@ -105,6 +111,10 @@ class ChatViewModel(
             ?.filter { it.role != com.localchatbot.domain.model.Role.Tool }
             ?.sumOf { it.content.length }
             ?: 0
+        val allSkills = SkillCatalog.allFor(prefs.customSkills)
+        val installedEnabled = prefs.installedSkills
+            .filter { it.enabled }
+            .mapNotNull { installed -> allSkills.firstOrNull { it.id == installed.skillId } }
         ChatUiState(
             activeSession = active,
             modelName = active?.model?.takeIf { it.isNotBlank() } ?: prefs.connection.model,
@@ -119,7 +129,9 @@ class ChatViewModel(
             dynamicSuggestions = dynamicSuggestions,
             fsWorkspaceDir = prefs.fsWorkspaceDir,
             fsYoloMode = prefs.fsYoloMode,
-            fsAllowOutsideWorkspace = prefs.fsAllowOutsideWorkspace
+            fsAllowOutsideWorkspace = prefs.fsAllowOutsideWorkspace,
+            pendingSkill = local.pendingSkill,
+            installedEnabledSkills = installedEnabled
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
 
@@ -168,6 +180,9 @@ class ChatViewModel(
 
     fun onDraftChange(value: String) = _local.update { it.copy(draft = value) }
 
+    fun selectSkill(skill: SkillDefinition) = _local.update { it.copy(pendingSkill = skill) }
+    fun clearPendingSkill() = _local.update { it.copy(pendingSkill = null) }
+
     fun onImagePicked(bytes: ByteArray) = _local.update { it.copy(attachedImageBytes = bytes) }
     fun clearAttachment() = _local.update { it.copy(attachedImageBytes = null) }
 
@@ -183,14 +198,27 @@ class ChatViewModel(
         val current = _local.value
         val text = current.draft.trim()
         val image = current.attachedImageBytes
+        val pendingSkill = current.pendingSkill
         val activeId = activeSessionStore.activeSessionId.value
         if (activeId != null && streamingStateStore.isStreaming(activeId)) return
         if (text.isEmpty() && image == null) return
 
         val dataUrl = image?.let { "data:image/jpeg;base64,${Base64.encode(it)}" }
 
-        // Limpiar input al instante para feedback.
+        // Limpiar input al instante para feedback. pendingSkill se mantiene activo hasta
+        // que el usuario pulse la X del badge — permite skills persistentes como caveman.
         _local.update { it.copy(draft = "", errorMessage = null, attachedImageBytes = null) }
+
+        val systemPromptOverride = pendingSkill?.let { skill ->
+            buildString {
+                append(skill.systemPromptAddition)
+                append("\n\n---\n")
+                append("The user invoked this skill by typing \"/${skill.id}\". ")
+                append("Their message may begin with invocation arguments (a level or option documented above). ")
+                append("Treat leading tokens that match documented arguments as configuration, not as the subject of the request. ")
+                append("If the message contains ONLY argument tokens and no actual question or task, briefly acknowledge the active configuration and wait for the user's next message.")
+            }
+        }
 
         // El stream se lanza en applicationScope: sobrevive a la destrucción de este VM.
         // Además pedimos al SO mantener el proceso vivo mientras dure el stream.
@@ -199,7 +227,12 @@ class ChatViewModel(
             streamingStateStore.start(sessionId)
             backgroundExecutor.start("chat-stream-$sessionId")
             try {
-                val result = sendMessageUseCase(sessionId, text.ifBlank { "(imagen)" }, dataUrl)
+                val result = sendMessageUseCase(
+                    sessionId,
+                    text.ifBlank { "(imagen)" },
+                    dataUrl,
+                    systemPromptOverride
+                )
                 result.exceptionOrNull()?.message?.let { msg ->
                     _local.update { it.copy(errorMessage = msg) }
                 }
@@ -355,20 +388,23 @@ class ChatViewModel(
     private data class LocalState(
         val draft: String = "",
         val errorMessage: String? = null,
-        val attachedImageBytes: ByteArray? = null
+        val attachedImageBytes: ByteArray? = null,
+        val pendingSkill: SkillDefinition? = null
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (other !is LocalState) return false
             return draft == other.draft &&
                 errorMessage == other.errorMessage &&
-                attachedImageBytes.contentEqualsOrNull(other.attachedImageBytes)
+                attachedImageBytes.contentEqualsOrNull(other.attachedImageBytes) &&
+                pendingSkill == other.pendingSkill
         }
 
         override fun hashCode(): Int {
             var result = draft.hashCode()
             result = 31 * result + (errorMessage?.hashCode() ?: 0)
             result = 31 * result + (attachedImageBytes?.contentHashCode() ?: 0)
+            result = 31 * result + (pendingSkill?.hashCode() ?: 0)
             return result
         }
     }

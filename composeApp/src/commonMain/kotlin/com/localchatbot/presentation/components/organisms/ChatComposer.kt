@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -35,9 +36,11 @@ import com.localchatbot.core.image.decodeImage
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
+import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.presentation.components.atoms.ChatInputField
 import com.localchatbot.presentation.components.atoms.IconSquareButton
 import com.localchatbot.presentation.components.atoms.SendIconButton
+import com.localchatbot.presentation.components.molecules.SkillSuggestionPopup
 
 @Composable
 fun ChatComposer(
@@ -54,6 +57,10 @@ fun ChatComposer(
     onTemplates: (() -> Unit)? = null,
     voiceSupported: Boolean = true,
     onPasteImage: ((ByteArray) -> Unit)? = null,
+    pendingSkill: SkillDefinition? = null,
+    installedSkills: List<SkillDefinition> = emptyList(),
+    onSelectSkill: (SkillDefinition) -> Unit = {},
+    onClearSkill: () -> Unit = {},
     /**
      * Slot opcional renderizado debajo de la fila del input (después del botón
      * de adjuntar imagen y de plantillas). Se usa para los chips del agente
@@ -66,7 +73,32 @@ fun ChatComposer(
         keyboard?.hide()
         onSend()
     }
+
+    val showSkillPopup = value.startsWith("/") && installedSkills.isNotEmpty()
+    // Solo el primer token tras "/" filtra el popup; el resto es el argumento.
+    val skillQuery = if (value.startsWith("/")) value.drop(1).substringBefore(' ') else ""
+
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
+        if (showSkillPopup) {
+            SkillSuggestionPopup(
+                query = skillQuery,
+                skills = installedSkills,
+                onSelect = { skill ->
+                    onSelectSkill(skill)
+                    // El texto tras el primer espacio queda como mensaje del usuario.
+                    val remainder = value.drop(1).substringAfter(' ', "").trim()
+                    onValueChange(remainder)
+                },
+                modifier = Modifier.padding(bottom = Spacing.xs)
+            )
+        }
+        if (pendingSkill != null) {
+            SkillBadge(
+                skill = pendingSkill,
+                onClear = onClearSkill,
+                modifier = Modifier.padding(bottom = Spacing.xs)
+            )
+        }
         if (attachedImageBytes != null) {
             AttachmentPreview(
                 bytes = attachedImageBytes,
@@ -103,6 +135,42 @@ fun ChatComposer(
         if (agentBar != null) {
             Spacer(Modifier.size(Spacing.sm))
             agentBar()
+        }
+    }
+}
+
+@Composable
+private fun SkillBadge(
+    skill: SkillDefinition,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.pill))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = Spacing.sm, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            "/${skill.id}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer
+        )
+        Box(
+            modifier = Modifier
+                .size(16.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onClear),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Quitar skill",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(12.dp)
+            )
         }
     }
 }

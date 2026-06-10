@@ -1,10 +1,13 @@
 package com.localchatbot.data.repository
 
+import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ConnectionMode
+import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.PromptTemplate
+import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,10 +16,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRepository {
+class PreferencesRepositoryImpl(
+    private val settings: Settings,
+    private val skillFileStore: SkillFileStore
+) : PreferencesRepository {
 
     private val templatesJson = Json { ignoreUnknownKeys = true }
     private val templatesSerializer = ListSerializer(PromptTemplate.serializer())
+    private val skillsSerializer = ListSerializer(InstalledSkill.serializer())
+    private val customSkillsSerializer = ListSerializer(SkillDefinition.serializer())
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
@@ -87,12 +95,33 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
         _state.value = _state.value.copy(fsAllowOutsideWorkspace = value)
     }
 
+    override suspend fun setInstalledSkills(skills: List<InstalledSkill>) {
+        settings.putString(KEY_INSTALLED_SKILLS, templatesJson.encodeToString(skillsSerializer, skills))
+        _state.value = _state.value.copy(installedSkills = skills)
+    }
+
+    override suspend fun setCustomSkills(skills: List<SkillDefinition>) {
+        if (skillFileStore.isAvailable) {
+            skillFileStore.saveAll(skills)
+        } else {
+            settings.putString(KEY_CUSTOM_SKILLS, templatesJson.encodeToString(customSkillsSerializer, skills))
+        }
+        _state.value = _state.value.copy(customSkills = skills)
+    }
+
+    override suspend fun refreshCustomSkills() {
+        if (!skillFileStore.isAvailable) return
+        val skills = skillFileStore.loadAll()
+        _state.value = _state.value.copy(customSkills = skills)
+    }
+
     override suspend fun reset() {
         listOf(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
-            KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE
+            KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE,
+            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -123,8 +152,36 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
             imageServiceUrl = settings.getString(KEY_IMAGE_URL, default.imageServiceUrl),
             fsWorkspaceDir = settings.getStringOrNull(KEY_FS_WORKSPACE),
             fsYoloMode = settings.getBoolean(KEY_FS_YOLO, default.fsYoloMode),
-            fsAllowOutsideWorkspace = settings.getBoolean(KEY_FS_ALLOW_OUTSIDE, default.fsAllowOutsideWorkspace)
+            fsAllowOutsideWorkspace = settings.getBoolean(KEY_FS_ALLOW_OUTSIDE, default.fsAllowOutsideWorkspace),
+            installedSkills = runCatching {
+                val raw = settings.getStringOrNull(KEY_INSTALLED_SKILLS) ?: return@runCatching emptyList()
+                templatesJson.decodeFromString(skillsSerializer, raw)
+            }.getOrDefault(emptyList()),
+            customSkills = loadCustomSkills()
         )
+    }
+
+    private fun loadCustomSkills(): List<SkillDefinition> {
+        if (!skillFileStore.isAvailable) {
+            return runCatching {
+                val raw = settings.getStringOrNull(KEY_CUSTOM_SKILLS) ?: return@runCatching emptyList()
+                templatesJson.decodeFromString(customSkillsSerializer, raw)
+            }.getOrDefault(emptyList())
+        }
+        // Migrate existing JSON-stored skills to files (runs once)
+        val jsonRaw = settings.getStringOrNull(KEY_CUSTOM_SKILLS)
+        if (jsonRaw != null) {
+            runCatching {
+                val existing = templatesJson.decodeFromString(customSkillsSerializer, jsonRaw)
+                if (existing.isNotEmpty()) {
+                    val current = skillFileStore.loadAll()
+                    val merged = (current + existing).distinctBy { it.id }
+                    skillFileStore.saveAll(merged)
+                }
+                settings.remove(KEY_CUSTOM_SKILLS)
+            }
+        }
+        return skillFileStore.loadAll()
     }
 
     private companion object {
@@ -143,5 +200,7 @@ class PreferencesRepositoryImpl(private val settings: Settings) : PreferencesRep
         const val KEY_FS_WORKSPACE = "fs_workspace_dir"
         const val KEY_FS_YOLO = "fs_yolo_mode"
         const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
+        const val KEY_INSTALLED_SKILLS = "installed_skills"
+        const val KEY_CUSTOM_SKILLS = "custom_skills"
     }
 }

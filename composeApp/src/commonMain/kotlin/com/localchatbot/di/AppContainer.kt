@@ -11,6 +11,8 @@ import com.localchatbot.core.network.HttpClientFactory
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.storage.SettingsFactory
+import com.localchatbot.core.storage.SkillFileStore
+import com.localchatbot.core.storage.createSkillFileStore
 import com.localchatbot.core.voice.SpeechRecognizer
 import com.localchatbot.core.voice.TextToSpeech
 import com.localchatbot.core.voice.VoiceConversationController
@@ -36,6 +38,9 @@ import com.localchatbot.domain.tools.ReadFileTool
 import com.localchatbot.domain.tools.RunCommandTool
 import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.domain.tools.ToolRegistry
+import com.localchatbot.domain.skill.SkillCatalog
+import com.localchatbot.domain.tools.ScriptToolFactory
+import com.localchatbot.domain.tools.UseSkillTool
 import com.localchatbot.domain.tools.WebSearchTool
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
 import com.localchatbot.domain.usecase.CreateSessionUseCase
@@ -71,7 +76,8 @@ class AppContainer {
      */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings)
+    val skillFileStore: SkillFileStore = createSkillFileStore()
+    val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
     val chatRepository: ChatRepository = ChatRepositoryImpl(settings, json)
     val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi)
 
@@ -97,6 +103,13 @@ class AppContainer {
     val toolConfirmationController = ToolConfirmationController(preferencesRepository)
 
     val todoTool = TodoTool(activeSessionStore)
+    val useSkillTool = UseSkillTool(
+        installedSkillsProvider = { preferencesRepository.current().installedSkills },
+        skillLookup = { id ->
+            val prefs = preferencesRepository.current()
+            SkillCatalog.byId(id, prefs.customSkills)
+        }
+    )
     private val createFileTool = CreateFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val editFileTool = EditFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val deleteFileTool = DeleteFileTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
@@ -108,6 +121,7 @@ class AppContainer {
     val toolRegistry = ToolRegistry(
         listOf(
             todoTool,
+            useSkillTool,
             webSearchTool,
             imageGenerationTool,
             diagramRenderTool,
@@ -121,6 +135,13 @@ class AppContainer {
         )
     )
 
+    private val scriptToolFactory = ScriptToolFactory(
+        agent = filesystemAgent,
+        confirm = toolConfirmationController,
+        preferences = preferencesRepository,
+        json = json
+    )
+
     val createSession = CreateSessionUseCase(chatRepository, preferencesRepository)
     val sendMessage = SendMessageUseCase(
         chats = chatRepository,
@@ -129,7 +150,9 @@ class AppContainer {
         toolRegistry = toolRegistry,
         streamingStateStore = streamingStateStore,
         json = json,
-        scope = applicationScope
+        scope = applicationScope,
+        scriptToolFactory = scriptToolFactory,
+        confirm = toolConfirmationController
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
