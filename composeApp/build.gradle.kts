@@ -131,6 +131,15 @@ compose.desktop {
             linux {
                 packageName = "localchatbot"
             }
+            windows {
+                // UUID fijo: jpackage lo usa como UpgradeCode del MSI. Estable →
+                // instalador reemplaza la versión anterior en vez de instalar al lado.
+                upgradeUuid = "CDBBFAEA-613E-44EF-8F84-B3A66E4F5CF7"
+                menuGroup = "LocalChatBot"
+                perUserInstall = true
+                // Acceso directo en el escritorio + entrada en menú inicio.
+                shortcut = true
+            }
         }
     }
 }

@@ -2,7 +2,9 @@ name: Windows MSI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feature/**'
 
 # Necesario para que la action pueda crear/actualizar el release y mover el tag.
 permissions:
@@ -29,6 +31,7 @@ jobs:
       # Pre-release rodante: sobrescribe el tag fijo `latest` y reemplaza el
       # .msi adjunto en cada push a main. Link de descarga permanente y único.
       - name: Publish rolling pre-release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -38,3 +41,14 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: composeApp/build/compose/binaries/main/msi/*.msi
           fail_on_unmatched_files: true
+
+      # Builds de ramas feature/*: artifact descargable, NO release. Se borra a
+      # los 30 días automáticamente.
+      - name: Upload feature build artifact
+        if: startsWith(github.ref, 'refs/heads/feature/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalChatBot-msi-${{ github.sha }}
+          path: composeApp/build/compose/binaries/main/msi/*.msi
+          retention-days: 30
+          if-no-files-found: error
