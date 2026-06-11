@@ -42,6 +42,7 @@ import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.UseSkillTool
 import com.localchatbot.domain.tools.WebSearchTool
+import com.localchatbot.data.mcp.McpToolProvider
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
 import com.localchatbot.domain.usecase.CreateSessionUseCase
 import com.localchatbot.domain.usecase.ListModelsUseCase
@@ -142,6 +143,14 @@ class AppContainer {
         json = json
     )
 
+    val mcpToolProvider = McpToolProvider(
+        prefs = preferencesRepository,
+        httpClient = httpClient,
+        confirm = toolConfirmationController,
+        json = json,
+        inspector = networkInspector
+    )
+
     val createSession = CreateSessionUseCase(chatRepository, preferencesRepository)
     val sendMessage = SendMessageUseCase(
         chats = chatRepository,
@@ -152,6 +161,7 @@ class AppContainer {
         json = json,
         scope = applicationScope,
         scriptToolFactory = scriptToolFactory,
+        mcpToolProvider = mcpToolProvider,
         confirm = toolConfirmationController
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)

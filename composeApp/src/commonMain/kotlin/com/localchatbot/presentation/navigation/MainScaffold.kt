@@ -39,6 +39,8 @@ import com.localchatbot.presentation.features.settings.SettingsEditorSheet
 import com.localchatbot.presentation.features.settings.SettingsEditorViewModel
 import com.localchatbot.presentation.features.settings.SettingsScreen
 import com.localchatbot.presentation.features.settings.SettingsViewModel
+import com.localchatbot.presentation.features.mcp.McpServersScreen
+import com.localchatbot.presentation.features.mcp.McpServersViewModel
 import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
 
@@ -48,6 +50,7 @@ fun MainScaffold(container: AppContainer) {
     var modelPickerOpen by rememberSaveable { mutableStateOf(false) }
     var inspectorOpen by rememberSaveable { mutableStateOf(false) }
     var skillsOpen by rememberSaveable { mutableStateOf(false) }
+    var mcpOpen by rememberSaveable { mutableStateOf(false) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -83,6 +86,9 @@ fun MainScaffold(container: AppContainer) {
     }
     val skillsViewModel = remember {
         SkillsViewModel(preferences = container.preferencesRepository, skillFileStore = container.skillFileStore)
+    }
+    val mcpServersViewModel = remember {
+        McpServersViewModel(preferences = container.preferencesRepository, mcpToolProvider = container.mcpToolProvider)
     }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
@@ -145,7 +151,8 @@ fun MainScaffold(container: AppContainer) {
                                 )
                             },
                             onOpenNetworkInspector = { inspectorOpen = true },
-                            onOpenSkills = { skillsOpen = true }
+                            onOpenSkills = { skillsOpen = true },
+                            onOpenMcpServers = { mcpOpen = true }
                         )
                     }
                 }
@@ -178,6 +185,13 @@ fun MainScaffold(container: AppContainer) {
             SkillsScreen(
                 viewModel = skillsViewModel,
                 onClose = { skillsOpen = false }
+            )
+        }
+
+        if (mcpOpen) {
+            McpServersScreen(
+                viewModel = mcpServersViewModel,
+                onClose = { mcpOpen = false }
             )
         }
 

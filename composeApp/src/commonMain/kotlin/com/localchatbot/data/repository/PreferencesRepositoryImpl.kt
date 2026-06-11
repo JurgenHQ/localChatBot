@@ -6,6 +6,7 @@ import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.InstalledSkill
+import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -25,6 +26,7 @@ class PreferencesRepositoryImpl(
     private val templatesSerializer = ListSerializer(PromptTemplate.serializer())
     private val skillsSerializer = ListSerializer(InstalledSkill.serializer())
     private val customSkillsSerializer = ListSerializer(SkillDefinition.serializer())
+    private val mcpSerializer = ListSerializer(McpServerConfig.serializer())
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
@@ -115,13 +117,18 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(customSkills = skills)
     }
 
+    override suspend fun setMcpServers(servers: List<McpServerConfig>) {
+        settings.putString(KEY_MCP_SERVERS, templatesJson.encodeToString(mcpSerializer, servers))
+        _state.value = _state.value.copy(mcpServers = servers)
+    }
+
     override suspend fun reset() {
         listOf(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE,
-            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS
+            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -157,7 +164,11 @@ class PreferencesRepositoryImpl(
                 val raw = settings.getStringOrNull(KEY_INSTALLED_SKILLS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(skillsSerializer, raw)
             }.getOrDefault(emptyList()),
-            customSkills = loadCustomSkills()
+            customSkills = loadCustomSkills(),
+            mcpServers = runCatching {
+                val raw = settings.getStringOrNull(KEY_MCP_SERVERS) ?: return@runCatching emptyList()
+                templatesJson.decodeFromString(mcpSerializer, raw)
+            }.getOrDefault(emptyList())
         )
     }
 
@@ -202,5 +213,6 @@ class PreferencesRepositoryImpl(
         const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
         const val KEY_INSTALLED_SKILLS = "installed_skills"
         const val KEY_CUSTOM_SKILLS = "custom_skills"
+        const val KEY_MCP_SERVERS = "mcp_servers"
     }
 }

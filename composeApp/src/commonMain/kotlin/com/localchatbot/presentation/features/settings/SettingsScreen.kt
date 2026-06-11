@@ -51,6 +51,7 @@ fun SettingsScreen(
     editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
+    onOpenMcpServers: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -65,6 +66,7 @@ fun SettingsScreen(
             onClearHistory = viewModel::clearHistory,
             onOpenNetworkInspector = onOpenNetworkInspector,
             onOpenSkills = onOpenSkills,
+            onOpenMcpServers = onOpenMcpServers,
             onPickWorkspace = viewModel::updateFsWorkspaceDir,
             onClearWorkspace = { viewModel.updateFsWorkspaceDir(null) },
             onToggleYolo = viewModel::toggleFsYoloMode,
@@ -91,6 +93,7 @@ fun SettingsContent(
     onClearHistory: () -> Unit,
     onOpenNetworkInspector: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
+    onOpenMcpServers: () -> Unit = {},
     onPickWorkspace: (String) -> Unit = {},
     onClearWorkspace: () -> Unit = {},
     onToggleYolo: (Boolean) -> Unit = {},
@@ -302,6 +305,26 @@ fun SettingsContent(
         }
         Text(
             "Amplía el comportamiento del agente con instrucciones especializadas. El modelo los carga bajo demanda.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        SectionLabel("MCP (Model Context Protocol)")
+        SectionCard {
+            SettingsRow(
+                title = "Servidores MCP",
+                onClick = onOpenMcpServers,
+                trailing = {
+                    val count = preferences.mcpServers.count { it.enabled }
+                    MonoValue(
+                        if (count == 0) "Sin configurar" else "$count activo${if (count != 1) "s" else ""}",
+                        maxChars = 16
+                    )
+                }
+            )
+        }
+        Text(
+            "Conecta servidores MCP externos (stdio o HTTP) para que el modelo acceda a tools de terceros: bases de datos, APIs, herramientas de desarrollo.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

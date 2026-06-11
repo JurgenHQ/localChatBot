@@ -9,6 +9,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.localchatbot.di.AppContainer
+import kotlinx.coroutines.runBlocking
 import java.awt.Color as AwtColor
 import java.awt.Dimension
 import java.awt.Toolkit
@@ -48,7 +49,10 @@ fun main() {
                 // La persistencia de sesiones escribe con throttle de 250ms;
                 // sin este hook, las últimas mutaciones se pierden al cerrar.
                 Runtime.getRuntime().addShutdownHook(
-                    Thread { c.chatRepository.flushPendingWrites() }
+                    Thread {
+                        c.chatRepository.flushPendingWrites()
+                        runBlocking { c.mcpToolProvider.closeAll() }
+                    }
                 )
             }
         }

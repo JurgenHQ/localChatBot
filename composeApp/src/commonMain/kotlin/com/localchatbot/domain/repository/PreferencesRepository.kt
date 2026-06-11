@@ -4,6 +4,7 @@ import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.InstalledSkill
+import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
 import com.localchatbot.domain.model.SkillDefinition
 import kotlinx.coroutines.flow.Flow
@@ -25,5 +26,6 @@ interface PreferencesRepository {
     suspend fun setInstalledSkills(skills: List<InstalledSkill>)
     suspend fun setCustomSkills(skills: List<SkillDefinition>)
     suspend fun refreshCustomSkills()
+    suspend fun setMcpServers(servers: List<McpServerConfig>)
     suspend fun reset()
 }

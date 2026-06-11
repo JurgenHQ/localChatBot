@@ -17,6 +17,7 @@ import com.localchatbot.domain.repository.StreamEvent
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.skill.SkillCatalog
+import com.localchatbot.data.mcp.McpToolProvider
 import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.truncateToolOutput
@@ -59,6 +60,7 @@ class SendMessageUseCase(
      */
     private val scope: CoroutineScope,
     private val scriptToolFactory: ScriptToolFactory? = null,
+    private val mcpToolProvider: McpToolProvider? = null,
     private val confirm: ToolConfirmationController? = null
 ) {
     /**
@@ -100,7 +102,10 @@ class SendMessageUseCase(
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
         // que no puede ejecutar.
         val scriptTools = scriptToolFactory?.buildEnabledTools() ?: emptyList()
-        val tools = (toolRegistry.availableDefinitions() + scriptTools.map { it.definition })
+        val mcpTools = mcpToolProvider?.currentTools() ?: emptyList()
+        val tools = (toolRegistry.availableDefinitions()
+            + scriptTools.map { it.definition }
+            + mcpTools.filter { runCatching { it.isAvailable() }.getOrDefault(false) }.map { it.definition })
             .takeIf { it.isNotEmpty() }
 
         return try {
@@ -227,13 +232,15 @@ class SendMessageUseCase(
                     val yolo = prefs.current().fsYoloMode
                     val needsSequential = !yolo && finalToolCalls.any { c ->
                         (toolRegistry.find(c.function.name)
-                            ?: scriptTools.firstOrNull { it.name == c.function.name })
+                            ?: scriptTools.firstOrNull { it.name == c.function.name }
+                            ?: mcpTools.firstOrNull { it.name == c.function.name })
                             ?.requiresConfirmation == true
                     }
 
                     suspend fun executeCall(call: ToolCall): Pair<ToolCall, String> {
                         val tool = toolRegistry.find(call.function.name)
                             ?: scriptTools.firstOrNull { it.name == call.function.name }
+                            ?: mcpTools.firstOrNull { it.name == call.function.name }
                         val label = tool?.activityLabel
                         if (label != null && tool.isAvailable()) {
                             streamingStateStore.markActivity(

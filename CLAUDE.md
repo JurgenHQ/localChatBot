@@ -69,6 +69,7 @@ Presentation (Compose + ViewModels)
 | `SessionDrawer` | `SessionsViewModel` |
 | `SettingsScreen` | `SettingsViewModel` |
 | `SettingsEditorSheet` | `SettingsEditorViewModel` |
+| `SkillsScreen` | `SkillsViewModel` |
 
 Each screen has a `*Content(state, callbacks)` stateless composable for use in `@Preview`. The `NetworkInspectorScreen` is the only feature without a ViewModel (see below).
 
@@ -81,11 +82,16 @@ Each screen has a `*Content(state, callbacks)` stateless composable for use in `
 ### Tool-calling loop (`UseCases.kt`)
 
 `SendMessageUseCase` drives the multi-round loop:
-1. Stream `/v1/chat/completions` with tool definitions.
-2. If `tool_calls` arrive, execute each tool (web search, image generation, diagram render).
-3. Push results as `role=tool` messages and re-stream (max `MAX_TOOL_ITERATIONS` rounds, currently 200).
-4. Drain any out-of-band image produced and attach it to the final `ChatMessage` without sending base64 to the model.
-5. After the first user→assistant exchange of a session, fire-and-forget a cheap non-streaming completion that generates the session title (replaces the first-40-chars placeholder).
+1. Build the system prompt: user system text + optional skills index (`buildSkillsIndex` lists enabled skills so the model knows to call `use_skill`) + agent tool prompt.
+2. Stream `/v1/chat/completions` with tool definitions.
+3. If `tool_calls` arrive, execute each tool (web search, image generation, diagram render, filesystem/shell, `use_skill`, skill scripts). Destructive/confirmable tools route through `ToolConfirmationController` first (see below).
+4. Push results as `role=tool` messages and re-stream (max `MAX_TOOL_ITERATIONS` rounds, currently 200).
+5. Drain any out-of-band image produced and attach it to the final `ChatMessage` without sending base64 to the model.
+6. After the first user→assistant exchange of a session, fire-and-forget a cheap non-streaming completion that generates the session title (replaces the first-40-chars placeholder).
+
+### Human-in-the-loop tool confirmation
+
+`ToolConfirmationController` (`core/confirm/`) coordinates approval between tools (data layer) and the UI. Tools with `requiresConfirmation` call `requestApproval(title, detail, force)`, which publishes a `PendingConfirmation` to a `StateFlow` and suspends until the UI resolves it. When `AppPreferences.fsYoloMode` is on, approval returns immediately without a dialog — except when `force = true` (used by `run_command` when the command matches the destructive-pattern denylist), which always shows the dialog even in YOLO.
 
 ### Available tools
 
@@ -95,8 +101,33 @@ Each screen has a `*Content(state, callbacks)` stateless composable for use in `
 | `generate_image` | Image Service at `:8080` | SDXL via ComfyUI; image returned out-of-band |
 | `render_diagram` | Image Service at `:8080` | Mermaid → PNG via mermaid-cli + headless Chromium |
 | `read_file` / `create_file` / `edit_file` / `delete_file` / `list_directory` / `create_directory` | Desktop only | Filesystem agent tools; `edit_file` does exact-string replacement (old string must be unique unless `replace_all`) |
-| `run_command` | Desktop only | Shell execution tool (foreground with timeout, or background with PID) |
+| `run_command` | Desktop only | Shell execution tool (foreground with timeout, or background with PID); destructive patterns force a confirmation dialog even in YOLO |
 | `manage_todos` | — | Session-scoped to-do list the model uses to plan multi-step tasks; shown in `TodoProgressPanel` |
+| `use_skill` | — | Loads the full instructions for an installed skill on demand (the skills index in the system prompt only lists each skill's short description) |
+| `sk_<skillId>_<scriptName>` | Desktop only | Custom per-skill shell scripts (`SkillScript`), built dynamically by `ScriptToolFactory`; each runs through the confirmation controller |
+| `mcp_<serverId>_<toolName>` | Stdio: Desktop only · HTTP: all platforms | MCP server tools, built dynamically by `McpToolProvider`; each runs through the confirmation controller |
+
+### MCP (Model Context Protocol)
+
+Connects external MCP servers so the model can invoke their tools via the standard JSON-RPC 2.0 protocol.
+
+- **`McpServerConfig`** (`domain/model/McpServerConfig.kt`) — sealed `McpTransportConfig`: `Stdio(command, args, env)` or `Http(url, headers)`. Persisted via `PreferencesRepository` (JSON in settings, key `mcp_servers`).
+- **`McpClient`** (`data/mcp/`) — orchestrates `initialize` → `tools/list` → `tools/call`. Timeouts: 10 s for init/list, 30 s per call.
+- **Transports** — `HttpMcpTransport` (commonMain, Ktor) for HTTP; `createStdioTransport` expect/actual factory: desktop spawns a `Process` (newline-delimited JSON-RPC over stdin/stdout), Android/iOS return `null`.
+- **`McpToolProvider`** (`data/mcp/`) — manages lazy client connections per enabled server (mutex-guarded). Merges MCP tool definitions into the send loop alongside scriptTools. `closeAll()` is called from the desktop shutdown hook in `main.kt` to kill stdio processes cleanly.
+- **`McpTool : Tool`** (`domain/tools/`) — name `mcp_<serverId>_<toolName>` (sanitized, same `[^a-zA-Z0-9_-]→_` rule as `sk_*`). `isAvailable() = false` for stdio servers on non-desktop platforms. `requiresConfirmation = true` → routes through `ToolConfirmationController`.
+- **UI**: `McpServersScreen` / `McpServersViewModel` / `McpServerEditSheet` (`presentation/features/mcp/`). Entry from `SettingsScreen` via `onOpenMcpServers`. Shows connection `StatusDot` (Unknown/Connecting/Connected/Error) per server and discovered tool count after "test connection".
+- Cap: 30 tools per server (`MAX_TOOLS_PER_SERVER`) to avoid bloating the context sent to the model.
+- Network Inspector records MCP HTTP calls as `Kind.McpCall`.
+
+### Skills
+
+Reusable behavior packs the user can enable to specialize the model. A `SkillDefinition` carries a short `description` (for the index), a `fullDescription`, a `systemPromptAddition` (injected when loaded via `use_skill`), and optional `scripts` (shell commands surfaced as `sk_*` tools on Desktop).
+
+- **`SkillCatalog`** (`domain/skill/`) holds the built-in skills; `allFor(customSkills)` and `byId(id, customSkills)` merge built-ins with user-created ones.
+- **Custom & imported skills** are persisted on disk via `SkillFileStore` (`expect`/`actual` per platform under `core/storage/`); `importFromFolder` parses skill markdown folders. `PreferencesRepository` tracks which skills are installed/enabled (`InstalledSkill`).
+- **UI**: `SkillsScreen` / `SkillsViewModel` (browse, toggle, import) and `SkillCreateSheet` (author a new skill); `SkillSuggestionPopup` surfaces matching skills in the composer. Opened from `SettingsScreen` via `onOpenSkills`.
+- **`SkillsExport`** is the JSON shape for exporting/importing skill bundles.
 
 ### NetworkInspectorScreen (no ViewModel)
 

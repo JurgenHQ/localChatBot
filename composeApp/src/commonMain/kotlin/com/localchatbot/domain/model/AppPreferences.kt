@@ -45,7 +45,8 @@ data class AppPreferences(
      */
     val fsAllowOutsideWorkspace: Boolean = false,
     val installedSkills: List<InstalledSkill> = emptyList(),
-    val customSkills: List<SkillDefinition> = emptyList()
+    val customSkills: List<SkillDefinition> = emptyList(),
+    val mcpServers: List<McpServerConfig> = emptyList()
 ) {
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()
@@ -78,7 +79,8 @@ data class AppPreferences(
             fsYoloMode = false,
             fsAllowOutsideWorkspace = false,
             installedSkills = emptyList(),
-            customSkills = emptyList()
+            customSkills = emptyList(),
+            mcpServers = emptyList()
         )
     }
 }
