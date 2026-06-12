@@ -40,7 +40,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.domain.model.McpServerConfig
-import com.localchatbot.domain.model.McpTransportConfig
 import com.localchatbot.presentation.components.atoms.SectionLabel
 import com.localchatbot.presentation.components.atoms.StatusDot
 import com.localchatbot.presentation.components.molecules.SectionCard
@@ -93,7 +92,11 @@ private fun McpServersContent(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onClose) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Volver")
+                Icon(
+                    Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Volver",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
             Text(
                 "Servidores MCP",
@@ -102,7 +105,11 @@ private fun McpServersContent(
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onAdd) {
-                Icon(Icons.Outlined.Add, contentDescription = "Agregar servidor")
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "Agregar servidor",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
         }
 
@@ -130,8 +137,8 @@ private fun McpServersContent(
 
         Spacer(Modifier.height(Spacing.lg))
         Text(
-            "Los servidores MCP exponen tools externas (bases de datos, APIs, herramientas) que el modelo puede invocar. " +
-                "Stdio: lanza un proceso local. HTTP: conecta a un endpoint remoto.",
+            "Los servidores MCP exponen tools externas (bases de datos, APIs, herramientas) que el modelo " +
+                "puede invocar vía un endpoint HTTP remoto. Usa los headers para autenticación si el server lo requiere.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -158,9 +165,13 @@ private fun McpServerRow(
         ) {
             StatusIndicator(item.status, modifier = Modifier.padding(end = Spacing.xs))
             Column(modifier = Modifier.weight(1f)) {
-                Text(item.config.name, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    item.config.transport.shortLabel(),
+                    item.config.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    item.config.url,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -186,10 +197,20 @@ private fun McpServerRow(
             horizontalArrangement = Arrangement.End
         ) {
             IconButton(onClick = onTest) {
-                Icon(Icons.Outlined.Refresh, contentDescription = "Probar conexión", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Outlined.Refresh,
+                    contentDescription = "Probar conexión",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp)
+                )
             }
             IconButton(onClick = onEdit) {
-                Icon(Icons.Outlined.Edit, contentDescription = "Editar", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Outlined.Edit,
+                    contentDescription = "Editar",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp)
+                )
             }
             IconButton(onClick = onDelete) {
                 Icon(
@@ -215,9 +236,4 @@ private fun StatusIndicator(status: McpServerStatus, modifier: Modifier = Modifi
         McpServerStatus.Unknown ->
             StatusDot(color = MaterialTheme.colorScheme.outlineVariant, modifier = modifier)
     }
-}
-
-private fun McpTransportConfig.shortLabel(): String = when (this) {
-    is McpTransportConfig.Stdio -> "stdio: $command"
-    is McpTransportConfig.Http -> "http: $url"
 }

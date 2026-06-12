@@ -1,30 +1,18 @@
 package com.localchatbot.domain.model
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-@Serializable
-sealed class McpTransportConfig {
-    @Serializable
-    @SerialName("stdio")
-    data class Stdio(
-        val command: String,
-        val args: List<String> = emptyList(),
-        val env: Map<String, String> = emptyMap()
-    ) : McpTransportConfig()
-
-    @Serializable
-    @SerialName("http")
-    data class Http(
-        val url: String,
-        val headers: Map<String, String> = emptyMap()
-    ) : McpTransportConfig()
-}
-
+/**
+ * Configuración de un servidor MCP remoto (transporte HTTP / Streamable HTTP).
+ *
+ * - [url]: endpoint del servidor MCP.
+ * - [headers]: cabeceras extra para autenticación (ej. `Authorization: Bearer xxx`).
+ */
 @Serializable
 data class McpServerConfig(
     val id: String,
     val name: String,
-    val transport: McpTransportConfig,
+    val url: String,
+    val headers: Map<String, String> = emptyMap(),
     val enabled: Boolean = true
 )

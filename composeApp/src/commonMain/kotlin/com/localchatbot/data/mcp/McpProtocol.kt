@@ -4,6 +4,20 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/**
+ * Construye el JSON de una notificación JSON-RPC 2.0 (sin `id`, sin respuesta).
+ * Se arma a mano porque [JsonRpcRequest] siempre lleva `id` — una notificación
+ * con `id` es técnicamente un request y rompería el handshake.
+ */
+fun buildJsonRpcNotification(method: String, params: JsonObject?): JsonObject =
+    buildJsonObject {
+        put("jsonrpc", "2.0")
+        put("method", method)
+        if (params != null) put("params", params)
+    }
 
 // ─── JSON-RPC 2.0 ────────────────────────────────────────────────────────────
 
@@ -31,19 +45,6 @@ data class JsonRpcError(
 )
 
 // ─── MCP protocol types ───────────────────────────────────────────────────────
-
-@Serializable
-data class McpInitializeParams(
-    @SerialName("protocolVersion") val protocolVersion: String = "2024-11-05",
-    @SerialName("clientInfo") val clientInfo: McpClientInfo = McpClientInfo(),
-    val capabilities: JsonObject? = null
-)
-
-@Serializable
-data class McpClientInfo(
-    val name: String = "LocalChatBot",
-    val version: String = "1.0.0"
-)
 
 @Serializable
 data class McpToolInfo(

@@ -19,6 +19,38 @@ data class WebSource(
     val snippet: String
 )
 
+/**
+ * Métricas de generación de una respuesta del modelo. [inputTokens] viene del
+ * servidor (`usage.prompt_tokens`); [outputTokens] del servidor o estimado por
+ * longitud cuando [estimated] es true.
+ */
+@Serializable
+data class TokenMetrics(
+    val inputTokens: Int? = null,
+    val outputTokens: Int? = null,
+    val generationMs: Long? = null,
+    val estimated: Boolean = false,
+    /**
+     * Tamaño real del contexto = `prompt_tokens` de la ÚLTIMA llamada al modelo.
+     * A diferencia de [inputTokens] (que suma todas las rondas de tool-calls para el
+     * coste), esto refleja cuánto ocupa la ventana de contexto ahora mismo. Lo usa la
+     * barra de contexto del top bar.
+     */
+    val contextTokens: Int? = null
+) {
+    val totalTokens: Int?
+        get() = when {
+            inputTokens != null && outputTokens != null -> inputTokens + outputTokens
+            inputTokens != null -> inputTokens
+            outputTokens != null -> outputTokens
+            else -> null
+        }
+
+    val tokensPerSecond: Double?
+        get() = if (outputTokens != null && generationMs != null && generationMs > 0)
+            outputTokens / (generationMs / 1000.0) else null
+}
+
 @Serializable
 data class ChatMessage(
     val id: String,
@@ -40,7 +72,9 @@ data class ChatMessage(
      * DeepSeek-R1 o tipo o1. NO se envía de vuelta al modelo en siguientes turnos
      * (es contenido interno). La UI lo muestra en un panel collapsible aparte.
      */
-    val reasoning: String? = null
+    val reasoning: String? = null,
+    /** Métricas de tokens/velocidad de la respuesta. Solo en role=Assistant final. */
+    val metrics: TokenMetrics? = null
 )
 
 @Serializable

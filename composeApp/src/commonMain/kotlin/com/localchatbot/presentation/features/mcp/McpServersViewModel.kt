@@ -2,10 +2,8 @@ package com.localchatbot.presentation.features.mcp
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.localchatbot.core.util.newId
 import com.localchatbot.data.mcp.McpToolProvider
 import com.localchatbot.domain.model.McpServerConfig
-import com.localchatbot.domain.model.McpTransportConfig
 import com.localchatbot.domain.repository.PreferencesRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -108,21 +106,5 @@ class McpServersViewModel(
                     ))
                 }
             }
-    }
-
-    companion object {
-        fun newStdioConfig(command: String, args: List<String>, env: Map<String, String>, name: String): McpServerConfig =
-            McpServerConfig(
-                id = "mcp_${newId()}",
-                name = name.ifBlank { command.substringAfterLast('/').substringAfterLast('\\') },
-                transport = McpTransportConfig.Stdio(command = command, args = args, env = env)
-            )
-
-        fun newHttpConfig(url: String, headers: Map<String, String>, name: String): McpServerConfig =
-            McpServerConfig(
-                id = "mcp_${newId()}",
-                name = name.ifBlank { url },
-                transport = McpTransportConfig.Http(url = url, headers = headers)
-            )
     }
 }

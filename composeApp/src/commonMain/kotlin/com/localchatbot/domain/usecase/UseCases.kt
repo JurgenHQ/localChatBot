@@ -122,6 +122,13 @@ class SendMessageUseCase(
             // iteración final no produce contenido.
             var latestAssistantId: String? = null
             var lastToolResultJson: String? = null
+            // Métricas de tokens acumuladas a lo largo de todas las rondas.
+            var sumInputTokens = 0
+            var sumOutputTokens = 0
+            var sumGenerationMs = 0L
+            var lastContextTokens: Int? = null
+            var hasMetrics = false
+            var anyEstimated = false
 
             while (iter < MAX_TOOL_ITERATIONS) {
                 val currentMessages = chats.getSession(sessionId)?.messages
@@ -173,6 +180,16 @@ class SendMessageUseCase(
                                 finishReason = event.reason
                                 finalToolCalls = event.toolCalls
                                 event.actualModel?.let { chats.updateModel(sessionId, it) }
+                                // Acumula métricas de tokens a lo largo de las rondas
+                                // (con tools, cada ronda reenvía el contexto creciente).
+                                event.inputTokens?.let {
+                                    sumInputTokens += it
+                                    lastContextTokens = it // la última ronda gana → contexto actual
+                                    hasMetrics = true
+                                }
+                                event.outputTokens?.let { sumOutputTokens += it; hasMetrics = true }
+                                event.generationMs?.let { sumGenerationMs += it }
+                                if (event.estimated) anyEstimated = true
                             }
                         }
                     }
@@ -313,6 +330,21 @@ class SendMessageUseCase(
                 if (sources.isNotEmpty()) {
                     chats.updateMessageSources(sessionId, lastAssistantId!!, sources)
                 }
+            }
+
+            // Adjunta las métricas de tokens al mensaje final del assistant.
+            if (lastAssistantId != null && hasMetrics) {
+                chats.updateMessageMetrics(
+                    sessionId,
+                    lastAssistantId!!,
+                    com.localchatbot.domain.model.TokenMetrics(
+                        inputTokens = sumInputTokens.takeIf { it > 0 },
+                        outputTokens = sumOutputTokens.takeIf { it > 0 },
+                        generationMs = sumGenerationMs.takeIf { it > 0 },
+                        estimated = anyEstimated,
+                        contextTokens = lastContextTokens
+                    )
+                )
             }
 
             // SIEMPRE drenamos las imágenes out-of-band de las tools, incluso si la última

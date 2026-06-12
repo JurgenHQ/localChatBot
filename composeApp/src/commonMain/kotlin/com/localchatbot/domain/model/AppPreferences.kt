@@ -54,13 +54,12 @@ data class AppPreferences(
     /**
      * URL efectiva del servicio multimedia.
      * - Si está configurada explícitamente, se usa siempre.
-     * - En modo Red local, se deriva de la IP de LM Studio (puerto 8080) si no se configuró.
-     * - En modo URL directa, no se puede derivar automáticamente: el usuario debe configurarla
-     *   a mano apuntando al tunnel del servicio multimedia.
+     * - Si no, se deriva del host (puerto 8080) cuando es un endpoint HTTP local.
+     * - Para endpoints HTTPS/cloud no se puede derivar: el usuario debe configurarla a mano.
      */
     val effectiveImageServiceUrl: String
         get() = imageServiceUrl.ifBlank {
-            if (connection.mode == ConnectionMode.LocalNetwork && connection.ip.isNotBlank())
+            if (connection.ip.isNotBlank() && !connection.useHttps)
                 "http://${connection.ip}:8080"
             else ""
         }

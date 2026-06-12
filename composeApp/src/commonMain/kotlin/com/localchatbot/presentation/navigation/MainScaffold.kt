@@ -29,6 +29,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.di.AppContainer
 import com.localchatbot.presentation.components.organisms.AppBottomBar
 import com.localchatbot.presentation.components.organisms.BottomTab
+import com.localchatbot.presentation.features.agent.AgentScreen
+import com.localchatbot.presentation.features.agent.AgentViewModel
 import com.localchatbot.presentation.features.chat.ChatScreen
 import com.localchatbot.presentation.features.chat.ChatViewModel
 import com.localchatbot.presentation.features.debug.NetworkInspectorScreen
@@ -66,7 +68,8 @@ fun MainScaffold(container: AppContainer) {
             createSessionUseCase = container.createSession,
             sendMessageUseCase = container.sendMessage,
             modelRepository = container.modelRepository,
-            imageSaver = container.imageSaver
+            imageSaver = container.imageSaver,
+            textToSpeech = container.textToSpeech
         )
     }
     val sessionsViewModel = remember {
@@ -89,6 +92,9 @@ fun MainScaffold(container: AppContainer) {
     }
     val mcpServersViewModel = remember {
         McpServersViewModel(preferences = container.preferencesRepository, mcpToolProvider = container.mcpToolProvider)
+    }
+    val agentViewModel = remember {
+        AgentViewModel(preferences = container.preferencesRepository)
     }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
@@ -141,6 +147,11 @@ fun MainScaffold(container: AppContainer) {
                             onChangeModel = { modelPickerOpen = true },
                             showMenuButton = true
                         )
+                        BottomTab.Agent -> AgentScreen(
+                            viewModel = agentViewModel,
+                            onOpenSkills = { skillsOpen = true },
+                            onOpenMcpServers = { mcpOpen = true }
+                        )
                         BottomTab.Settings -> SettingsScreen(
                             viewModel = settingsViewModel,
                             editorViewModelFactory = { editor ->
@@ -150,9 +161,7 @@ fun MainScaffold(container: AppContainer) {
                                     listModels = container.listModels
                                 )
                             },
-                            onOpenNetworkInspector = { inspectorOpen = true },
-                            onOpenSkills = { skillsOpen = true },
-                            onOpenMcpServers = { mcpOpen = true }
+                            onOpenNetworkInspector = { inspectorOpen = true }
                         )
                     }
                 }

@@ -47,6 +47,9 @@ fun ChatMessageList(
     onResendMessage: (String) -> Unit,
     onEditMessage: (String) -> Unit,
     onRegenerate: () -> Unit,
+    speakingMessageId: String? = null,
+    onSpeakMessage: (String, String) -> Unit = { _, _ -> },
+    onStopSpeak: () -> Unit = {},
     onSaveImage: (ByteArray) -> Unit,
     onTapMessage: () -> Unit,
     modifier: Modifier = Modifier
@@ -96,6 +99,13 @@ fun ChatMessageList(
                 onRegenerate = if (
                     msg.id == lastAssistantId && !sending
                 ) onRegenerate else null,
+                onSpeak = if (msg.role == Role.Assistant && msg.content.isNotBlank()) {
+                    {
+                        if (msg.id == speakingMessageId) onStopSpeak()
+                        else onSpeakMessage(msg.id, msg.content)
+                    }
+                } else null,
+                isSpeaking = msg.id == speakingMessageId,
                 onSaveImage = if (msg.imageDataUrl != null) onSaveImage else null,
                 onTap = onTapMessage,
                 highlightQuery = highlightQuery,

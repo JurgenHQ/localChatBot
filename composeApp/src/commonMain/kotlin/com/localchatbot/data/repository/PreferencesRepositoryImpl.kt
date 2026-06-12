@@ -4,7 +4,6 @@ import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
@@ -34,11 +33,11 @@ class PreferencesRepositoryImpl(
     override suspend fun current(): AppPreferences = _state.value
 
     override suspend fun updateConnection(config: ConnectionConfig) {
-        settings.putString(KEY_CONN_MODE, config.mode.name)
         settings.putString(KEY_IP, config.ip)
         settings.putString(KEY_PORT, config.port)
+        settings.putBoolean(KEY_HTTPS, config.useHttps)
         settings.putString(KEY_MODEL, config.model)
-        settings.putString(KEY_DIRECT_URL, config.directUrl)
+        settings.putString(KEY_API_KEY, config.apiKey)
         _state.value = _state.value.copy(connection = config)
     }
 
@@ -124,7 +123,7 @@ class PreferencesRepositoryImpl(
 
     override suspend fun reset() {
         listOf(
-            KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL,
+            KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL, KEY_HTTPS, KEY_API_KEY,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE,
@@ -136,15 +135,7 @@ class PreferencesRepositoryImpl(
     private fun load(): AppPreferences {
         val default = AppPreferences.Default
         return AppPreferences(
-            connection = ConnectionConfig(
-                mode = runCatching {
-                    ConnectionMode.valueOf(settings.getString(KEY_CONN_MODE, default.connection.mode.name))
-                }.getOrDefault(default.connection.mode),
-                ip = settings.getString(KEY_IP, default.connection.ip),
-                port = settings.getString(KEY_PORT, default.connection.port),
-                model = settings.getString(KEY_MODEL, default.connection.model),
-                directUrl = settings.getString(KEY_DIRECT_URL, default.connection.directUrl)
-            ),
+            connection = loadConnection(default.connection),
             themeMode = runCatching {
                 ThemeMode.valueOf(settings.getString(KEY_THEME, default.themeMode.name))
             }.getOrDefault(default.themeMode),
@@ -169,6 +160,44 @@ class PreferencesRepositoryImpl(
                 val raw = settings.getStringOrNull(KEY_MCP_SERVERS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(mcpSerializer, raw)
             }.getOrDefault(emptyList())
+        )
+    }
+
+    /**
+     * Carga la conexión. Migra la antigua "URL directa" (modo eliminado) hacia
+     * host/puerto/https la primera vez, y limpia las llaves obsoletas.
+     */
+    private fun loadConnection(default: ConnectionConfig): ConnectionConfig {
+        var ip = settings.getString(KEY_IP, default.ip)
+        var port = settings.getString(KEY_PORT, default.port)
+        var useHttps = settings.getBoolean(KEY_HTTPS, default.useHttps)
+
+        val oldMode = settings.getStringOrNull(KEY_CONN_MODE)
+        val oldDirectUrl = settings.getStringOrNull(KEY_DIRECT_URL)
+        if (oldMode == "DirectUrl" && !oldDirectUrl.isNullOrBlank() && ip.isBlank()) {
+            useHttps = oldDirectUrl.startsWith("https://", ignoreCase = true)
+            val hostPort = oldDirectUrl
+                .removePrefix("https://").removePrefix("http://")
+                .trimEnd('/').removeSuffix("/v1")
+            val colon = hostPort.lastIndexOf(':')
+            if (colon > 0 && hostPort.substring(colon + 1).all { it.isDigit() }) {
+                ip = hostPort.substring(0, colon)
+                port = hostPort.substring(colon + 1)
+            } else {
+                ip = hostPort
+                port = ""
+            }
+        }
+        // Llaves del modelo de conexión anterior: ya no se usan.
+        settings.remove(KEY_CONN_MODE)
+        settings.remove(KEY_DIRECT_URL)
+
+        return ConnectionConfig(
+            ip = ip,
+            port = port,
+            useHttps = useHttps,
+            model = settings.getString(KEY_MODEL, default.model),
+            apiKey = settings.getString(KEY_API_KEY, default.apiKey)
         )
     }
 
@@ -201,6 +230,8 @@ class PreferencesRepositoryImpl(
         const val KEY_PORT = "conn_port"
         const val KEY_MODEL = "conn_model"
         const val KEY_DIRECT_URL = "conn_direct_url"
+        const val KEY_HTTPS = "conn_https"
+        const val KEY_API_KEY = "conn_api_key"
         const val KEY_THEME = "theme_mode"
         const val KEY_ACCENT = "accent_seed"
         const val KEY_ONBOARDED = "onboarding_done"

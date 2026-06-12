@@ -4,6 +4,7 @@ import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
+import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.model.WebSource
 import kotlinx.coroutines.flow.Flow
 
@@ -18,6 +19,7 @@ interface ChatRepository {
     suspend fun updateMessageSources(sessionId: String, messageId: String, sources: List<WebSource>)
     suspend fun updateMessageImage(sessionId: String, messageId: String, imageDataUrl: String)
     suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String)
+    suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics)
     suspend fun updateTitle(sessionId: String, title: String)
     suspend fun updateModel(sessionId: String, model: String)
     suspend fun setPinned(sessionId: String, pinned: Boolean)

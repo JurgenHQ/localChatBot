@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,7 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-enum class BottomTab { Chat, Settings }
+enum class BottomTab { Chat, Agent, Settings }
 
 @Composable
 fun AppBottomBar(
@@ -48,6 +49,19 @@ fun AppBottomBar(
             },
             selected = selected == BottomTab.Chat,
             onClick = { onSelect(BottomTab.Chat) }
+        )
+        TabItem(
+            label = "Agente",
+            iconContent = {
+                Icon(
+                    Icons.Outlined.SmartToy,
+                    contentDescription = null,
+                    tint = it,
+                    modifier = Modifier.size(22.dp)
+                )
+            },
+            selected = selected == BottomTab.Agent,
+            onClick = { onSelect(BottomTab.Agent) }
         )
         TabItem(
             label = "Configuración",

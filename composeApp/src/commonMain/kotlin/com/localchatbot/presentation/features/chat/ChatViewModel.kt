@@ -6,7 +6,10 @@ import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.image.ImageSaver
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.StreamingStateStore
+import com.localchatbot.core.voice.TextToSpeech
+import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.Role
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.repository.ChatRepository
@@ -71,8 +74,45 @@ class ChatViewModel(
     private val createSessionUseCase: CreateSessionUseCase,
     private val sendMessageUseCase: SendMessageUseCase,
     private val modelRepository: ModelRepository,
-    private val imageSaver: ImageSaver
+    private val imageSaver: ImageSaver,
+    private val textToSpeech: TextToSpeech
 ) : ViewModel() {
+
+    // ID del mensaje que se está leyendo en voz alta (null = ninguno).
+    private val _speakingMessageId = MutableStateFlow<String?>(null)
+    val speakingMessageId: StateFlow<String?> = _speakingMessageId
+
+    private var speakJob: Job? = null
+
+    /** Lee el mensaje en voz alta vía TTS. Si ya hay otro leyéndose, lo reemplaza. */
+    fun speakMessage(messageId: String, text: String) {
+        speakJob?.cancel()
+        speakJob = viewModelScope.launch {
+            _speakingMessageId.value = messageId
+            runCatching { textToSpeech.speak(stripMarkdown(text), DEFAULT_LANGUAGE_TAG) }
+            _speakingMessageId.value = null
+        }
+    }
+
+    fun stopSpeaking() {
+        speakJob?.cancel()
+        textToSpeech.stop()
+        _speakingMessageId.value = null
+    }
+
+    /** Quita la sintaxis markdown para que el TTS no lea asteriscos, almohadillas, etc. */
+    private fun stripMarkdown(s: String): String = s
+        .replace(Regex("```[\\s\\S]*?```"), " (bloque de código) ")
+        .replace(Regex("`([^`]*)`"), "$1")
+        .replace(Regex("!\\[[^\\]]*\\]\\([^)]*\\)"), " ")
+        .replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+        .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+        .replace(Regex("\\*([^*]+)\\*"), "$1")
+        .replace(Regex("__([^_]+)__"), "$1")
+        .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
+        .replace(Regex("^\\s*[-*+]\\s+", RegexOption.MULTILINE), "")
+        .replace(Regex("^\\s*>\\s?", RegexOption.MULTILINE), "")
+        .trim()
 
     private val _local = MutableStateFlow(LocalState())
 
@@ -105,12 +145,16 @@ class ChatViewModel(
     ) { (sessions, activeId, prefs), streamingIds, activityMap, local, tokensAndSuggestions ->
         val (tokensMax, dynamicSuggestions) = tokensAndSuggestions
         val active = sessions.firstOrNull { it.id == activeId }
-        // Las imágenes (imageDataUrl) se adjuntan out-of-band: no pasan por el contexto
-        // del modelo ni consumen tokens, así que solo contamos el texto.
-        val totalChars = active?.messages
-            ?.filter { it.role != com.localchatbot.domain.model.Role.Tool }
-            ?.sumOf { it.content.length }
-            ?: 0
+        // Tokens de contexto, lo más realista posible:
+        // - Si hay una respuesta del modelo con `contextTokens` reales (prompt_tokens de
+        //   su última llamada), usamos ESE número como base — incluye system prompt,
+        //   definiciones de tools, resultados de tools e historial, tal como los contó
+        //   el servidor.
+        // - Le sumamos un estimado (chars/4) de los mensajes posteriores que aún no se
+        //   respondieron (típicamente un mensaje nuevo del usuario).
+        // - Si todavía no hay métricas reales, estimamos TODO por longitud (incluyendo
+        //   resultados de tools, que sí ocupan contexto). Las imágenes van out-of-band.
+        val tokensUsed = computeContextTokens(active?.messages.orEmpty())
         val allSkills = SkillCatalog.allFor(prefs.customSkills)
         val installedEnabled = prefs.installedSkills
             .filter { it.enabled }
@@ -123,7 +167,7 @@ class ChatViewModel(
             errorMessage = local.errorMessage,
             attachedImageBytes = local.attachedImageBytes,
             toolActivity = activeId?.let(activityMap::get),
-            tokensUsed = (totalChars + 3) / 4,
+            tokensUsed = tokensUsed,
             tokensMax = tokensMax,
             promptTemplates = prefs.promptTemplates,
             dynamicSuggestions = dynamicSuggestions,
@@ -134,6 +178,25 @@ class ChatViewModel(
             installedEnabledSkills = installedEnabled
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
+
+    /**
+     * Estima cuántos tokens ocupa el contexto actual. Usa los `contextTokens` reales
+     * del último mensaje del modelo (incluyen system prompt, tools y resultados, tal
+     * como los contó el servidor) y le suma un estimado de los mensajes posteriores
+     * aún sin responder. Si no hay métricas reales todavía, estima todo por longitud.
+     */
+    private fun computeContextTokens(messages: List<ChatMessage>): Int {
+        if (messages.isEmpty()) return 0
+        fun estimate(msgs: List<ChatMessage>): Int = (msgs.sumOf { it.content.length } + 3) / 4
+        val lastRealIdx = messages.indexOfLast {
+            it.role == Role.Assistant && it.metrics?.contextTokens != null
+        }
+        return if (lastRealIdx >= 0) {
+            messages[lastRealIdx].metrics!!.contextTokens!! + estimate(messages.drop(lastRealIdx + 1))
+        } else {
+            estimate(messages)
+        }
+    }
 
     init {
         // Auto-seleccionar la primera sesión si no hay activa.
@@ -176,6 +239,12 @@ class ChatViewModel(
 
     private companion object {
         const val DEFAULT_CONTEXT_LENGTH = 8192
+        const val DEFAULT_LANGUAGE_TAG = "es-ES"
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        runCatching { textToSpeech.stop() }
     }
 
     fun onDraftChange(value: String) = _local.update { it.copy(draft = value) }

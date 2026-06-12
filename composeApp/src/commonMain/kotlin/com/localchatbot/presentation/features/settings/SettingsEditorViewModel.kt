@@ -19,10 +19,12 @@ data class SettingsEditorUiState(
     val availableModels: List<String> = emptyList(),
     val loadingModels: Boolean = false
 ) {
-    /** TavilyApiKey y SystemPrompt permiten valor vacío; el resto requiere contenido. */
+    /** TavilyApiKey, ApiKey y SystemPrompt permiten valor vacío; el resto requiere contenido. */
     val canSaveText: Boolean
         get() = when (editor) {
             SettingsEditor.TavilyApiKey,
+            SettingsEditor.ApiKey,
+            SettingsEditor.Port,
             SettingsEditor.SystemPrompt,
             SettingsEditor.ImageServiceUrl -> true
             else -> textDraft.isNotBlank()
@@ -46,8 +48,8 @@ class SettingsEditorViewModel(
                     textDraft = when (editor) {
                         SettingsEditor.Ip -> prefs.connection.ip
                         SettingsEditor.Port -> prefs.connection.port
-                        SettingsEditor.DirectUrl -> prefs.connection.directUrl
                         SettingsEditor.Model -> prefs.connection.model
+                        SettingsEditor.ApiKey -> prefs.connection.apiKey
                         SettingsEditor.TavilyApiKey -> prefs.tavilyApiKey
                         SettingsEditor.SystemPrompt -> prefs.defaultSystemPrompt
                         SettingsEditor.ImageServiceUrl -> prefs.imageServiceUrl
@@ -94,11 +96,11 @@ class SettingsEditorViewModel(
                 SettingsEditor.Port -> preferences.updateConnection(
                     preferences.current().connection.copy(port = s.textDraft.trim())
                 )
-                SettingsEditor.DirectUrl -> preferences.updateConnection(
-                    preferences.current().connection.copy(directUrl = s.textDraft.trim())
-                )
                 SettingsEditor.Model -> preferences.updateConnection(
                     preferences.current().connection.copy(model = s.textDraft.trim())
+                )
+                SettingsEditor.ApiKey -> preferences.updateConnection(
+                    preferences.current().connection.copy(apiKey = s.textDraft.trim())
                 )
                 SettingsEditor.Theme -> preferences.updateThemeMode(s.themeDraft)
                 SettingsEditor.Accent -> preferences.updateAccent(s.accentDraft)

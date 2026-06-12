@@ -1,7 +1,6 @@
 package com.localchatbot.domain.tools
 
 import com.localchatbot.core.confirm.ToolConfirmationController
-import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.data.mcp.McpCallToolResult
 import com.localchatbot.data.mcp.McpClient
 import com.localchatbot.data.mcp.McpContent
@@ -17,7 +16,6 @@ class McpTool(
     private val toolInfo: McpToolInfo,
     private val client: McpClient,
     private val confirm: ToolConfirmationController,
-    private val isStdio: Boolean,
     private val json: Json
 ) : Tool {
 
@@ -35,11 +33,6 @@ class McpTool(
             parameters = toolInfo.inputSchema
         )
     )
-
-    override suspend fun isAvailable(): Boolean {
-        if (isStdio && !PlatformCapabilities.isDesktop) return false
-        return true
-    }
 
     override suspend fun execute(argumentsJson: String): String {
         val approved = confirm.requestApproval(

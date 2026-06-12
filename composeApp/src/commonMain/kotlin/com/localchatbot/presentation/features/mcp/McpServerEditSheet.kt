@@ -10,27 +10,40 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.util.newId
 import com.localchatbot.domain.model.McpServerConfig
-import com.localchatbot.domain.model.McpTransportConfig
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.PrimaryButton
 import com.localchatbot.presentation.components.atoms.SecondaryButton
+
+private class KvPair(key: String = "", value: String = "") {
+    var key by mutableStateOf(key)
+    var value by mutableStateOf(value)
+}
 
 @Composable
 fun McpServerEditSheet(
@@ -38,17 +51,12 @@ fun McpServerEditSheet(
     onDismiss: () -> Unit,
     onSave: (McpServerConfig) -> Unit
 ) {
-    val isHttp = editing?.transport is McpTransportConfig.Http
-    var transportMode by remember { mutableStateOf(if (isHttp) "http" else "stdio") }
     var name by remember { mutableStateOf(editing?.name ?: "") }
-    var command by remember {
-        mutableStateOf((editing?.transport as? McpTransportConfig.Stdio)?.command ?: "")
-    }
-    var argsText by remember {
-        mutableStateOf((editing?.transport as? McpTransportConfig.Stdio)?.args?.joinToString(" ") ?: "")
-    }
-    var url by remember {
-        mutableStateOf((editing?.transport as? McpTransportConfig.Http)?.url ?: "")
+    var url by remember { mutableStateOf(editing?.url ?: "") }
+    val headerPairs = remember {
+        mutableStateListOf<KvPair>().apply {
+            editing?.headers?.forEach { (k, v) -> add(KvPair(k, v)) }
+        }
     }
 
     Box(
@@ -71,62 +79,29 @@ fun McpServerEditSheet(
         ) {
             Text(
                 if (editing == null) "Agregar servidor MCP" else "Editar servidor MCP",
-                style = MaterialTheme.typography.titleLarge
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface
             )
-
-            // Transport mode selector
-            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                listOf("stdio", "http").forEach { mode ->
-                    val selected = transportMode == mode
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(Radius.sm))
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.surfaceVariant
-                            )
-                            .clickable { transportMode = mode }
-                            .padding(horizontal = Spacing.md, vertical = Spacing.sm)
-                    ) {
-                        Text(
-                            mode.uppercase(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
 
             AppTextField(
                 value = name,
                 onValueChange = { name = it },
-                placeholder = "Nombre (ej. GitHub MCP)"
+                placeholder = "Nombre (ej. Context7)"
             )
 
-            if (transportMode == "stdio") {
-                AppTextField(
-                    value = command,
-                    onValueChange = { command = it },
-                    placeholder = "Comando (ej. npx, uvx, /usr/bin/mcp-server)"
-                )
-                AppTextField(
-                    value = argsText,
-                    onValueChange = { argsText = it },
-                    placeholder = "Argumentos separados por espacios (opcional)"
-                )
-                Text(
-                    "El proceso se lanza en desktop. No disponible en Android/iOS.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                AppTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    placeholder = "URL del servidor MCP (ej. https://mcp.example.com/)"
-                )
-            }
+            AppTextField(
+                value = url,
+                onValueChange = { url = it },
+                placeholder = "URL del servidor MCP (ej. https://mcp.context7.com/mcp)"
+            )
+
+            KeyValueEditor(
+                title = "Headers (opcional — para autenticación)",
+                pairs = headerPairs,
+                keyPlaceholder = "Header (ej. Authorization)",
+                valuePlaceholder = "valor (ej. Bearer xxx)",
+                addLabel = "Agregar header"
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 SecondaryButton(
@@ -134,36 +109,94 @@ fun McpServerEditSheet(
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f)
                 )
-                val canSave = (transportMode == "stdio" && command.isNotBlank()) ||
-                    (transportMode == "http" && url.isNotBlank())
                 PrimaryButton(
                     text = "Guardar",
                     onClick = {
-                        val transport = if (transportMode == "stdio") {
-                            val args = argsText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-                            McpTransportConfig.Stdio(command = command.trim(), args = args)
-                        } else {
-                            McpTransportConfig.Http(url = url.trim())
-                        }
-                        val resolvedName = name.trim().ifBlank {
-                            when (val t = transport) {
-                                is McpTransportConfig.Stdio -> t.command.substringAfterLast('/').substringAfterLast('\\')
-                                is McpTransportConfig.Http -> t.url
-                            }
-                        }
+                        val trimmedUrl = url.trim()
                         onSave(
                             McpServerConfig(
                                 id = editing?.id ?: "mcp_${newId()}",
-                                name = resolvedName,
-                                transport = transport,
+                                name = name.trim().ifBlank { trimmedUrl },
+                                url = trimmedUrl,
+                                headers = headerPairs.toMap(),
                                 enabled = editing?.enabled ?: true
                             )
                         )
                     },
-                    enabled = canSave,
+                    enabled = url.isNotBlank(),
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+    }
+}
+
+/** Convierte la lista de pares a un Map, descartando los que tengan key en blanco. */
+private fun List<KvPair>.toMap(): Map<String, String> =
+    filter { it.key.isNotBlank() }.associate { it.key.trim() to it.value }
+
+@Composable
+private fun KeyValueEditor(
+    title: String,
+    pairs: MutableList<KvPair>,
+    keyPlaceholder: String,
+    valuePlaceholder: String,
+    addLabel: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        pairs.forEachIndexed { index, pair ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+            ) {
+                AppTextField(
+                    value = pair.key,
+                    onValueChange = { pair.key = it },
+                    placeholder = keyPlaceholder,
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                AppTextField(
+                    value = pair.value,
+                    onValueChange = { pair.value = it },
+                    placeholder = valuePlaceholder,
+                    monospace = true,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { pairs.removeAt(index) }) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "Quitar",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(Radius.sm))
+                .clickable { pairs.add(KvPair()) }
+                .padding(vertical = Spacing.xs, horizontal = Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            Icon(
+                Icons.Outlined.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                addLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }

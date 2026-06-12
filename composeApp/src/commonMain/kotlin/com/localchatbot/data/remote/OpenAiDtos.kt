@@ -15,7 +15,21 @@ data class ChatCompletionRequest(
     val stream: Boolean = false,
     val temperature: Double? = null,
     val tools: List<ToolDefinition>? = null,
-    @SerialName("tool_choice") val toolChoice: String? = null
+    @SerialName("tool_choice") val toolChoice: String? = null,
+    @SerialName("stream_options") val streamOptions: StreamOptions? = null
+)
+
+@Serializable
+data class StreamOptions(
+    /** Pide al servidor que incluya `usage` (tokens) en el chunk final del stream. */
+    @SerialName("include_usage") val includeUsage: Boolean = true
+)
+
+@Serializable
+data class Usage(
+    @SerialName("prompt_tokens") val promptTokens: Int? = null,
+    @SerialName("completion_tokens") val completionTokens: Int? = null,
+    @SerialName("total_tokens") val totalTokens: Int? = null
 )
 
 @Serializable
@@ -84,7 +98,10 @@ data class ModelsResponse(
 data class ChatCompletionChunk(
     val id: String? = null,
     val model: String? = null,
-    val choices: List<ChunkChoice> = emptyList()
+    val choices: List<ChunkChoice> = emptyList(),
+    // Presente solo en el chunk final cuando se pidió `stream_options.include_usage`.
+    // Muchos servidores lo envían con `choices` vacío.
+    val usage: Usage? = null
 ) {
     @Serializable
     data class ChunkChoice(

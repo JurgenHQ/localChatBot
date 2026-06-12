@@ -1,28 +1,36 @@
 package com.localchatbot.domain.model
 
-enum class ConnectionMode { LocalNetwork, DirectUrl }
-
 data class ConnectionConfig(
-    val mode: ConnectionMode = ConnectionMode.LocalNetwork,
+    /**
+     * Host o IP del servidor. Puede ser una IP de LAN/VPN (`192.168.1.42`) o un
+     * dominio (`api.openai.com`, `abc.ngrok.io`). Si pegas una URL con esquema,
+     * [baseUrl] lo limpia.
+     */
     val ip: String = "",
+    /** Puerto opcional. Vacío = sin puerto explícito (útil para cloud en 443/80). */
     val port: String = "1234",
+    /** Si está activo, el endpoint se contacta por HTTPS en vez de HTTP. */
+    val useHttps: Boolean = false,
     val model: String = "",
     /**
-     * URL completa hacia el servidor cuando el modo es [ConnectionMode.DirectUrl].
-     * Ejemplos: "https://abc.trycloudflare.com", "https://mi-tunnel.ngrok.io"
-     * No incluir "/v1" — se añade automáticamente en [baseUrl].
+     * API key opcional para autenticar contra el endpoint del modelo. Se envía como
+     * header `Authorization: Bearer <apiKey>`. Útil para LM Studio con autenticación
+     * activada o para proveedores cloud (OpenAI, DeepSeek, etc.). Vacío = sin header.
      */
-    val directUrl: String = ""
+    val apiKey: String = ""
 ) {
-    fun baseUrl(): String = when (mode) {
-        ConnectionMode.LocalNetwork -> "http://$ip:$port/v1"
-        ConnectionMode.DirectUrl   -> directUrl.trimEnd('/').removeSuffix("/v1") + "/v1"
+    fun baseUrl(): String {
+        val scheme = if (useHttps) "https" else "http"
+        val host = ip.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trimEnd('/')
+            .removeSuffix("/v1")
+        val portPart = if (port.isBlank()) "" else ":${port.trim()}"
+        return "$scheme://$host$portPart/v1"
     }
 
-    fun isValid(): Boolean = when (mode) {
-        ConnectionMode.LocalNetwork -> ip.isNotBlank() && port.isNotBlank() && model.isNotBlank()
-        ConnectionMode.DirectUrl    -> directUrl.isNotBlank() && model.isNotBlank()
-    }
+    fun isValid(): Boolean = ip.isNotBlank() && model.isNotBlank()
 }
 
 sealed interface ConnectionStatus {

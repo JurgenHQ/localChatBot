@@ -3,7 +3,6 @@ package com.localchatbot.data.mcp
 import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.debug.NetworkInspector
 import com.localchatbot.domain.model.McpServerConfig
-import com.localchatbot.domain.model.McpTransportConfig
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.tools.McpTool
 import io.ktor.client.HttpClient
@@ -20,8 +19,7 @@ class McpToolProvider(
 ) {
     private data class ServerState(
         val client: McpClient,
-        val tools: List<McpTool>,
-        val isStdio: Boolean
+        val tools: List<McpTool>
     )
 
     private val mutex = Mutex()
@@ -36,7 +34,11 @@ class McpToolProvider(
         }
         val tools = mutableListOf<McpTool>()
         for (server in servers) {
-            val state = serverStates[server.id] ?: connectServer(server) ?: continue
+            // En el envío de mensajes un server caído no debe romper el resto:
+            // tragamos su error y seguimos.
+            val state = serverStates[server.id]
+                ?: runCatching { connectServer(server) }.getOrNull()
+                ?: continue
             serverStates[server.id] = state
             tools += state.tools
         }
@@ -47,7 +49,7 @@ class McpToolProvider(
         val server = prefs.current().mcpServers.firstOrNull { it.id == serverId }
             ?: return Result.failure(IllegalArgumentException("Server $serverId not found"))
         return runCatching {
-            val state = connectServer(server) ?: error("Transport not available on this platform")
+            val state = connectServer(server)
             mutex.withLock { serverStates[serverId] = state }
             state.tools.size
         }
@@ -58,19 +60,10 @@ class McpToolProvider(
         serverStates.clear()
     }
 
-    private suspend fun connectServer(server: McpServerConfig): ServerState? {
-        val (transport, isStdio) = when (val t = server.transport) {
-            is McpTransportConfig.Http -> {
-                val tr = HttpMcpTransport(t.url, t.headers, httpClient, json, inspector)
-                tr to false
-            }
-            is McpTransportConfig.Stdio -> {
-                val tr = createStdioTransport(t.command, t.args, t.env) ?: return null
-                tr to true
-            }
-        }
+    private suspend fun connectServer(server: McpServerConfig): ServerState {
+        val transport = HttpMcpTransport(server.url, server.headers, httpClient, json, inspector)
         val client = McpClient(transport, json)
-        return runCatching {
+        return try {
             client.initialize().getOrThrow()
             val toolInfos = client.listTools().getOrThrow()
             val mcpTools = toolInfos.take(MAX_TOOLS_PER_SERVER).map { info ->
@@ -79,14 +72,14 @@ class McpToolProvider(
                     toolInfo = info,
                     client = client,
                     confirm = confirm,
-                    isStdio = isStdio,
                     json = json
                 )
             }
-            ServerState(client = client, tools = mcpTools, isStdio = isStdio)
-        }.getOrElse {
+            ServerState(client = client, tools = mcpTools)
+        } catch (e: Throwable) {
+            // Propaga el error real (lo usa testConnection); cierra el cliente fallido.
             runCatching { client.close() }
-            null
+            throw e
         }
     }
 

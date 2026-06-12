@@ -105,18 +105,18 @@ Each screen has a `*Content(state, callbacks)` stateless composable for use in `
 | `manage_todos` | — | Session-scoped to-do list the model uses to plan multi-step tasks; shown in `TodoProgressPanel` |
 | `use_skill` | — | Loads the full instructions for an installed skill on demand (the skills index in the system prompt only lists each skill's short description) |
 | `sk_<skillId>_<scriptName>` | Desktop only | Custom per-skill shell scripts (`SkillScript`), built dynamically by `ScriptToolFactory`; each runs through the confirmation controller |
-| `mcp_<serverId>_<toolName>` | Stdio: Desktop only · HTTP: all platforms | MCP server tools, built dynamically by `McpToolProvider`; each runs through the confirmation controller |
+| `mcp_<serverId>_<toolName>` | MCP server (HTTP) | MCP server tools, built dynamically by `McpToolProvider`; each runs through the confirmation controller |
 
 ### MCP (Model Context Protocol)
 
-Connects external MCP servers so the model can invoke their tools via the standard JSON-RPC 2.0 protocol.
+Connects external MCP servers (HTTP / Streamable HTTP transport only) so the model can invoke their tools via the standard JSON-RPC 2.0 protocol. Works on all platforms — no local process spawning.
 
-- **`McpServerConfig`** (`domain/model/McpServerConfig.kt`) — sealed `McpTransportConfig`: `Stdio(command, args, env)` or `Http(url, headers)`. Persisted via `PreferencesRepository` (JSON in settings, key `mcp_servers`).
-- **`McpClient`** (`data/mcp/`) — orchestrates `initialize` → `tools/list` → `tools/call`. Timeouts: 10 s for init/list, 30 s per call.
-- **Transports** — `HttpMcpTransport` (commonMain, Ktor) for HTTP; `createStdioTransport` expect/actual factory: desktop spawns a `Process` (newline-delimited JSON-RPC over stdin/stdout), Android/iOS return `null`.
-- **`McpToolProvider`** (`data/mcp/`) — manages lazy client connections per enabled server (mutex-guarded). Merges MCP tool definitions into the send loop alongside scriptTools. `closeAll()` is called from the desktop shutdown hook in `main.kt` to kill stdio processes cleanly.
-- **`McpTool : Tool`** (`domain/tools/`) — name `mcp_<serverId>_<toolName>` (sanitized, same `[^a-zA-Z0-9_-]→_` rule as `sk_*`). `isAvailable() = false` for stdio servers on non-desktop platforms. `requiresConfirmation = true` → routes through `ToolConfirmationController`.
-- **UI**: `McpServersScreen` / `McpServersViewModel` / `McpServerEditSheet` (`presentation/features/mcp/`). Entry from `SettingsScreen` via `onOpenMcpServers`. Shows connection `StatusDot` (Unknown/Connecting/Connected/Error) per server and discovered tool count after "test connection".
+- **`McpServerConfig`** (`domain/model/McpServerConfig.kt`) — flat data class: `id`, `name`, `url`, `headers` (for auth, e.g. `Authorization: Bearer …`), `enabled`. Persisted via `PreferencesRepository` (JSON in settings, key `mcp_servers`).
+- **`McpClient`** (`data/mcp/`) — orchestrates `initialize` → `notifications/initialized` → `tools/list` → `tools/call`. `initialize` params are built by hand and always include `capabilities: {}` (omitting it makes spec-strict servers reject the request). Timeouts: 10 s for init/list, 30 s per call.
+- **`HttpMcpTransport`** (`data/mcp/`, commonMain Ktor) — full Streamable HTTP support: sends `Accept: application/json, text/event-stream`, captures the `Mcp-Session-Id` from `initialize` and resends it, parses SSE responses (extracts the `data:` block matching the request id), and treats empty/202 bodies (notifications) gracefully. `McpTransportLayer.sendNotification` writes without awaiting a response.
+- **`McpToolProvider`** (`data/mcp/`) — manages lazy client connections per enabled server (mutex-guarded). Merges MCP tool definitions into the send loop alongside scriptTools. `connectServer` propagates the real error (surfaced by `testConnection`); a failed server is skipped during send without breaking the rest. `closeAll()` is called from the desktop shutdown hook in `main.kt`.
+- **`McpTool : Tool`** (`domain/tools/`) — name `mcp_<serverId>_<toolName>` (sanitized, same `[^a-zA-Z0-9_-]→_` rule as `sk_*`). `requiresConfirmation = true` → routes through `ToolConfirmationController`.
+- **UI**: `McpServersScreen` / `McpServersViewModel` / `McpServerEditSheet` (`presentation/features/mcp/`). Entry from `SettingsScreen` via `onOpenMcpServers`. The edit sheet captures URL + a key-value headers editor. Shows connection `StatusDot` (Unknown/Connecting/Connected/Error) per server and discovered tool count after "test connection".
 - Cap: 30 tools per server (`MAX_TOOLS_PER_SERVER`) to avoid bloating the context sent to the model.
 - Network Inspector records MCP HTTP calls as `Kind.McpCall`.
 
@@ -148,7 +148,9 @@ The project has four source sets:
 - `commonMain` — all business logic and shared UI
 - `androidMain` — OkHttp engine, `ChatForegroundService` (keeps streams alive), `SharedPreferences`, native SpeechRecognizer/TTS
 - `iosMain` — Darwin engine, `NSUserDefaults`, `SFSpeechRecognizer`/`AVSpeechSynthesizer`
-- `desktopMain` — CIO engine, filesystem/shell agent tools, JVM-based settings, `kotlinx-coroutines-swing`
+- `desktopMain` — CIO engine, filesystem/shell agent tools, JVM-based settings, `kotlinx-coroutines-swing`, TTS via the OS engine (`say` / PowerShell `System.Speech` / `spd-say`·`espeak`)
+
+**Read-aloud (TTS):** every assistant bubble has a speaker icon (`MessageBubble`) that reads the message via `TextToSpeech` (shared instance in `AppContainer`, also used by the voice mode). `ChatViewModel.speakMessage`/`stopSpeaking` drive it and expose `speakingMessageId`; markdown is stripped before speaking. Works on all platforms (desktop TTS shells out to the OS engine). Note: full voice *conversation* mode (mic) is still mobile-only (`PlatformCapabilities.voiceSupported`).
 
 Desktop entry point: `composeApp/src/desktopMain/kotlin/com/localchatbot/main.kt` — the `main()` function, macOS transparent title bar setup, and window configuration.
 

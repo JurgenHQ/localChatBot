@@ -57,8 +57,14 @@ class AppContainer {
     private val json = HttpClientFactory.json
     val networkInspector = NetworkInspector()
     val imageSaver: ImageSaver = createImageSaver()
-    private val openAiApi = OpenAiApi(httpClient, json, networkInspector)
-    private val lmStudioApi = LmStudioApi(httpClient)
+    private val openAiApi = OpenAiApi(
+        httpClient, json, networkInspector,
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+    )
+    private val lmStudioApi = LmStudioApi(
+        httpClient,
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+    )
     private val imageGenApi = ImageGenApi(httpClient, json, networkInspector)
     private val diagramRenderApi = DiagramRenderApi(httpClient, json, networkInspector)
     private val tavilyApi = TavilyApi(httpClient, json, networkInspector)
@@ -167,9 +173,12 @@ class AppContainer {
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
 
+    /** TTS compartido: lo usa el modo voz (móvil) y el botón "leer" por mensaje (todas las plataformas). */
+    val textToSpeech = TextToSpeech()
+
     val voiceController = VoiceConversationController(
         recognizer = SpeechRecognizer(),
-        tts = TextToSpeech(),
+        tts = textToSpeech,
         chatRepository = chatRepository,
         preferences = preferencesRepository,
         activeSessionStore = activeSessionStore,

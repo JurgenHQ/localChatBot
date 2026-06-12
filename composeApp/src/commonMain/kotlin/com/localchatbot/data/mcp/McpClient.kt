@@ -4,7 +4,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 
 class McpClient(
@@ -18,10 +17,20 @@ class McpClient(
 
     suspend fun initialize(): Result<Unit> = runCatching {
         withTimeout(initTimeoutMs) {
-            val params = json.encodeToJsonElement(McpInitializeParams()) as JsonObject
+            // `capabilities` es obligatorio en el spec MCP (aunque sea {}). Lo armamos
+            // a mano para garantizar que siempre viaje — si se omite, servers como
+            // Context7 rechazan el request con "No valid session ID provided".
+            val params = buildJsonObject {
+                put("protocolVersion", "2024-11-05")
+                put("capabilities", buildJsonObject {})
+                put("clientInfo", buildJsonObject {
+                    put("name", "LocalChatBot")
+                    put("version", "1.0.0")
+                })
+            }
             transport.sendRequest("initialize", params).getOrThrow()
-            // fire-and-forget initialized notification
-            runCatching { transport.sendRequest("notifications/initialized", null) }
+            // Notificación sin id: el server no responde, no esperamos lectura.
+            transport.sendNotification("notifications/initialized", null)
             initialized = true
         }
     }

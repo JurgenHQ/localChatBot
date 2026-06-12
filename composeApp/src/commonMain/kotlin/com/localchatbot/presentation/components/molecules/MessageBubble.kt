@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
@@ -33,6 +36,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -71,6 +76,7 @@ import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.Role
+import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.tools.RunCommandTool
 import com.localchatbot.presentation.components.atoms.AppLogo
 import com.localchatbot.presentation.components.util.SelectableOnDesktop
@@ -105,6 +111,8 @@ fun MessageBubble(
     onEdit: (() -> Unit)? = null,
     onCopy: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
+    onSpeak: (() -> Unit)? = null,
+    isSpeaking: Boolean = false,
     onSaveImage: ((ByteArray) -> Unit)? = null,
     onTap: () -> Unit = {},
     highlightQuery: String? = null,
@@ -120,7 +128,7 @@ fun MessageBubble(
                 !message.sources.isNullOrEmpty() ||
                 message.imageDataUrl != null
             if (hasVisibleContent) {
-                AssistantBubble(message, modifier, onCopy, onRegenerate, onSaveImage, onTap, highlightQuery, isCurrentMatch)
+                AssistantBubble(message, modifier, onCopy, onRegenerate, onSpeak, isSpeaking, onSaveImage, onTap, highlightQuery, isCurrentMatch)
             } else {
                 Spacer(modifier = Modifier.height(0.dp))
             }
@@ -222,13 +230,15 @@ private fun AssistantBubble(
     modifier: Modifier = Modifier,
     onCopy: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
+    onSpeak: (() -> Unit)? = null,
+    isSpeaking: Boolean = false,
     onSaveImage: ((ByteArray) -> Unit)? = null,
     onTap: () -> Unit = {},
     highlightQuery: String? = null,
     isCurrentMatch: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val actionable = onCopy != null || onRegenerate != null
+    val actionable = onCopy != null || onRegenerate != null || onSpeak != null
 
     Row(
         modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.lg),
@@ -281,8 +291,9 @@ private fun AssistantBubble(
             message.sources?.takeIf { it.isNotEmpty() }?.let { srcs ->
                 SourcesRow(sources = srcs)
             }
-            if (actionable) {
+            if (actionable || message.metrics != null) {
                 Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
                 ) {
                     if (onCopy != null) {
@@ -291,6 +302,16 @@ private fun AssistantBubble(
                     if (onRegenerate != null) {
                         BubbleActionIcon(Icons.Default.Refresh, "Regenerar", onRegenerate)
                     }
+                    if (onSpeak != null) {
+                        BubbleActionIcon(
+                            icon = if (isSpeaking) Icons.Filled.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = if (isSpeaking) "Detener lectura" else "Leer en voz alta",
+                            tint = if (isSpeaking) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            onClick = onSpeak
+                        )
+                    }
+                    message.metrics?.let { MetricsInfoButton(it) }
                 }
             }
         }
@@ -431,7 +452,8 @@ private fun ImagePreviewDialog(
 private fun BubbleActionIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    tint: Color = Color.Unspecified
 ) {
     TooltipBox(
         positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
@@ -448,11 +470,106 @@ private fun BubbleActionIcon(
             Icon(
                 icon,
                 contentDescription = contentDescription,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (tint == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else tint,
                 modifier = Modifier.size(16.dp)
             )
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Métricas de tokens (icono info + popup)
+// ---------------------------------------------------------------------------
+
+// Precios de referencia (USD por 1M tokens) — GPT-4o-mini. El coste es hipotético:
+// para modelos locales es ~0, pero da una idea de lo que costaría en cloud.
+private const val PRICE_INPUT_PER_1M = 0.15
+private const val PRICE_OUTPUT_PER_1M = 0.60
+
+@Composable
+private fun MetricsInfoButton(metrics: TokenMetrics) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { open = true }
+                .padding(4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.Info,
+                contentDescription = "Métricas",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 200.dp)
+                    .padding(horizontal = Spacing.md, vertical = Spacing.sm)
+            ) {
+                Text(
+                    "Métricas",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(Spacing.sm))
+                val est = metrics.estimated
+                MetricRow("Tokens entrada (Tu mensaje + agente)", metrics.inputTokens?.toString() ?: "—")
+                MetricRow("Tokens salida (Generado por el modelo)", metrics.outputTokens?.let { (if (est) "~" else "") + it } ?: "—")
+                MetricRow("Total", metrics.totalTokens?.let { (if (est) "~" else "") + it } ?: "—")
+                metrics.contextTokens?.let { MetricRow("Contexto actual", it.toString()) }
+                MetricRow("Velocidad", metrics.tokensPerSecond?.let { "${formatDecimals(it, 1)} tok/s" } ?: "—")
+                MetricRow("Coste hipotético", "$" + formatDecimals(hypotheticalCost(metrics), 6))
+                Spacer(Modifier.height(Spacing.xs))
+                Text(
+                    buildString {
+                        if (est) append("~ estimado (el servidor no reportó tokens). ")
+                        append("Coste ref. GPT-4o-mini.")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(Spacing.lg))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+private fun hypotheticalCost(m: TokenMetrics): Double =
+    (m.inputTokens ?: 0) / 1_000_000.0 * PRICE_INPUT_PER_1M +
+        (m.outputTokens ?: 0) / 1_000_000.0 * PRICE_OUTPUT_PER_1M
+
+/** Formatea un Double con [decimals] decimales sin depender de String.format (KMP common). */
+private fun formatDecimals(v: Double, decimals: Int): String {
+    var factor = 1L
+    repeat(decimals) { factor *= 10 }
+    val scaled = kotlin.math.round(v * factor).toLong()
+    val intPart = scaled / factor
+    val fracPart = (scaled % factor).toString().padStart(decimals, '0')
+    return "$intPart.$fracPart"
 }
 
 // ---------------------------------------------------------------------------
