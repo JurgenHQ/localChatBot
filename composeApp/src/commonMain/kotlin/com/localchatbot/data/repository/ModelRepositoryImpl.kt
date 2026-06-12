@@ -6,8 +6,10 @@ import com.localchatbot.data.remote.FunctionCall
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.OpenAiMessage
+import com.localchatbot.data.remote.StreamOptions
 import com.localchatbot.data.remote.ToolCall
 import com.localchatbot.data.remote.ToolDefinition
+import com.localchatbot.data.remote.Usage
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.Role
 import com.localchatbot.domain.repository.ModelRepository
@@ -75,7 +77,10 @@ class ModelRepositoryImpl(
             messages = messages.map { it.toDto() },
             stream = true,
             tools = tools,
-            toolChoice = if (tools.isNullOrEmpty()) null else "auto"
+            toolChoice = if (tools.isNullOrEmpty()) null else "auto",
+            // Pide tokens (usage) en el chunk final. Servidores que no lo soportan
+            // ignoran el campo; si aun así no llega usage, estimamos por longitud.
+            streamOptions = StreamOptions(includeUsage = true)
             // Temperatura: dejamos el default del servidor (suele ser ~0.7) para que
             // las conversaciones normales suenen naturales. El precio es que la
             // decisión "¿invoco la tool?" no es 100% determinista — pero cuando hay
@@ -87,13 +92,24 @@ class ModelRepositoryImpl(
         val builders = mutableMapOf<Int, ToolCallBuilder>()
         var finalFinishReason: String? = null
         var actualModel: String? = null
+        var usage: Usage? = null
+        var firstTokenMs: Long? = null
+        var contentChars = 0
 
         api.streamChatCompletion(baseUrl, req).collect { chunk ->
             if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
+            chunk.usage?.let { usage = it }
             val choice = chunk.choices.firstOrNull() ?: return@collect
             val delta = choice.delta
-            delta?.content?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ContentDelta(it)) }
-            delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let { emit(StreamEvent.ReasoningDelta(it)) }
+            delta?.content?.takeIf { it.isNotEmpty() }?.let {
+                if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                contentChars += it.length
+                emit(StreamEvent.ContentDelta(it))
+            }
+            delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let {
+                if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                emit(StreamEvent.ReasoningDelta(it))
+            }
 
             delta?.toolCalls?.forEach { d ->
                 // Si el server omite `index` (algunos modelos lo hacen cuando solo
@@ -112,7 +128,23 @@ class ModelRepositoryImpl(
             .sortedBy { it.key }
             .mapNotNull { (_, b) -> b.build() }
 
-        emit(StreamEvent.Finish(reason = finalFinishReason, toolCalls = toolCalls, actualModel = actualModel))
+        // Métricas: usamos `usage` del servidor si llegó; si no, estimamos los tokens
+        // de salida por longitud (~4 chars/token, regla de dedo) y marcamos `estimated`.
+        val reportedOutput = usage?.completionTokens
+        val outputTokens = reportedOutput ?: (contentChars / 4).takeIf { it > 0 }
+        val generationMs = firstTokenMs?.let { Clock.System.now().toEpochMilliseconds() - it }
+
+        emit(
+            StreamEvent.Finish(
+                reason = finalFinishReason,
+                toolCalls = toolCalls,
+                actualModel = actualModel,
+                inputTokens = usage?.promptTokens,
+                outputTokens = outputTokens,
+                generationMs = generationMs,
+                estimated = reportedOutput == null
+            )
+        )
     }
 
     override suspend fun ping(baseUrl: String): Result<Long> = api.ping(baseUrl)

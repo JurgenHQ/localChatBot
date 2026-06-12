@@ -16,6 +16,14 @@ sealed interface StreamEvent {
     data class Finish(
         val reason: String?,
         val toolCalls: List<ToolCall>,
-        val actualModel: String? = null
+        val actualModel: String? = null,
+        /** Tokens del prompt (input). Null si el servidor no reportó `usage`. */
+        val inputTokens: Int? = null,
+        /** Tokens de la respuesta (output). Estimado si el servidor no reportó `usage`. */
+        val outputTokens: Int? = null,
+        /** Tiempo de generación en ms (del primer token al final), para tokens/s. */
+        val generationMs: Long? = null,
+        /** True si los tokens son una estimación (no vinieron del servidor). */
+        val estimated: Boolean = false
     ) : StreamEvent
 }

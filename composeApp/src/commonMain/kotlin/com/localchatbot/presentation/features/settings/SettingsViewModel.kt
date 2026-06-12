@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -21,8 +20,8 @@ import kotlinx.coroutines.launch
 sealed interface SettingsEditor {
     data object Ip : SettingsEditor
     data object Port : SettingsEditor
-    data object DirectUrl : SettingsEditor
     data object Model : SettingsEditor
+    data object ApiKey : SettingsEditor
     data object Theme : SettingsEditor
     data object Accent : SettingsEditor
     data object TavilyApiKey : SettingsEditor
@@ -64,9 +63,9 @@ class SettingsViewModel(
     fun open(editor: SettingsEditor) = _openEditor.update { editor }
     fun closeEditor() = _openEditor.update { null }
 
-    fun onConnectionModeChange(mode: ConnectionMode) {
+    fun toggleHttps(value: Boolean) {
         viewModelScope.launch {
-            preferences.updateConnection(preferences.current().connection.copy(mode = mode))
+            preferences.updateConnection(preferences.current().connection.copy(useHttps = value))
         }
     }
 
@@ -75,18 +74,6 @@ class SettingsViewModel(
     }
 
     fun clearHistory() = viewModelScope.launch { chats.clearAll() }
-
-    fun updateFsWorkspaceDir(value: String?) {
-        viewModelScope.launch { preferences.updateFsWorkspaceDir(value) }
-    }
-
-    fun toggleFsYoloMode(value: Boolean) {
-        viewModelScope.launch { preferences.updateFsYoloMode(value) }
-    }
-
-    fun toggleFsAllowOutsideWorkspace(value: Boolean) {
-        viewModelScope.launch { preferences.updateFsAllowOutsideWorkspace(value) }
-    }
 
     private suspend fun refreshStatus(cfg: ConnectionConfig) {
         if (!cfg.isValid()) {

@@ -29,14 +29,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.localchatbot.core.fs.rememberDirectoryPicker
-import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.presentation.components.atoms.SectionLabel
 import com.localchatbot.presentation.components.atoms.StatusDot
@@ -50,7 +47,6 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
-    onOpenSkills: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -60,15 +56,10 @@ fun SettingsScreen(
             preferences = state.preferences,
             status = state.status,
             onOpenEditor = viewModel::open,
-            onConnectionModeChange = viewModel::onConnectionModeChange,
             onRetryConnection = viewModel::retryConnection,
             onClearHistory = viewModel::clearHistory,
-            onOpenNetworkInspector = onOpenNetworkInspector,
-            onOpenSkills = onOpenSkills,
-            onPickWorkspace = viewModel::updateFsWorkspaceDir,
-            onClearWorkspace = { viewModel.updateFsWorkspaceDir(null) },
-            onToggleYolo = viewModel::toggleFsYoloMode,
-            onToggleAllowOutside = viewModel::toggleFsAllowOutsideWorkspace
+            onToggleHttps = viewModel::toggleHttps,
+            onOpenNetworkInspector = onOpenNetworkInspector
         )
 
         state.openEditor?.let { editor ->
@@ -86,15 +77,10 @@ fun SettingsContent(
     preferences: AppPreferences,
     status: ConnectionStatus,
     onOpenEditor: (SettingsEditor) -> Unit,
-    onConnectionModeChange: (ConnectionMode) -> Unit = {},
     onRetryConnection: () -> Unit,
     onClearHistory: () -> Unit,
+    onToggleHttps: (Boolean) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
-    onOpenSkills: () -> Unit = {},
-    onPickWorkspace: (String) -> Unit = {},
-    onClearWorkspace: () -> Unit = {},
-    onToggleYolo: (Boolean) -> Unit = {},
-    onToggleAllowOutside: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -113,43 +99,43 @@ fun SettingsContent(
             color = MaterialTheme.colorScheme.onBackground
         )
 
-        SectionLabel("Conexión")
-        // Toggle de modo: Red local vs URL directa (tunnel)
-        ConnectionModeToggle(
-            selected = cfg.mode,
-            onSelect = onConnectionModeChange
-        )
+        SectionLabel("Servidor")
         SectionCard {
-            if (cfg.mode == ConnectionMode.LocalNetwork) {
-                SettingsRow(
-                    title = "Dirección IP",
-                    onClick = { onOpenEditor(SettingsEditor.Ip) },
-                    trailing = { MonoValue(cfg.ip.ifBlank { "—" }) }
-                )
-                Divider()
-                SettingsRow(
-                    title = "Puerto",
-                    onClick = { onOpenEditor(SettingsEditor.Port) },
-                    trailing = { MonoValue(cfg.port.ifBlank { "—" }) }
-                )
-            } else {
-                SettingsRow(
-                    title = "URL del servidor",
-                    onClick = { onOpenEditor(SettingsEditor.DirectUrl) },
-                    trailing = {
-                        MonoValue(
-                            cfg.directUrl.ifBlank { "—" }
-                                .removePrefix("https://").removePrefix("http://"),
-                            maxChars = 22
-                        )
-                    }
-                )
-            }
+            SettingsRow(
+                title = "Host / IP",
+                onClick = { onOpenEditor(SettingsEditor.Ip) },
+                trailing = { MonoValue(cfg.ip.ifBlank { "—" }, maxChars = 22) }
+            )
+            Divider()
+            SettingsRow(
+                title = "Puerto",
+                onClick = { onOpenEditor(SettingsEditor.Port) },
+                trailing = { MonoValue(cfg.port.ifBlank { "—" }) }
+            )
+            Divider()
+            SettingsRow(
+                title = "HTTPS",
+                onClick = { onToggleHttps(!cfg.useHttps) },
+                trailing = {
+                    Switch(checked = cfg.useHttps, onCheckedChange = onToggleHttps)
+                }
+            )
             Divider()
             SettingsRow(
                 title = "Modelo",
                 onClick = { onOpenEditor(SettingsEditor.Model) },
                 trailing = { MonoValue(cfg.model.ifBlank { "—" }, maxChars = 18) }
+            )
+            Divider()
+            SettingsRow(
+                title = "API key",
+                onClick = { onOpenEditor(SettingsEditor.ApiKey) },
+                trailing = {
+                    MonoValue(
+                        if (cfg.apiKey.isBlank()) "Sin configurar" else cfg.apiKey.maskKey(),
+                        maxChars = 14
+                    )
+                }
             )
             Divider()
             SettingsRow(
@@ -159,10 +145,10 @@ fun SettingsContent(
             )
         }
         Text(
-            when (cfg.mode) {
-                ConnectionMode.LocalNetwork -> "Endpoint compatible con OpenAI en tu red local."
-                ConnectionMode.DirectUrl    -> "Endpoint accesible desde internet (Cloudflare Tunnel, ngrok, etc.)."
-            },
+            "Endpoint compatible con OpenAI: LM Studio, Ollama o llama.cpp (en tu red o por VPN), " +
+                "un túnel (Cloudflare, ngrok) o un proveedor cloud (OpenAI, DeepSeek, Groq, OpenRouter…). " +
+                "Activa HTTPS para túneles y cloud; usa la API key si el endpoint la requiere. " +
+                "Con LM Studio mostramos además la longitud de contexto y los modelos cargados.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -227,11 +213,8 @@ fun SettingsContent(
                 trailing = {
                     MonoValue(
                         preferences.imageServiceUrl.ifBlank {
-                            when {
-                                cfg.mode == ConnectionMode.LocalNetwork && cfg.ip.isNotBlank() ->
-                                    "auto: ${cfg.ip}:8080"
-                                else -> "Sin configurar"
-                            }
+                            if (cfg.ip.isNotBlank() && !cfg.useHttps) "auto: ${cfg.ip}:8080"
+                            else "Sin configurar"
                         },
                         maxChars = 22
                     )
@@ -239,12 +222,8 @@ fun SettingsContent(
             )
         }
         Text(
-            when (cfg.mode) {
-                ConnectionMode.LocalNetwork ->
-                    "FastAPI con /generate-image y /render-diagram. Si lo dejas vacío se usa la IP de LM Studio en el puerto 8080."
-                ConnectionMode.DirectUrl ->
-                    "FastAPI con /generate-image y /render-diagram. En modo URL directa debes configurar aquí el tunnel del servicio de imágenes (puede ser distinto al de LM Studio)."
-            },
+            "FastAPI con /generate-image y /render-diagram. Si lo dejas vacío y el servidor es HTTP local, " +
+                "se deriva del host en el puerto 8080. Para HTTPS/cloud debes configurarlo a mano.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -272,36 +251,6 @@ fun SettingsContent(
                 }
                 append("Obtén una key gratis en https://app.tavily.com")
             },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        if (PlatformCapabilities.isDesktop) {
-            FilesystemSection(
-                preferences = preferences,
-                onPickWorkspace = onPickWorkspace,
-                onClearWorkspace = onClearWorkspace,
-                onToggleYolo = onToggleYolo,
-                onToggleAllowOutside = onToggleAllowOutside
-            )
-        }
-
-        SectionLabel("Skills")
-        SectionCard {
-            SettingsRow(
-                title = "Skills instalados",
-                onClick = onOpenSkills,
-                trailing = {
-                    val activeCount = preferences.installedSkills.count { it.enabled }
-                    MonoValue(
-                        if (activeCount == 0) "Ninguno activo" else "$activeCount activo${if (activeCount != 1) "s" else ""}",
-                        maxChars = 16
-                    )
-                }
-            )
-        }
-        Text(
-            "Amplía el comportamiento del agente con instrucciones especializadas. El modelo los carga bajo demanda.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -334,137 +283,6 @@ fun SettingsContent(
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyLarge
             )
-        }
-    }
-}
-
-@Composable
-private fun FilesystemSection(
-    preferences: AppPreferences,
-    onPickWorkspace: (String) -> Unit,
-    onClearWorkspace: () -> Unit,
-    onToggleYolo: (Boolean) -> Unit,
-    onToggleAllowOutside: (Boolean) -> Unit
-) {
-    val picker = rememberDirectoryPicker(onResult = onPickWorkspace)
-
-    SectionLabel("Acceso al sistema de archivos (desktop)")
-    SectionCard {
-        SettingsRow(
-            title = "Workspace",
-            onClick = { picker.launch() },
-            trailing = {
-                MonoValue(
-                    preferences.fsWorkspaceDir ?: "Sin configurar",
-                    maxChars = 22
-                )
-            }
-        )
-        if (preferences.fsWorkspaceDir != null) {
-            Divider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onClearWorkspace)
-                    .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Quitar workspace",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-        }
-        Divider()
-        SwitchRow(
-            title = "Omitir confirmaciones (modo YOLO)",
-            checked = preferences.fsYoloMode,
-            onCheckedChange = onToggleYolo
-        )
-        Divider()
-        SwitchRow(
-            title = "Permitir acceso fuera del workspace",
-            checked = preferences.fsAllowOutsideWorkspace,
-            onCheckedChange = onToggleAllowOutside
-        )
-    }
-    Text(
-        buildString {
-            append("Habilita las tools de filesystem y shell para que el modelo cree archivos, ")
-            append("lea contenido y ejecute comandos. Cada acción pide aprobación a menos que ")
-            append("actives YOLO. La opción \"fuera del workspace\" permite paths absolutos y ")
-            append("rutas que escapan del directorio configurado — peligroso, úsalo con cuidado.")
-        },
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-}
-
-@Composable
-private fun SwitchRow(
-    title: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.md)
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f)
-        )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange
-        )
-    }
-}
-
-@Composable
-private fun ConnectionModeToggle(
-    selected: ConnectionMode,
-    onSelect: (ConnectionMode) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.md))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        ConnectionMode.entries.forEach { mode ->
-            val isSelected = mode == selected
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(
-                        if (isSelected) MaterialTheme.colorScheme.primary
-                        else Color.Transparent
-                    )
-                    .clickable { onSelect(mode) }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = when (mode) {
-                        ConnectionMode.LocalNetwork -> "Red local"
-                        ConnectionMode.DirectUrl    -> "URL directa"
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
     }
 }
@@ -530,9 +348,10 @@ private val SamplePrefs = AppPreferences(
 
 private val SamplePrefsUrl = AppPreferences(
     connection = ConnectionConfig(
-        mode = ConnectionMode.DirectUrl,
-        model = "llama-3.1-8b-instruct",
-        directUrl = "https://abc.trycloudflare.com"
+        ip = "abc.trycloudflare.com",
+        port = "",
+        useHttps = true,
+        model = "llama-3.1-8b-instruct"
     ),
     themeMode = ThemeMode.System,
     accentSeed = 0L,
@@ -551,7 +370,7 @@ private fun SettingsConnectedPreview() = PreviewSurface {
 
 @Preview
 @Composable
-private fun SettingsDirectUrlPreview() = PreviewSurface {
+private fun SettingsHttpsPreview() = PreviewSurface {
     SettingsContent(
         preferences = SamplePrefsUrl,
         status = ConnectionStatus.Connected(latencyMs = 80),

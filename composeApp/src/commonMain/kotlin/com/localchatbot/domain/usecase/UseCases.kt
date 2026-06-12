@@ -17,6 +17,7 @@ import com.localchatbot.domain.repository.StreamEvent
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.skill.SkillCatalog
+import com.localchatbot.data.mcp.McpToolProvider
 import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.truncateToolOutput
@@ -59,6 +60,7 @@ class SendMessageUseCase(
      */
     private val scope: CoroutineScope,
     private val scriptToolFactory: ScriptToolFactory? = null,
+    private val mcpToolProvider: McpToolProvider? = null,
     private val confirm: ToolConfirmationController? = null
 ) {
     /**
@@ -100,7 +102,10 @@ class SendMessageUseCase(
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
         // que no puede ejecutar.
         val scriptTools = scriptToolFactory?.buildEnabledTools() ?: emptyList()
-        val tools = (toolRegistry.availableDefinitions() + scriptTools.map { it.definition })
+        val mcpTools = mcpToolProvider?.currentTools() ?: emptyList()
+        val tools = (toolRegistry.availableDefinitions()
+            + scriptTools.map { it.definition }
+            + mcpTools.filter { runCatching { it.isAvailable() }.getOrDefault(false) }.map { it.definition })
             .takeIf { it.isNotEmpty() }
 
         return try {
@@ -117,6 +122,13 @@ class SendMessageUseCase(
             // iteración final no produce contenido.
             var latestAssistantId: String? = null
             var lastToolResultJson: String? = null
+            // Métricas de tokens acumuladas a lo largo de todas las rondas.
+            var sumInputTokens = 0
+            var sumOutputTokens = 0
+            var sumGenerationMs = 0L
+            var lastContextTokens: Int? = null
+            var hasMetrics = false
+            var anyEstimated = false
 
             while (iter < MAX_TOOL_ITERATIONS) {
                 val currentMessages = chats.getSession(sessionId)?.messages
@@ -168,6 +180,16 @@ class SendMessageUseCase(
                                 finishReason = event.reason
                                 finalToolCalls = event.toolCalls
                                 event.actualModel?.let { chats.updateModel(sessionId, it) }
+                                // Acumula métricas de tokens a lo largo de las rondas
+                                // (con tools, cada ronda reenvía el contexto creciente).
+                                event.inputTokens?.let {
+                                    sumInputTokens += it
+                                    lastContextTokens = it // la última ronda gana → contexto actual
+                                    hasMetrics = true
+                                }
+                                event.outputTokens?.let { sumOutputTokens += it; hasMetrics = true }
+                                event.generationMs?.let { sumGenerationMs += it }
+                                if (event.estimated) anyEstimated = true
                             }
                         }
                     }
@@ -227,13 +249,15 @@ class SendMessageUseCase(
                     val yolo = prefs.current().fsYoloMode
                     val needsSequential = !yolo && finalToolCalls.any { c ->
                         (toolRegistry.find(c.function.name)
-                            ?: scriptTools.firstOrNull { it.name == c.function.name })
+                            ?: scriptTools.firstOrNull { it.name == c.function.name }
+                            ?: mcpTools.firstOrNull { it.name == c.function.name })
                             ?.requiresConfirmation == true
                     }
 
                     suspend fun executeCall(call: ToolCall): Pair<ToolCall, String> {
                         val tool = toolRegistry.find(call.function.name)
                             ?: scriptTools.firstOrNull { it.name == call.function.name }
+                            ?: mcpTools.firstOrNull { it.name == call.function.name }
                         val label = tool?.activityLabel
                         if (label != null && tool.isAvailable()) {
                             streamingStateStore.markActivity(
@@ -306,6 +330,21 @@ class SendMessageUseCase(
                 if (sources.isNotEmpty()) {
                     chats.updateMessageSources(sessionId, lastAssistantId!!, sources)
                 }
+            }
+
+            // Adjunta las métricas de tokens al mensaje final del assistant.
+            if (lastAssistantId != null && hasMetrics) {
+                chats.updateMessageMetrics(
+                    sessionId,
+                    lastAssistantId!!,
+                    com.localchatbot.domain.model.TokenMetrics(
+                        inputTokens = sumInputTokens.takeIf { it > 0 },
+                        outputTokens = sumOutputTokens.takeIf { it > 0 },
+                        generationMs = sumGenerationMs.takeIf { it > 0 },
+                        estimated = anyEstimated,
+                        contextTokens = lastContextTokens
+                    )
+                )
             }
 
             // SIEMPRE drenamos las imágenes out-of-band de las tools, incluso si la última

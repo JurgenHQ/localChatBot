@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.domain.model.ChatSession
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.usecase.CreateSessionUseCase
@@ -47,11 +46,7 @@ class SessionsViewModel(
             drawerOpen = local.drawerOpen,
             connectionLabel = when {
                 !prefs.connection.isValid() -> prefs.connection.model
-                prefs.connection.mode == ConnectionMode.DirectUrl ->
-                    prefs.connection.directUrl
-                        .removePrefix("https://").removePrefix("http://")
-                        .trimEnd('/')
-                        .take(32)
+                prefs.connection.port.isBlank() -> prefs.connection.ip.take(32)
                 else -> "${prefs.connection.ip}:${prefs.connection.port}"
             }
         )

@@ -74,6 +74,7 @@ fun ChatScreen(
     modifier: Modifier = Modifier
 ) {
     val state by chatViewModel.state.collectAsStateWithLifecycle()
+    val speakingMessageId by chatViewModel.speakingMessageId.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
     val pendingConfirmation by toolConfirmationController.pending.collectAsStateWithLifecycle()
     val allTodos by todoTool.state.collectAsStateWithLifecycle()
@@ -108,6 +109,9 @@ fun ChatScreen(
             onChangeModel = onChangeModel,
             onStop = chatViewModel::stop,
             onRegenerate = chatViewModel::regenerateLastResponse,
+            speakingMessageId = speakingMessageId,
+            onSpeakMessage = chatViewModel::speakMessage,
+            onStopSpeak = chatViewModel::stopSpeaking,
             onOpenTemplates = { templatesOpen = true },
             onSaveImage = chatViewModel::saveImage,
             onPasteImage = chatViewModel::onImagePicked,
@@ -169,6 +173,9 @@ fun ChatContent(
     onChangeModel: () -> Unit = {},
     onStop: () -> Unit = {},
     onRegenerate: () -> Unit = {},
+    speakingMessageId: String? = null,
+    onSpeakMessage: (String, String) -> Unit = { _, _ -> },
+    onStopSpeak: () -> Unit = {},
     onOpenTemplates: () -> Unit = {},
     onSaveImage: (ByteArray) -> Unit = {},
     onPasteImage: ((ByteArray) -> Unit)? = null,
@@ -285,6 +292,9 @@ fun ChatContent(
                 onResendMessage = onResendMessage,
                 onEditMessage = onEditMessage,
                 onRegenerate = onRegenerate,
+                speakingMessageId = speakingMessageId,
+                onSpeakMessage = onSpeakMessage,
+                onStopSpeak = onStopSpeak,
                 onSaveImage = onSaveImage,
                 onTapMessage = { keyboard?.hide() },
                 modifier = Modifier.weight(1f).fillMaxWidth().then(dismissKeyboardModifier)

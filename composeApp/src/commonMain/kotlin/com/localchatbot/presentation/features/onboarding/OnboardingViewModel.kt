@@ -3,7 +3,6 @@ package com.localchatbot.presentation.features.onboarding
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.domain.model.ConnectionConfig
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
@@ -15,10 +14,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class OnboardingState(
-    val mode: ConnectionMode = ConnectionMode.LocalNetwork,
     val ip: String = "",
     val port: String = "1234",
-    val directUrl: String = "",
+    val useHttps: Boolean = false,
     val model: String = "",
     val status: ConnectionStatus = ConnectionStatus.Unknown,
     val availableModels: List<String> = emptyList(),
@@ -26,10 +24,9 @@ data class OnboardingState(
 ) {
     val canSubmit: Boolean get() = model.isNotBlank() && status is ConnectionStatus.Connected
     fun toConfig() = ConnectionConfig(
-        mode = mode,
         ip = ip.trim(),
         port = port.trim(),
-        directUrl = directUrl.trim(),
+        useHttps = useHttps,
         model = model.trim()
     )
 }
@@ -48,27 +45,23 @@ class OnboardingViewModel(
             val cfg = preferences.current().connection
             _state.update {
                 it.copy(
-                    mode = cfg.mode,
                     ip = cfg.ip,
-                    port = cfg.port.ifBlank { "1234" },
-                    directUrl = cfg.directUrl,
+                    port = cfg.port,
+                    useHttps = cfg.useHttps,
                     model = cfg.model
                 )
             }
         }
     }
 
-    fun onModeChange(mode: ConnectionMode) = _state.update {
-        it.copy(mode = mode, status = ConnectionStatus.Unknown, availableModels = emptyList())
-    }
     fun onIpChange(v: String) = _state.update {
         it.copy(ip = v, status = ConnectionStatus.Unknown, availableModels = emptyList())
     }
     fun onPortChange(v: String) = _state.update {
         it.copy(port = v.filter { c -> c.isDigit() }, status = ConnectionStatus.Unknown, availableModels = emptyList())
     }
-    fun onDirectUrlChange(v: String) = _state.update {
-        it.copy(directUrl = v, status = ConnectionStatus.Unknown, availableModels = emptyList())
+    fun onHttpsChange(v: Boolean) = _state.update {
+        it.copy(useHttps = v, status = ConnectionStatus.Unknown, availableModels = emptyList())
     }
     fun onModelChange(v: String) = _state.update { it.copy(model = v, status = ConnectionStatus.Unknown) }
     fun onModelSelected(name: String) = _state.update { it.copy(model = name) }

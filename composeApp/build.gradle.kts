@@ -128,6 +128,10 @@ compose.desktop {
                 bundleID = "com.localchatbot.desktop"
                 iconFile.set(project.file("src/desktopMain/resources/AppIcon.icns"))
             }
+            windows {
+                iconFile.set(project.file("src/desktopMain/resources/AppIcon.ico"))
+                upgradeUuid = "e3f2a1b0-4c5d-6e7f-8a9b-0c1d2e3f4a5b"
+            }
             linux {
                 packageName = "localchatbot"
             }

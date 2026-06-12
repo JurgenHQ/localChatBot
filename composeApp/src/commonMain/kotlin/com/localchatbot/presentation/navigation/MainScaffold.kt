@@ -29,6 +29,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.di.AppContainer
 import com.localchatbot.presentation.components.organisms.AppBottomBar
 import com.localchatbot.presentation.components.organisms.BottomTab
+import com.localchatbot.presentation.features.agent.AgentScreen
+import com.localchatbot.presentation.features.agent.AgentViewModel
 import com.localchatbot.presentation.features.chat.ChatScreen
 import com.localchatbot.presentation.features.chat.ChatViewModel
 import com.localchatbot.presentation.features.debug.NetworkInspectorScreen
@@ -39,6 +41,8 @@ import com.localchatbot.presentation.features.settings.SettingsEditorSheet
 import com.localchatbot.presentation.features.settings.SettingsEditorViewModel
 import com.localchatbot.presentation.features.settings.SettingsScreen
 import com.localchatbot.presentation.features.settings.SettingsViewModel
+import com.localchatbot.presentation.features.mcp.McpServersScreen
+import com.localchatbot.presentation.features.mcp.McpServersViewModel
 import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
 
@@ -48,6 +52,7 @@ fun MainScaffold(container: AppContainer) {
     var modelPickerOpen by rememberSaveable { mutableStateOf(false) }
     var inspectorOpen by rememberSaveable { mutableStateOf(false) }
     var skillsOpen by rememberSaveable { mutableStateOf(false) }
+    var mcpOpen by rememberSaveable { mutableStateOf(false) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -63,7 +68,8 @@ fun MainScaffold(container: AppContainer) {
             createSessionUseCase = container.createSession,
             sendMessageUseCase = container.sendMessage,
             modelRepository = container.modelRepository,
-            imageSaver = container.imageSaver
+            imageSaver = container.imageSaver,
+            textToSpeech = container.textToSpeech
         )
     }
     val sessionsViewModel = remember {
@@ -83,6 +89,12 @@ fun MainScaffold(container: AppContainer) {
     }
     val skillsViewModel = remember {
         SkillsViewModel(preferences = container.preferencesRepository, skillFileStore = container.skillFileStore)
+    }
+    val mcpServersViewModel = remember {
+        McpServersViewModel(preferences = container.preferencesRepository, mcpToolProvider = container.mcpToolProvider)
+    }
+    val agentViewModel = remember {
+        AgentViewModel(preferences = container.preferencesRepository)
     }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
@@ -135,6 +147,11 @@ fun MainScaffold(container: AppContainer) {
                             onChangeModel = { modelPickerOpen = true },
                             showMenuButton = true
                         )
+                        BottomTab.Agent -> AgentScreen(
+                            viewModel = agentViewModel,
+                            onOpenSkills = { skillsOpen = true },
+                            onOpenMcpServers = { mcpOpen = true }
+                        )
                         BottomTab.Settings -> SettingsScreen(
                             viewModel = settingsViewModel,
                             editorViewModelFactory = { editor ->
@@ -144,8 +161,7 @@ fun MainScaffold(container: AppContainer) {
                                     listModels = container.listModels
                                 )
                             },
-                            onOpenNetworkInspector = { inspectorOpen = true },
-                            onOpenSkills = { skillsOpen = true }
+                            onOpenNetworkInspector = { inspectorOpen = true }
                         )
                     }
                 }
@@ -178,6 +194,13 @@ fun MainScaffold(container: AppContainer) {
             SkillsScreen(
                 viewModel = skillsViewModel,
                 onClose = { skillsOpen = false }
+            )
+        }
+
+        if (mcpOpen) {
+            McpServersScreen(
+                viewModel = mcpServersViewModel,
+                onClose = { mcpOpen = false }
             )
         }
 

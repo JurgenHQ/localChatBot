@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,7 +30,6 @@ import androidx.compose.ui.graphics.Color
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
-import com.localchatbot.domain.model.ConnectionMode
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.presentation.components.atoms.AppLogo
 import com.localchatbot.presentation.components.atoms.PrimaryButton
@@ -49,10 +49,9 @@ fun OnboardingScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     OnboardingContent(
         state = state,
-        onModeChange = viewModel::onModeChange,
         onIpChange = viewModel::onIpChange,
         onPortChange = viewModel::onPortChange,
-        onDirectUrlChange = viewModel::onDirectUrlChange,
+        onHttpsChange = viewModel::onHttpsChange,
         onModelChange = viewModel::onModelChange,
         onModelSelected = viewModel::onModelSelected,
         onTest = viewModel::testConnection,
@@ -64,10 +63,9 @@ fun OnboardingScreen(
 @Composable
 fun OnboardingContent(
     state: OnboardingState,
-    onModeChange: (ConnectionMode) -> Unit = {},
     onIpChange: (String) -> Unit,
     onPortChange: (String) -> Unit,
-    onDirectUrlChange: (String) -> Unit = {},
+    onHttpsChange: (Boolean) -> Unit = {},
     onModelChange: (String) -> Unit,
     onModelSelected: (String) -> Unit,
     onTest: () -> Unit,
@@ -97,47 +95,45 @@ fun OnboardingContent(
                 color = MaterialTheme.colorScheme.onBackground
             )
             Text(
-                when (state.mode) {
-                    ConnectionMode.LocalNetwork -> "Apunta a un endpoint compatible con OpenAI en tu red local."
-                    ConnectionMode.DirectUrl    -> "Pega la URL de tu tunnel (Cloudflare, ngrok, etc.)."
-                },
+                "Apunta a un endpoint compatible con OpenAI: LM Studio, Ollama o llama.cpp en tu red " +
+                    "o por VPN, un túnel, o un proveedor cloud. Activa HTTPS para túneles y cloud.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            // Toggle de modo
-            OnboardingModeToggle(selected = state.mode, onSelect = onModeChange)
-
-            if (state.mode == ConnectionMode.LocalNetwork) {
+            LabeledField(
+                label = "Host / IP",
+                value = state.ip,
+                onValueChange = onIpChange,
+                placeholder = "192.168.1.42  o  api.openai.com",
+                keyboardType = KeyboardType.Uri,
+                monospace = true
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.lg)
+            ) {
                 LabeledField(
-                    label = "Dirección IP",
-                    value = state.ip,
-                    onValueChange = onIpChange,
-                    placeholder = "192.168.1.42",
-                    keyboardType = KeyboardType.Uri,
-                    monospace = true
+                    label = "Puerto",
+                    value = state.port,
+                    onValueChange = onPortChange,
+                    placeholder = "1234",
+                    keyboardType = KeyboardType.Number,
+                    monospace = true,
+                    modifier = Modifier.width(140.dp)
                 )
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    LabeledField(
-                        label = "Puerto",
-                        value = state.port,
-                        onValueChange = onPortChange,
-                        placeholder = "1234",
-                        keyboardType = KeyboardType.Number,
-                        monospace = true,
-                        suffix = "/v1",
-                        modifier = Modifier.width(160.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+                ) {
+                    Text(
+                        "HTTPS",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
+                    Switch(checked = state.useHttps, onCheckedChange = onHttpsChange)
                 }
-            } else {
-                LabeledField(
-                    label = "URL del servidor",
-                    value = state.directUrl,
-                    onValueChange = onDirectUrlChange,
-                    placeholder = "https://abc.trycloudflare.com",
-                    keyboardType = KeyboardType.Uri,
-                    monospace = true
-                )
             }
 
             LabeledField(
@@ -169,50 +165,8 @@ fun OnboardingContent(
             SecondaryButton(
                 text = "Probar conexión de nuevo",
                 onClick = onTest,
-                enabled = state.status !is ConnectionStatus.Checking &&
-                    (state.ip.isNotBlank() || state.directUrl.isNotBlank())
+                enabled = state.status !is ConnectionStatus.Checking && state.ip.isNotBlank()
             )
-        }
-    }
-}
-
-@Composable
-private fun OnboardingModeToggle(
-    selected: ConnectionMode,
-    onSelect: (ConnectionMode) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Radius.md))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        ConnectionMode.entries.forEach { mode ->
-            val isSelected = mode == selected
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(
-                        if (isSelected) MaterialTheme.colorScheme.primary
-                        else Color.Transparent
-                    )
-                    .clickable { onSelect(mode) }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = when (mode) {
-                        ConnectionMode.LocalNetwork -> "Red local"
-                        ConnectionMode.DirectUrl    -> "URL directa"
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
     }
 }
@@ -242,11 +196,12 @@ private fun OnboardingFilledPreview() = PreviewSurface {
 
 @Preview
 @Composable
-private fun OnboardingDirectUrlPreview() = PreviewSurface {
+private fun OnboardingHttpsPreview() = PreviewSurface {
     OnboardingContent(
         state = OnboardingState(
-            mode = ConnectionMode.DirectUrl,
-            directUrl = "https://abc.trycloudflare.com",
+            ip = "abc.trycloudflare.com",
+            port = "",
+            useHttps = true,
             model = "llama-3.1-8b-instruct",
             status = ConnectionStatus.Connected(latencyMs = 80)
         ),

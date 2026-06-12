@@ -25,7 +25,13 @@ import kotlinx.serialization.json.Json
 class OpenAiApi(
     private val client: HttpClient,
     private val json: Json,
-    private val inspector: NetworkInspector? = null
+    private val inspector: NetworkInspector? = null,
+    /**
+     * Provee la API key actual del endpoint del modelo (lee preferencias en cada
+     * llamada). Si devuelve no-vacío, se añade como `Authorization: Bearer <key>`.
+     * Para LM Studio con auth activada o proveedores cloud.
+     */
+    private val authTokenProvider: suspend () -> String? = { null }
 ) {
 
     suspend fun chatCompletion(
@@ -36,9 +42,11 @@ class OpenAiApi(
         val finalRequest = request.copy(stream = false)
         val requestJson = runCatching { json.encodeToString(ChatCompletionRequest.serializer(), finalRequest) }.getOrNull()
         val start = Clock.System.now().toEpochMilliseconds()
+        val token = authTokenProvider()
         return runCatching {
             val response = client.post(url) {
                 contentType(ContentType.Application.Json)
+                token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
                 setBody(finalRequest)
             }
             val raw = response.bodyAsText()
@@ -90,9 +98,11 @@ class OpenAiApi(
         var errorMessage: String? = null
         var parseErrorCount = 0
         var firstParseError: String? = null
+        val token = authTokenProvider()
         try {
             client.preparePost(url) {
                 contentType(ContentType.Application.Json)
+                token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
                 // Solo en desktop (CIO): fuerza conexión nueva por cada stream para
                 // evitar reusar una conexión que LM Studio ya cerró, lo que causaría
                 // EOF inmediato en llamadas rápidas (p. ej. YOLO mode sin delay de
@@ -165,7 +175,10 @@ class OpenAiApi(
     }
 
     suspend fun listModels(baseUrl: String): Result<List<String>> = runCatching {
-        val response = client.get("$baseUrl/models")
+        val token = authTokenProvider()
+        val response = client.get("$baseUrl/models") {
+            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        }
         if (!response.status.isSuccess()) {
             throw IllegalStateException("HTTP ${response.status.value}")
         }
@@ -173,8 +186,11 @@ class OpenAiApi(
     }
 
     suspend fun ping(baseUrl: String): Result<Long> = runCatching {
+        val token = authTokenProvider()
         val start = Clock.System.now().toEpochMilliseconds()
-        val response = client.get("$baseUrl/models")
+        val response = client.get("$baseUrl/models") {
+            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        }
         if (!response.status.isSuccess()) {
             throw IllegalStateException("HTTP ${response.status.value}")
         }

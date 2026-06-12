@@ -84,28 +84,19 @@ fun SettingsEditorSheetContent(
         ) {
             when (state.editor) {
                 SettingsEditor.Ip -> TextEditorBody(
-                    title = "Dirección IP",
+                    title = "Host / IP",
                     value = state.textDraft,
-                    placeholder = "192.168.1.42",
+                    placeholder = "192.168.1.42  o  api.openai.com",
                     keyboardType = KeyboardType.Uri,
                     onChange = onTextChange,
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
                 SettingsEditor.Port -> TextEditorBody(
-                    title = "Puerto",
+                    title = "Puerto (opcional)",
                     value = state.textDraft,
                     placeholder = "1234",
                     keyboardType = KeyboardType.Number,
-                    onChange = onTextChange,
-                    canSave = state.canSaveText,
-                    onSave = onSave
-                )
-                SettingsEditor.DirectUrl -> TextEditorBody(
-                    title = "URL del servidor",
-                    value = state.textDraft,
-                    placeholder = "https://abc.trycloudflare.com",
-                    keyboardType = KeyboardType.Uri,
                     onChange = onTextChange,
                     canSave = state.canSaveText,
                     onSave = onSave
@@ -129,6 +120,15 @@ fun SettingsEditorSheetContent(
                         )
                     }
                 }
+                SettingsEditor.ApiKey -> TextEditorBody(
+                    title = "API key del modelo",
+                    value = state.textDraft,
+                    placeholder = "sk-... (opcional)",
+                    keyboardType = KeyboardType.Password,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
                 SettingsEditor.Theme -> ThemeEditorBody(
                     current = state.themeDraft,
                     onSelect = onThemeChange

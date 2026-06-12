@@ -3,6 +3,7 @@ package com.localchatbot.data.repository
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
+import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.model.WebSource
 import com.localchatbot.core.util.newId
 import com.localchatbot.domain.repository.ChatRepository
@@ -143,6 +144,20 @@ class ChatRepositoryImpl(
                 else s.copy(
                     messages = s.messages.map { m ->
                         if (m.id == messageId) m.copy(reasoning = reasoning) else m
+                    },
+                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
+                )
+            }
+        }
+    }
+
+    override suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics) {
+        mutate { list ->
+            list.map { s ->
+                if (s.id != sessionId) s
+                else s.copy(
+                    messages = s.messages.map { m ->
+                        if (m.id == messageId) m.copy(metrics = metrics) else m
                     },
                     updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
                 )
