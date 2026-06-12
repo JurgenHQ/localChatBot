@@ -13,8 +13,9 @@ import com.russhwolf.settings.Settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.builtins.ListSerializer
+import com.localchatbot.domain.model.SettingsExport
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 
 class PreferencesRepositoryImpl(
     private val settings: Settings,
@@ -22,6 +23,7 @@ class PreferencesRepositoryImpl(
 ) : PreferencesRepository {
 
     private val templatesJson = Json { ignoreUnknownKeys = true }
+    private val exportFormat = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val templatesSerializer = ListSerializer(PromptTemplate.serializer())
     private val skillsSerializer = ListSerializer(InstalledSkill.serializer())
     private val customSkillsSerializer = ListSerializer(SkillDefinition.serializer())
@@ -119,6 +121,47 @@ class PreferencesRepositoryImpl(
     override suspend fun setMcpServers(servers: List<McpServerConfig>) {
         settings.putString(KEY_MCP_SERVERS, templatesJson.encodeToString(mcpSerializer, servers))
         _state.value = _state.value.copy(mcpServers = servers)
+    }
+
+    override suspend fun exportJson(): String {
+        val export = SettingsExport(
+            connection = _state.value.connection,
+            themeMode = _state.value.themeMode,
+            accentSeed = _state.value.accentSeed,
+            tavilyApiKey = _state.value.tavilyApiKey,
+            defaultSystemPrompt = _state.value.defaultSystemPrompt,
+            promptTemplates = _state.value.promptTemplates,
+            imageServiceUrl = _state.value.imageServiceUrl,
+            fsWorkspaceDir = _state.value.fsWorkspaceDir,
+            fsYoloMode = _state.value.fsYoloMode,
+            fsAllowOutsideWorkspace = _state.value.fsAllowOutsideWorkspace,
+            installedSkills = _state.value.installedSkills,
+            customSkills = _state.value.customSkills,
+            mcpServers = _state.value.mcpServers
+        )
+        return exportFormat.encodeToString(SettingsExport.serializer(), export)
+    }
+
+    override suspend fun importJson(json: String) {
+        try {
+            val export = templatesJson.decodeFromString(SettingsExport.serializer(), json)
+
+            updateConnection(export.connection)
+            updateThemeMode(export.themeMode)
+            updateAccent(export.accentSeed)
+            updateTavilyApiKey(export.tavilyApiKey)
+            updateDefaultSystemPrompt(export.defaultSystemPrompt)
+            setPromptTemplates(export.promptTemplates)
+            updateImageServiceUrl(export.imageServiceUrl)
+            updateFsWorkspaceDir(export.fsWorkspaceDir)
+            updateFsYoloMode(export.fsYoloMode)
+            updateFsAllowOutsideWorkspace(export.fsAllowOutsideWorkspace)
+            setInstalledSkills(export.installedSkills)
+            setCustomSkills(export.customSkills)
+            setMcpServers(export.mcpServers)
+        } catch (e: Exception) {
+            throw Exception("Error parsing settings JSON: ${e.message}")
+        }
     }
 
     override suspend fun reset() {

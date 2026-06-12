@@ -1,5 +1,8 @@
 package com.localchatbot.domain.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class ConnectionConfig(
     /**
      * Host o IP del servidor. Puede ser una IP de LAN/VPN (`192.168.1.42`) o un

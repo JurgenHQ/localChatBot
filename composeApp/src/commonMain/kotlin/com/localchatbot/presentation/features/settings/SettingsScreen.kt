@@ -40,6 +40,13 @@ import com.localchatbot.presentation.components.atoms.StatusDot
 import com.localchatbot.presentation.components.molecules.SectionCard
 import com.localchatbot.presentation.components.molecules.SettingsRow
 import com.localchatbot.presentation.preview.PreviewSurface
+import com.localchatbot.core.storage.rememberSettingsExporter
+import com.localchatbot.core.storage.rememberSettingsImporter
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 @Composable
@@ -51,6 +58,25 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    val exporter = rememberSettingsExporter(onError = viewModel::fileError)
+    val importer = rememberSettingsImporter(
+        onResult = viewModel::onImportFileSelected,
+        onError = viewModel::fileError
+    )
+
+    // El ViewModel construye el JSON y lo emite; aquí abrimos el diálogo "guardar como".
+    LaunchedEffect(Unit) {
+        viewModel.exportEvents.collect { json -> exporter(json) }
+    }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.consumeMessage()
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         SettingsContent(
             preferences = state.preferences,
@@ -59,7 +85,9 @@ fun SettingsScreen(
             onRetryConnection = viewModel::retryConnection,
             onClearHistory = viewModel::clearHistory,
             onToggleHttps = viewModel::toggleHttps,
-            onOpenNetworkInspector = onOpenNetworkInspector
+            onOpenNetworkInspector = onOpenNetworkInspector,
+            onExportSettings = viewModel::exportSettings,
+            onImportSettings = importer
         )
 
         state.openEditor?.let { editor ->
@@ -69,6 +97,30 @@ fun SettingsScreen(
                 onDismiss = viewModel::closeEditor
             )
         }
+
+        if (state.pendingImportJson != null) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissImport,
+                title = { Text("Importar configuración") },
+                text = {
+                    Text(
+                        "Esto reemplazará TODA tu configuración actual (servidor, API keys, " +
+                            "skills, servidores MCP, etc.) por la del archivo. Esta acción no se puede deshacer."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = viewModel::confirmImport) { Text("Reemplazar") }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissImport) { Text("Cancelar") }
+                }
+            )
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 
@@ -81,6 +133,8 @@ fun SettingsContent(
     onClearHistory: () -> Unit,
     onToggleHttps: (Boolean) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
+    onExportSettings: () -> Unit = {},
+    onImportSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -265,6 +319,28 @@ fun SettingsContent(
         }
         Text(
             "Examina el JSON crudo de cada llamada al modelo: request, response, duración y errores.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        SectionLabel("Backup")
+        SectionCard {
+            SettingsRow(
+                title = "Exportar configuración",
+                onClick = onExportSettings,
+                trailing = { MonoValue("Guardar →", maxChars = 12) }
+            )
+            Divider()
+            SettingsRow(
+                title = "Importar configuración",
+                onClick = onImportSettings,
+                trailing = { MonoValue("Abrir →", maxChars = 10) }
+            )
+        }
+        Text(
+            "Exporta todas tus configuraciones a un archivo .json para moverlas a otra máquina. " +
+                "⚠️ El archivo incluye tus API keys en texto plano: guárdalo en un lugar seguro. " +
+                "Importar reemplaza por completo la configuración actual.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

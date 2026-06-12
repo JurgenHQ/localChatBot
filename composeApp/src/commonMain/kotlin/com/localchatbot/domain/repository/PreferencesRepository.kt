@@ -28,4 +28,6 @@ interface PreferencesRepository {
     suspend fun refreshCustomSkills()
     suspend fun setMcpServers(servers: List<McpServerConfig>)
     suspend fun reset()
+    suspend fun exportJson(): String
+    suspend fun importJson(json: String)   // lanza excepción si el JSON es inválido
 }
