@@ -20,4 +20,12 @@ expect object PlatformCapabilities {
      * más agresivamente de lo necesario.
      */
     val forceCloseHttpConnection: Boolean
+
+    /**
+     * true si el motor de render puede pintar texto en negro ignorando el color
+     * especificado (bug de Compose Multiplatform en iOS, CMP-8028; sin fix al
+     * menos hasta CMP 1.10). Cuando es true, el markdown del chat fuerza el
+     * color del texto con un ColorFilter a nivel de capa.
+     */
+    val needsTextColorWorkaround: Boolean
 }

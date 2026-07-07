@@ -3,6 +3,7 @@ package com.localchatbot.presentation.features.sessions
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.state.ActiveSessionStore
+import com.localchatbot.core.storage.CheckpointStore
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -30,7 +31,8 @@ class SessionsViewModel(
     private val chatRepository: ChatRepository,
     preferences: PreferencesRepository,
     private val activeSessionStore: ActiveSessionStore,
-    private val createSessionUseCase: CreateSessionUseCase
+    private val createSessionUseCase: CreateSessionUseCase,
+    private val checkpointStore: CheckpointStore? = null
 ) : ViewModel() {
 
     private val _local = MutableStateFlow(LocalState())
@@ -73,6 +75,7 @@ class SessionsViewModel(
         viewModelScope.launch {
             chatRepository.deleteSession(id)
             activeSessionStore.clearIfMatches(id)
+            checkpointStore?.deleteSession(id)
         }
     }
 

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,18 +14,26 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import com.localchatbot.core.fs.AttachedTextFile
 import com.localchatbot.core.image.decodeImage
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
@@ -52,6 +62,9 @@ fun ChatComposer(
     sending: Boolean = false,
     attachedImageBytes: ByteArray? = null,
     onRemoveAttachment: () -> Unit = {},
+    attachedTextFiles: List<AttachedTextFile> = emptyList(),
+    onAttachTextFile: (() -> Unit)? = null,
+    onRemoveTextFile: ((String) -> Unit)? = null,
     onVoice: () -> Unit = {},
     onStop: () -> Unit = {},
     onTemplates: (() -> Unit)? = null,
@@ -61,6 +74,9 @@ fun ChatComposer(
     installedSkills: List<SkillDefinition> = emptyList(),
     onSelectSkill: (SkillDefinition) -> Unit = {},
     onClearSkill: () -> Unit = {},
+    /** Pregunta pendiente del modelo (tool `ask_user`); null si no hay. */
+    pendingPrompt: com.localchatbot.core.state.PendingUserPrompt? = null,
+    onSelectPromptOption: (String) -> Unit = {},
     /**
      * Slot opcional renderizado debajo de la fila del input (después del botón
      * de adjuntar imagen y de plantillas). Se usa para los chips del agente
@@ -106,15 +122,30 @@ fun ChatComposer(
                 modifier = Modifier.padding(bottom = Spacing.sm)
             )
         }
+        if (attachedTextFiles.isNotEmpty()) {
+            TextFileChips(
+                files = attachedTextFiles,
+                onRemove = onRemoveTextFile ?: {},
+                modifier = Modifier.padding(bottom = Spacing.sm)
+            )
+        }
+        if (pendingPrompt != null) {
+            com.localchatbot.presentation.components.molecules.UserPromptPanel(
+                prompt = pendingPrompt,
+                onSelectOption = onSelectPromptOption,
+                modifier = Modifier.padding(bottom = Spacing.sm)
+            )
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
-            IconSquareButton(icon = Icons.Outlined.AttachFile, onClick = onAttach)
-            if (onTemplates != null) {
-                IconSquareButton(icon = Icons.Outlined.Bookmarks, onClick = onTemplates)
-            }
-            val hasContentNow = value.isNotBlank() || attachedImageBytes != null
+            AttachMenuButton(
+                onAttachImage = onAttach,
+                onAttachTextFile = onAttachTextFile,
+                onTemplates = onTemplates
+            )
+            val hasContentNow = value.isNotBlank() || attachedImageBytes != null || attachedTextFiles.isNotEmpty()
             ChatInputField(
                 value = value,
                 onValueChange = onValueChange,
@@ -124,7 +155,7 @@ fun ChatComposer(
                 } else null,
                 onPasteImage = onPasteImage
             )
-            val hasContent = value.isNotBlank() || attachedImageBytes != null
+            val hasContent = value.isNotBlank() || attachedImageBytes != null || attachedTextFiles.isNotEmpty()
             when {
                 sending -> StopIconButton(onClick = onStop)
                 hasContent -> SendIconButton(enabled = true, onClick = dismissAndSend)
@@ -135,6 +166,92 @@ fun ChatComposer(
         if (agentBar != null) {
             Spacer(Modifier.size(Spacing.sm))
             agentBar()
+        }
+    }
+}
+
+/**
+ * Botón "+" único que agrupa adjuntar imagen / archivo / plantillas en un menú,
+ * en vez de 3 botones sueltos que en mobile dejaban muy poco ancho al input.
+ */
+@Composable
+private fun AttachMenuButton(
+    onAttachImage: () -> Unit,
+    onAttachTextFile: (() -> Unit)?,
+    onTemplates: (() -> Unit)?
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconSquareButton(icon = Icons.Default.Add, onClick = { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Adjuntar imagen") },
+                leadingIcon = { Icon(Icons.Outlined.AttachFile, contentDescription = null) },
+                onClick = { expanded = false; onAttachImage() }
+            )
+            if (onAttachTextFile != null) {
+                DropdownMenuItem(
+                    text = { Text("Adjuntar archivo") },
+                    leadingIcon = { Icon(Icons.Outlined.Description, contentDescription = null) },
+                    onClick = { expanded = false; onAttachTextFile() }
+                )
+            }
+            if (onTemplates != null) {
+                DropdownMenuItem(
+                    text = { Text("Plantillas") },
+                    leadingIcon = { Icon(Icons.Outlined.Bookmarks, contentDescription = null) },
+                    onClick = { expanded = false; onTemplates() }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TextFileChips(
+    files: List<AttachedTextFile>,
+    onRemove: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+    ) {
+        files.forEach { file ->
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(Radius.pill))
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .padding(horizontal = Spacing.sm, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    file.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onRemove(file.name) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Quitar archivo",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+            }
         }
     }
 }

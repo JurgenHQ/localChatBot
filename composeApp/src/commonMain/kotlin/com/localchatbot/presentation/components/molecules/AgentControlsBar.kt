@@ -13,9 +13,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Difference
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -45,9 +48,13 @@ fun AgentControlsBar(
     workspaceDir: String?,
     sandboxOn: Boolean,
     yoloOn: Boolean,
+    previewEditsOn: Boolean,
+    planMode: Boolean,
     onPickWorkspace: () -> Unit,
     onToggleSandbox: () -> Unit,
     onToggleYolo: () -> Unit,
+    onTogglePreviewEdits: () -> Unit,
+    onToggleMode: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -63,6 +70,14 @@ fun AgentControlsBar(
             active = workspaceDir != null,
             onClick = onPickWorkspace
         )
+        // Modo Plan (solo lectura) / Build (puede escribir). Plan se resalta para dejar
+        // claro que el agente no puede modificar archivos.
+        AgentChip(
+            icon = if (planMode) Icons.Filled.Visibility else Icons.Filled.Build,
+            label = if (planMode) "Plan" else "Build",
+            active = planMode,
+            onClick = onToggleMode
+        )
         AgentChip(
             icon = if (sandboxOn) Icons.Filled.Lock else Icons.Filled.LockOpen,
             label = if (sandboxOn) "Sandbox" else "Sin sandbox",
@@ -74,6 +89,12 @@ fun AgentControlsBar(
             label = "YOLO",
             active = yoloOn,
             onClick = onToggleYolo
+        )
+        AgentChip(
+            icon = Icons.Filled.Difference,
+            label = "Preview edits",
+            active = previewEditsOn,
+            onClick = onTogglePreviewEdits
         )
     }
 }

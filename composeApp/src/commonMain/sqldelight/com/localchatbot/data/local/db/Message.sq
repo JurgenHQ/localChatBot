@@ -1,0 +1,63 @@
+import com.localchatbot.domain.model.MessageAttachment;
+import com.localchatbot.domain.model.PersistedToolCall;
+import com.localchatbot.domain.model.Role;
+import com.localchatbot.domain.model.TokenMetrics;
+import com.localchatbot.domain.model.WebSource;
+import kotlin.collections.List;
+
+CREATE TABLE message (
+    id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT AS Role NOT NULL,
+    content TEXT NOT NULL,
+    timestamp_epoch_ms INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL,
+    attachments TEXT AS List<MessageAttachment>,
+    tool_calls TEXT AS List<PersistedToolCall>,
+    tool_call_id TEXT,
+    tool_name TEXT,
+    sources TEXT AS List<WebSource>,
+    reasoning TEXT,
+    metrics TEXT AS TokenMetrics,
+    checkpoint_id TEXT,
+    FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE
+);
+
+CREATE INDEX message_session_id_idx ON message(session_id);
+
+selectAllMessages:
+SELECT * FROM message ORDER BY session_id, sort_order ASC;
+
+selectMessagesBySession:
+SELECT * FROM message WHERE session_id = :sessionId ORDER BY sort_order ASC;
+
+insertMessage:
+INSERT INTO message(id, session_id, role, content, timestamp_epoch_ms, sort_order, attachments, tool_calls, tool_call_id, tool_name, sources, reasoning, metrics, checkpoint_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateMessageContent:
+UPDATE message SET content = :content WHERE id = :id;
+
+updateMessageToolCalls:
+UPDATE message SET tool_calls = :toolCalls WHERE id = :id;
+
+updateMessageSources:
+UPDATE message SET sources = :sources WHERE id = :id;
+
+updateMessageReasoning:
+UPDATE message SET reasoning = :reasoning WHERE id = :id;
+
+updateMessageCheckpoint:
+UPDATE message SET checkpoint_id = :checkpointId WHERE id = :id;
+
+updateMessageMetrics:
+UPDATE message SET metrics = :metrics WHERE id = :id;
+
+deleteMessagesFromSortOrder:
+DELETE FROM message WHERE session_id = :sessionId AND sort_order >= :sortOrder;
+
+sortOrderForMessage:
+SELECT sort_order FROM message WHERE id = :id;
+
+maxSortOrderForSession:
+SELECT MAX(sort_order) FROM message WHERE session_id = :sessionId;

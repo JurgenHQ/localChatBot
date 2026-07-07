@@ -27,6 +27,15 @@ internal object FsToolUtil {
     suspend fun isAvailable(prefs: PreferencesRepository): Boolean =
         PlatformCapabilities.isDesktop && prefs.current().fsWorkspaceDir != null
 
+    /**
+     * Como [isAvailable] pero además exige modo Build. Lo usan las tools que MUTAN el
+     * proyecto (create/edit/multi_edit/delete/create_dir/save_image): en modo Plan
+     * reportan no disponible y ni se envían al modelo, garantizando solo-lectura.
+     */
+    suspend fun isWriteAvailable(prefs: PreferencesRepository): Boolean =
+        isAvailable(prefs) &&
+            prefs.current().agentMode == com.localchatbot.domain.model.AgentMode.Build
+
     fun errorPayload(json: Json, message: String): String =
         json.encodeToString(
             JsonObject.serializer(),

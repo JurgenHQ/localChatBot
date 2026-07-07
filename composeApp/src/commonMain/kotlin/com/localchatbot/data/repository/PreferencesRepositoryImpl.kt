@@ -4,6 +4,7 @@ import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
@@ -98,6 +99,16 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(fsAllowOutsideWorkspace = value)
     }
 
+    override suspend fun updateFsPreviewEdits(value: Boolean) {
+        settings.putBoolean(KEY_FS_PREVIEW_EDITS, value)
+        _state.value = _state.value.copy(fsPreviewEdits = value)
+    }
+
+    override suspend fun updateAgentMode(value: com.localchatbot.domain.model.AgentMode) {
+        settings.putString(KEY_AGENT_MODE, value.name)
+        _state.value = _state.value.copy(agentMode = value)
+    }
+
     override suspend fun setInstalledSkills(skills: List<InstalledSkill>) {
         settings.putString(KEY_INSTALLED_SKILLS, templatesJson.encodeToString(skillsSerializer, skills))
         _state.value = _state.value.copy(installedSkills = skills)
@@ -164,13 +175,36 @@ class PreferencesRepositoryImpl(
         }
     }
 
+    override suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String) {
+        settings.putBoolean(KEY_REMOTE_ENABLED, enabled)
+        settings.putInt(KEY_REMOTE_PORT, port)
+        settings.putString(KEY_REMOTE_PIN, pin)
+        _state.value = _state.value.copy(
+            remoteAccessEnabled = enabled,
+            remoteAccessPort = port,
+            remoteAccessPin = pin
+        )
+    }
+
+    override suspend fun updateRemoteViewerUrl(value: String) {
+        settings.putString(KEY_REMOTE_VIEWER_URL, value)
+        _state.value = _state.value.copy(remoteViewerUrl = value)
+    }
+
+    override suspend fun updateGenerationParams(params: GenerationParams) {
+        settings.putString(KEY_GEN_PARAMS, templatesJson.encodeToString(GenerationParams.serializer(), params))
+        _state.value = _state.value.copy(generationParams = params)
+    }
+
     override suspend fun reset() {
         listOf(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL, KEY_HTTPS, KEY_API_KEY,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
-            KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE,
-            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS
+            KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
+            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS,
+            KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
+            KEY_GEN_PARAMS
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -194,6 +228,12 @@ class PreferencesRepositoryImpl(
             fsWorkspaceDir = settings.getStringOrNull(KEY_FS_WORKSPACE),
             fsYoloMode = settings.getBoolean(KEY_FS_YOLO, default.fsYoloMode),
             fsAllowOutsideWorkspace = settings.getBoolean(KEY_FS_ALLOW_OUTSIDE, default.fsAllowOutsideWorkspace),
+            fsPreviewEdits = settings.getBoolean(KEY_FS_PREVIEW_EDITS, default.fsPreviewEdits),
+            agentMode = runCatching {
+                com.localchatbot.domain.model.AgentMode.valueOf(
+                    settings.getString(KEY_AGENT_MODE, default.agentMode.name)
+                )
+            }.getOrDefault(default.agentMode),
             installedSkills = runCatching {
                 val raw = settings.getStringOrNull(KEY_INSTALLED_SKILLS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(skillsSerializer, raw)
@@ -202,7 +242,15 @@ class PreferencesRepositoryImpl(
             mcpServers = runCatching {
                 val raw = settings.getStringOrNull(KEY_MCP_SERVERS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(mcpSerializer, raw)
-            }.getOrDefault(emptyList())
+            }.getOrDefault(emptyList()),
+            remoteAccessEnabled = settings.getBoolean(KEY_REMOTE_ENABLED, default.remoteAccessEnabled),
+            remoteAccessPort = settings.getInt(KEY_REMOTE_PORT, default.remoteAccessPort),
+            remoteAccessPin = settings.getString(KEY_REMOTE_PIN, default.remoteAccessPin),
+            remoteViewerUrl = settings.getString(KEY_REMOTE_VIEWER_URL, default.remoteViewerUrl),
+            generationParams = runCatching {
+                val raw = settings.getStringOrNull(KEY_GEN_PARAMS) ?: return@runCatching GenerationParams()
+                templatesJson.decodeFromString(GenerationParams.serializer(), raw)
+            }.getOrDefault(GenerationParams())
         )
     }
 
@@ -285,8 +333,15 @@ class PreferencesRepositoryImpl(
         const val KEY_FS_WORKSPACE = "fs_workspace_dir"
         const val KEY_FS_YOLO = "fs_yolo_mode"
         const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
+        const val KEY_FS_PREVIEW_EDITS = "fs_preview_edits"
+        const val KEY_AGENT_MODE = "agent_mode"
         const val KEY_INSTALLED_SKILLS = "installed_skills"
         const val KEY_CUSTOM_SKILLS = "custom_skills"
         const val KEY_MCP_SERVERS = "mcp_servers"
+        const val KEY_REMOTE_ENABLED = "remote_access_enabled"
+        const val KEY_REMOTE_PORT = "remote_access_port"
+        const val KEY_REMOTE_PIN = "remote_access_pin"
+        const val KEY_REMOTE_VIEWER_URL = "remote_viewer_url"
+        const val KEY_GEN_PARAMS = "generation_params"
     }
 }

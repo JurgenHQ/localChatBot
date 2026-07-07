@@ -163,6 +163,60 @@ fun SettingsEditorSheetContent(
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
+                SettingsEditor.Temperature -> TextEditorBody(
+                    title = "Temperatura",
+                    value = state.textDraft,
+                    placeholder = "0.3  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.TopP -> TextEditorBody(
+                    title = "Top-P",
+                    value = state.textDraft,
+                    placeholder = "0.9  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.MaxTokens -> TextEditorBody(
+                    title = "Max tokens",
+                    value = state.textDraft,
+                    placeholder = "2048  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Number,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.PresencePenalty -> TextEditorBody(
+                    title = "Presence penalty",
+                    value = state.textDraft,
+                    placeholder = "0.0  (rango: -2.0 a 2.0)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.FrequencyPenalty -> TextEditorBody(
+                    title = "Frequency penalty",
+                    value = state.textDraft,
+                    placeholder = "0.0  (rango: -2.0 a 2.0)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.Seed -> TextEditorBody(
+                    title = "Seed",
+                    value = state.textDraft,
+                    placeholder = "42  (vacío = aleatorio)",
+                    keyboardType = KeyboardType.Number,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
             }
             SecondaryButton(text = "Cancelar", onClick = onDismiss)
         }

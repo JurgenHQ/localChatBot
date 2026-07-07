@@ -1,43 +1,60 @@
 package com.localchatbot.data.repository
 
+import app.cash.sqldelight.coroutines.asFlow
+import app.cash.sqldelight.coroutines.mapToList
+import com.localchatbot.core.util.newId
+import com.localchatbot.data.local.db.LocalChatBotDatabase
+import com.localchatbot.data.local.db.Message as DbMessage
+import com.localchatbot.data.local.db.Session as DbSession
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
 import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.model.WebSource
-import com.localchatbot.core.util.newId
 import com.localchatbot.domain.repository.ChatRepository
-import com.russhwolf.settings.Settings
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.serialization.json.Json
 
+/**
+ * Sesiones y mensajes persistidos vía SQLDelight (SQLite), transaccional y resistente a
+ * corrupción parcial — reemplaza la implementación anterior sobre `multiplatform-settings`
+ * (ver [com.localchatbot.data.repository.legacy.LegacySettingsChatRepository], que se
+ * conserva solo como lector de origen para la migración one-shot).
+ */
 class ChatRepositoryImpl(
-    private val settings: Settings,
-    private val json: Json
+    private val db: LocalChatBotDatabase,
+    @Suppress("UNUSED_PARAMETER") private val json: Json,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ChatRepository {
 
-    private val _sessions = MutableStateFlow(load())
-    override val sessions: StateFlow<List<ChatSession>> = _sessions.asStateFlow()
-
     /**
-     * Scope dedicado a la persistencia. Cada `mutate` actualiza el StateFlow al
-     * instante (UI reactiva) pero programa la escritura a disco con un throttle
-     * de [PERSIST_THROTTLE_MS]. Sin esto, durante un stream con sesiones que
-     * contienen imágenes base64 se serializaría toda la lista en cada delta,
-     * lo que bloquea por completo el thread donde corra (incluso si no es Main,
-     * desperdicia CPU y memoria masivamente).
+     * imageDataUrl/videoDataUrl son base64 transitorios (nunca se persisten, ni aquí ni en
+     * la implementación legacy) y por eso no tienen columna en `message`. Es el único estado
+     * de este repo que no vive en SQLite — si se refactoriza, mantener este comportamiento.
      */
-    private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var pendingPersist: Job? = null
+    private val mediaOverlay = MutableStateFlow<Map<String, Pair<String?, String?>>>(emptyMap())
+
+    override val sessions: Flow<List<ChatSession>> = combine(
+        db.sessionQueries.selectAllSessions().asFlow().mapToList(ioDispatcher),
+        db.messageQueries.selectAllMessages().asFlow().mapToList(ioDispatcher),
+        mediaOverlay
+    ) { dbSessions, dbMessages, overlay ->
+        val messagesBySession = dbMessages.groupBy { it.session_id }
+        dbSessions.map { s ->
+            val messages = messagesBySession[s.id].orEmpty().map { m ->
+                val (image, video) = overlay[m.id] ?: (null to null)
+                m.toDomain(image, video)
+            }
+            s.toDomain(messages)
+        }
+    }
 
     override suspend fun createSession(model: String): ChatSession {
         val now = Clock.System.now().toEpochMilliseconds()
@@ -49,42 +66,64 @@ class ChatRepositoryImpl(
             updatedAtEpochMs = now,
             messages = emptyList()
         )
-        mutate { it + session }
+        withContext(ioDispatcher) {
+            db.sessionQueries.insertSession(
+                id = session.id,
+                title = session.title,
+                model = session.model,
+                created_at_epoch_ms = session.createdAtEpochMs,
+                updated_at_epoch_ms = session.updatedAtEpochMs,
+                pinned = session.pinned,
+                generation_params = session.generationParams,
+                context_summary = session.contextSummary
+            )
+        }
         return session
     }
 
     override suspend fun deleteSession(id: String) {
-        mutate { list -> list.filterNot { it.id == id } }
+        withContext(ioDispatcher) { db.sessionQueries.deleteSession(id) }
     }
 
-    override suspend fun getSession(id: String): ChatSession? =
-        _sessions.value.firstOrNull { it.id == id }
+    override suspend fun getSession(id: String): ChatSession? = withContext(ioDispatcher) {
+        val s = db.sessionQueries.selectSessionById(id).executeAsOneOrNull() ?: return@withContext null
+        val messages = db.messageQueries.selectMessagesBySession(id).executeAsList().map { m ->
+            val (image, video) = mediaOverlay.value[m.id] ?: (null to null)
+            m.toDomain(image, video)
+        }
+        s.toDomain(messages)
+    }
 
     override suspend fun appendMessage(sessionId: String, message: ChatMessage) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id == sessionId) {
-                    s.copy(
-                        messages = s.messages + message,
-                        updatedAtEpochMs = message.timestampEpochMs
-                    )
-                } else s
+        withContext(ioDispatcher) {
+            db.transaction {
+                val nextOrder = (db.messageQueries.maxSortOrderForSession(sessionId).executeAsOne().MAX ?: -1) + 1
+                db.messageQueries.insertMessage(
+                    id = message.id,
+                    session_id = sessionId,
+                    role = message.role,
+                    content = message.content,
+                    timestamp_epoch_ms = message.timestampEpochMs,
+                    sort_order = nextOrder,
+                    attachments = message.attachments,
+                    tool_calls = message.toolCalls,
+                    tool_call_id = message.toolCallId,
+                    tool_name = message.toolName,
+                    sources = message.sources,
+                    reasoning = message.reasoning,
+                    metrics = message.metrics,
+                    checkpoint_id = message.checkpointId
+                )
+                db.sessionQueries.updateSessionTimestamp(message.timestampEpochMs, sessionId)
             }
+        }
+        if (message.imageDataUrl != null || message.videoDataUrl != null) {
+            mediaOverlay.update { it + (message.id to (message.imageDataUrl to message.videoDataUrl)) }
         }
     }
 
     override suspend fun updateMessageContent(sessionId: String, messageId: String, content: String) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(content = content) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
-        }
+        touchSession(sessionId) { db.messageQueries.updateMessageContent(content, messageId) }
     }
 
     override suspend fun updateMessageToolCalls(
@@ -92,228 +131,118 @@ class ChatRepositoryImpl(
         messageId: String,
         toolCalls: List<PersistedToolCall>
     ) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(toolCalls = toolCalls) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
-        }
+        touchSession(sessionId) { db.messageQueries.updateMessageToolCalls(toolCalls, messageId) }
     }
 
-    override suspend fun updateMessageSources(
-        sessionId: String,
-        messageId: String,
-        sources: List<WebSource>
-    ) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(sources = sources) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
-        }
+    override suspend fun updateMessageSources(sessionId: String, messageId: String, sources: List<WebSource>) {
+        touchSession(sessionId) { db.messageQueries.updateMessageSources(sources, messageId) }
     }
 
     override suspend fun updateMessageImage(sessionId: String, messageId: String, imageDataUrl: String) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(imageDataUrl = imageDataUrl) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
+        mediaOverlay.update { overlay ->
+            val (_, video) = overlay[messageId] ?: (null to null)
+            overlay + (messageId to (imageDataUrl to video))
+        }
+        withContext(ioDispatcher) {
+            db.sessionQueries.updateSessionTimestamp(Clock.System.now().toEpochMilliseconds(), sessionId)
+        }
+    }
+
+    override suspend fun updateMessageVideo(sessionId: String, messageId: String, videoDataUrl: String) {
+        mediaOverlay.update { overlay ->
+            val (image, _) = overlay[messageId] ?: (null to null)
+            overlay + (messageId to (image to videoDataUrl))
+        }
+        withContext(ioDispatcher) {
+            db.sessionQueries.updateSessionTimestamp(Clock.System.now().toEpochMilliseconds(), sessionId)
         }
     }
 
     override suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(reasoning = reasoning) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
-        }
+        touchSession(sessionId) { db.messageQueries.updateMessageReasoning(reasoning, messageId) }
+    }
+
+    override suspend fun updateMessageCheckpoint(sessionId: String, messageId: String, checkpointId: String) {
+        touchSession(sessionId) { db.messageQueries.updateMessageCheckpoint(checkpointId, messageId) }
     }
 
     override suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else s.copy(
-                    messages = s.messages.map { m ->
-                        if (m.id == messageId) m.copy(metrics = metrics) else m
-                    },
-                    updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                )
-            }
-        }
+        touchSession(sessionId) { db.messageQueries.updateMessageMetrics(metrics, messageId) }
     }
 
     override suspend fun updateTitle(sessionId: String, title: String) {
-        mutate { list ->
-            list.map { s -> if (s.id == sessionId) s.copy(title = title) else s }
-        }
+        withContext(ioDispatcher) { db.sessionQueries.updateSessionTitle(title, sessionId) }
     }
 
     override suspend fun updateModel(sessionId: String, model: String) {
-        mutate { list ->
-            list.map { s -> if (s.id == sessionId) s.copy(model = model) else s }
-        }
+        withContext(ioDispatcher) { db.sessionQueries.updateSessionModel(model, sessionId) }
     }
 
     override suspend fun setPinned(sessionId: String, pinned: Boolean) {
-        mutate { list ->
-            list.map { s -> if (s.id == sessionId) s.copy(pinned = pinned) else s }
-        }
+        withContext(ioDispatcher) { db.sessionQueries.updateSessionPinned(pinned, sessionId) }
+    }
+
+    override suspend fun updateContextSummary(sessionId: String, summary: String) {
+        withContext(ioDispatcher) { db.sessionQueries.updateSessionContextSummary(summary, sessionId) }
     }
 
     override suspend fun deleteMessagesFrom(sessionId: String, messageId: String) {
-        mutate { list ->
-            list.map { s ->
-                if (s.id != sessionId) s
-                else {
-                    val idx = s.messages.indexOfFirst { it.id == messageId }
-                    if (idx < 0) s
-                    else s.copy(
-                        messages = s.messages.subList(0, idx),
-                        updatedAtEpochMs = Clock.System.now().toEpochMilliseconds()
-                    )
+        withContext(ioDispatcher) {
+            db.transaction {
+                val sortOrder = db.messageQueries.sortOrderForMessage(messageId).executeAsOneOrNull()
+                if (sortOrder != null) {
+                    db.messageQueries.deleteMessagesFromSortOrder(sessionId, sortOrder)
+                    db.sessionQueries.updateSessionTimestamp(Clock.System.now().toEpochMilliseconds(), sessionId)
                 }
             }
         }
     }
 
     override suspend fun clearAll() {
-        // Cancela cualquier persistencia pendiente y limpia inmediatamente.
-        pendingPersist?.cancel()
-        _sessions.value.forEach { settings.remove(sessionKey(it.id)) }
-        settings.remove(KEY_SESSION_IDS)
-        settings.remove(KEY_SESSIONS_LEGACY)
-        _sessions.value = emptyList()
-        lastPersisted = emptyMap()
+        withContext(ioDispatcher) { db.sessionQueries.deleteAllSessions() }
+        mediaOverlay.update { emptyMap() }
     }
 
-    /**
-     * Escritura síncrona inmediata de lo pendiente. Llamado desde el shutdown
-     * hook de desktop: sin esto, los últimos [PERSIST_THROTTLE_MS] ms de
-     * mutaciones se perdían al cerrar la app.
-     */
-    override fun flushPendingWrites() {
-        pendingPersist?.cancel()
-        persist(_sessions.value)
-    }
+    /** No-op: cada mutación SQLDelight ya es una transacción síncrona/inmediata, a diferencia
+     *  del throttle de 250ms de la implementación legacy sobre `Settings`. Se conserva en la
+     *  interfaz porque el shutdown hook de desktop la sigue llamando. */
+    override fun flushPendingWrites() = Unit
 
-    private fun mutate(transform: (List<ChatSession>) -> List<ChatSession>) {
-        // Las sesiones fijadas siempre van arriba, ordenadas por updatedAt desc;
-        // el resto debajo, también por updatedAt desc.
-        val next = transform(_sessions.value)
-            .sortedWith(compareByDescending<ChatSession> { it.pinned }.thenByDescending { it.updatedAtEpochMs })
-        _sessions.value = next
-        schedulePersist()
-    }
-
-    /**
-     * Throttle: la primera mutación tras un periodo de calma programa una
-     * persistencia [PERSIST_THROTTLE_MS] después. Mientras esa escritura
-     * está pendiente, las nuevas mutaciones NO la cancelan — al disparar,
-     * `_sessions.value` ya contiene el estado más reciente. Resultado: como
-     * mucho se escribe a disco 4 veces por segundo (en lugar de potencialmente
-     * 30+ veces durante un stream), pero nunca se queda atrás de la UI más
-     * de [PERSIST_THROTTLE_MS] ms.
-     */
-    private fun schedulePersist() {
-        if (pendingPersist?.isActive == true) return
-        pendingPersist = persistScope.launch {
-            delay(PERSIST_THROTTLE_MS)
-            persist(_sessions.value)
-        }
-    }
-
-    /**
-     * Snapshot (por referencia) de la última lista persistida. Las funciones
-     * `mutate` solo crean instancias nuevas para las sesiones que tocan
-     * (`else s` devuelve la misma referencia), así que comparar referencias
-     * por id detecta exactamente las sesiones sucias — solo esas se
-     * serializan, en lugar de la lista entera en cada escritura.
-     */
-    private var lastPersisted: Map<String, ChatSession> = _sessions.value.associateBy { it.id }
-
-    private fun persist(list: List<ChatSession>) {
-        runCatching {
-            val dirty = list.filter { lastPersisted[it.id] !== it }
-            val deletedIds = lastPersisted.keys - list.map { it.id }.toSet()
-
-            dirty.forEach { session ->
-                // imageDataUrl son base64 de varios cientos de KB. No se persisten:
-                // son transitorias — si el usuario las necesita las guarda
-                // explícitamente con "Guardar imagen".
-                val stripped = session.copy(messages = session.messages.map { msg ->
-                    if (msg.imageDataUrl != null) msg.copy(imageDataUrl = null) else msg
-                })
-                settings.putString(sessionKey(session.id), json.encodeToString(ChatSession.serializer(), stripped))
-            }
-            deletedIds.forEach { settings.remove(sessionKey(it)) }
-
-            if (dirty.isNotEmpty() || deletedIds.isNotEmpty()) {
-                settings.putString(KEY_SESSION_IDS, json.encodeToString(IdsSerializer, list.map { it.id }))
-            }
-            lastPersisted = list.associateBy { it.id }
-        }
-    }
-
-    /**
-     * Carga el índice de IDs y cada sesión desde su propia clave. Si existe la
-     * clave legacy (toda la lista en un único JSON, formato anterior), migra a
-     * clave-por-sesión y elimina la clave vieja — solo cuando la decodificación
-     * tuvo éxito, para no destruir datos ante un JSON corrupto.
-     */
-    private fun load(): List<ChatSession> {
-        migrateLegacyIfNeeded()
-        val idsRaw = settings.getStringOrNull(KEY_SESSION_IDS) ?: return emptyList()
-        val ids = runCatching { json.decodeFromString(IdsSerializer, idsRaw) }.getOrDefault(emptyList())
-        return ids.mapNotNull { id ->
-            settings.getStringOrNull(sessionKey(id))?.let { raw ->
-                runCatching { json.decodeFromString(ChatSession.serializer(), raw) }.getOrNull()
+    private suspend fun touchSession(sessionId: String, block: () -> Unit) {
+        withContext(ioDispatcher) {
+            db.transaction {
+                block()
+                db.sessionQueries.updateSessionTimestamp(Clock.System.now().toEpochMilliseconds(), sessionId)
             }
         }
-    }
-
-    private fun migrateLegacyIfNeeded() {
-        val raw = settings.getStringOrNull(KEY_SESSIONS_LEGACY) ?: return
-        val list = runCatching { json.decodeFromString(SessionsSerializer, raw) }.getOrNull() ?: return
-        runCatching {
-            list.forEach { session ->
-                settings.putString(sessionKey(session.id), json.encodeToString(ChatSession.serializer(), session))
-            }
-            settings.putString(KEY_SESSION_IDS, json.encodeToString(IdsSerializer, list.map { it.id }))
-            settings.remove(KEY_SESSIONS_LEGACY)
-        }
-    }
-
-    private fun sessionKey(id: String): String = "$KEY_SESSION_PREFIX$id"
-
-    private companion object {
-        const val KEY_SESSIONS_LEGACY = "chat_sessions"
-        const val KEY_SESSION_IDS = "chat_session_ids"
-        const val KEY_SESSION_PREFIX = "chat_session_"
-        const val PERSIST_THROTTLE_MS = 250L
-        val SessionsSerializer = kotlinx.serialization.builtins.ListSerializer(ChatSession.serializer())
-        val IdsSerializer = kotlinx.serialization.builtins.ListSerializer(kotlinx.serialization.serializer<String>())
     }
 }
+
+private fun DbSession.toDomain(messages: List<ChatMessage>): ChatSession = ChatSession(
+    id = id,
+    title = title,
+    model = model,
+    createdAtEpochMs = created_at_epoch_ms,
+    updatedAtEpochMs = updated_at_epoch_ms,
+    messages = messages,
+    pinned = pinned,
+    generationParams = generation_params,
+    contextSummary = context_summary
+)
+
+private fun DbMessage.toDomain(imageDataUrl: String?, videoDataUrl: String?): ChatMessage = ChatMessage(
+    id = id,
+    role = role,
+    content = content,
+    timestampEpochMs = timestamp_epoch_ms,
+    imageDataUrl = imageDataUrl,
+    videoDataUrl = videoDataUrl,
+    attachments = attachments,
+    toolCalls = tool_calls,
+    toolCallId = tool_call_id,
+    toolName = tool_name,
+    sources = sources,
+    reasoning = reasoning,
+    metrics = metrics,
+    checkpointId = checkpoint_id
+)

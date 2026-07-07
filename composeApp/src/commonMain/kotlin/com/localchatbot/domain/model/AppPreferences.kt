@@ -44,9 +44,37 @@ data class AppPreferences(
      * tool retorna error sin pedir confirmación si la ruta escapa.
      */
     val fsAllowOutsideWorkspace: Boolean = false,
+    /**
+     * Si está activo, `edit_file` y `multi_edit` muestran un diff de los cambios
+     * antes de aplicarlos, incluso sin YOLO. YOLO sigue saltando la confirmación.
+     * Por defecto desactivado para preservar la autonomía del agente.
+     */
+    val fsPreviewEdits: Boolean = false,
+    /**
+     * Modo del agente: [AgentMode.Build] (puede crear/editar) o [AgentMode.Plan]
+     * (solo lectura — las tools que mutan el proyecto se desactivan). Build por defecto.
+     */
+    val agentMode: AgentMode = AgentMode.Build,
     val installedSkills: List<InstalledSkill> = emptyList(),
     val customSkills: List<SkillDefinition> = emptyList(),
-    val mcpServers: List<McpServerConfig> = emptyList()
+    val mcpServers: List<McpServerConfig> = emptyList(),
+    /**
+     * Si está activo, el desktop levanta un servidor HTTP/WebSocket en la LAN/VPN
+     * para revisar y aprobar cambios desde otro dispositivo. Apagado por defecto.
+     */
+    val remoteAccessEnabled: Boolean = false,
+    /** Puerto del servidor de acceso remoto. */
+    val remoteAccessPort: Int = 7676,
+    /** PIN que los dispositivos remotos deben introducir. Generado al activar. */
+    val remoteAccessPin: String = "",
+    /**
+     * Última URL del visor remoto embebido (Fase 1b). La app abre esta web (el
+     * cliente remoto servido por otro desktop) dentro de un WebView, sin navegador
+     * externo. Se recuerda entre sesiones.
+     */
+    val remoteViewerUrl: String = "",
+    /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
+    val generationParams: GenerationParams = GenerationParams()
 ) {
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()
@@ -77,9 +105,16 @@ data class AppPreferences(
             fsWorkspaceDir = null,
             fsYoloMode = false,
             fsAllowOutsideWorkspace = false,
+            fsPreviewEdits = false,
+            agentMode = AgentMode.Build,
             installedSkills = emptyList(),
             customSkills = emptyList(),
-            mcpServers = emptyList()
+            mcpServers = emptyList(),
+            remoteAccessEnabled = false,
+            remoteAccessPort = 7676,
+            remoteAccessPin = "",
+            remoteViewerUrl = "",
+            generationParams = GenerationParams()
         )
     }
 }

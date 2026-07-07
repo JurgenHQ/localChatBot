@@ -1,14 +1,23 @@
 package com.localchatbot.presentation.features.chat
 
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -20,10 +29,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import com.localchatbot.core.confirm.ToolConfirmationController
+import com.localchatbot.core.fs.rememberFilePicker
 import com.localchatbot.core.fs.rememberDirectoryPicker
 import com.localchatbot.core.image.rememberImagePicker
 import com.localchatbot.core.platform.PlatformCapabilities
@@ -37,6 +50,7 @@ import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.presentation.components.molecules.AgentControlsBar
 import com.localchatbot.presentation.components.molecules.ContextUsageBar
 import com.localchatbot.presentation.components.molecules.TodoProgressPanel
+import com.localchatbot.presentation.components.molecules.ToolCallLogChip
 import com.localchatbot.presentation.components.organisms.ChatComposer
 import com.localchatbot.presentation.components.organisms.ChatMessageList
 import com.localchatbot.presentation.components.organisms.ChatSearchBar
@@ -49,19 +63,6 @@ import com.localchatbot.presentation.preview.PreviewData
 import com.localchatbot.presentation.preview.PreviewSurface
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
-/**
- * Fallback estático del empty state. Se muestra mientras el modelo aún no ha
- * respondido por primera vez (no hay sugerencias dinámicas en cache). Tras la
- * primera respuesta exitosa, [ChatViewModel.refreshSuggestions] reemplaza esta
- * lista con 3 generadas por el modelo: una de desarrollo, una de noticias
- * actuales y una random.
- */
-private val DEFAULT_EMPTY_STATE_SUGGESTIONS = listOf(
-    "Explícame el patrón Repository",
-    "Revisa este snippet de Kotlin",
-    "Resume un texto largo"
-)
-
 @Composable
 fun ChatScreen(
     chatViewModel: ChatViewModel,
@@ -70,6 +71,8 @@ fun ChatScreen(
     todoTool: TodoTool,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
+    onOpenEditor: () -> Unit = {},
+    onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
     showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -77,6 +80,8 @@ fun ChatScreen(
     val speakingMessageId by chatViewModel.speakingMessageId.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
     val pendingConfirmation by toolConfirmationController.pending.collectAsStateWithLifecycle()
+    val pendingUserPrompt by chatViewModel.pendingUserPrompt.collectAsStateWithLifecycle()
+    val pendingRevert by chatViewModel.pendingRevert.collectAsStateWithLifecycle()
     val allTodos by todoTool.state.collectAsStateWithLifecycle()
     val activeSessionId = state.activeSession?.id
     val todoItems = remember(allTodos, activeSessionId) {
@@ -86,6 +91,10 @@ fun ChatScreen(
     // Picker de directorio para los chips del agente. En móvil es no-op,
     // pero como la barra solo se renderiza cuando isDesktop, da igual.
     val workspacePicker = rememberDirectoryPicker(onResult = chatViewModel::updateFsWorkspaceDir)
+    val filePicker = rememberFilePicker(
+        onResult = chatViewModel::attachTextFile,
+        onError = chatViewModel::attachTextFileError
+    )
     var templatesOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -103,10 +112,14 @@ fun ChatScreen(
             onSend = chatViewModel::send,
             onAttach = { imagePicker.launch() },
             onRemoveAttachment = chatViewModel::clearAttachment,
+            attachedTextFiles = state.attachedTextFiles,
+            onAttachTextFile = { filePicker.launch() },
+            onRemoveTextFile = chatViewModel::removeTextFile,
             onVoice = voiceController::start,
             onResendMessage = chatViewModel::resendMessage,
             onEditMessage = chatViewModel::editMessage,
             onChangeModel = onChangeModel,
+            onOpenEditor = onOpenEditor,
             onStop = chatViewModel::stop,
             onRegenerate = chatViewModel::regenerateLastResponse,
             speakingMessageId = speakingMessageId,
@@ -122,8 +135,14 @@ fun ChatScreen(
             onPickWorkspace = { workspacePicker.launch() },
             onToggleSandbox = chatViewModel::toggleFsSandbox,
             onToggleYolo = chatViewModel::toggleFsYoloMode,
+            onTogglePreviewEdits = chatViewModel::toggleFsPreviewEdits,
+            onToggleMode = chatViewModel::toggleAgentMode,
             onSelectSkill = chatViewModel::selectSkill,
-            onClearSkill = chatViewModel::clearPendingSkill
+            onClearSkill = chatViewModel::clearPendingSkill,
+            pendingPrompt = pendingUserPrompt,
+            onSelectPromptOption = chatViewModel::submitPromptOption,
+            onOpenFileInEditor = onOpenFileInEditor,
+            onRevertTurn = chatViewModel::requestRevert
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -153,7 +172,67 @@ fun ChatScreen(
                 onReject = { toolConfirmationController.resolve(pending.id, approved = false) }
             )
         }
+        pendingRevert?.let { revert ->
+            RevertTurnDialog(
+                files = revert.files,
+                onConfirm = chatViewModel::confirmRevert,
+                onDismiss = chatViewModel::dismissRevert
+            )
+        }
     }
+}
+
+/**
+ * Confirmación del "revertir este turno": lista los archivos que se restaurarían
+ * a su estado previo al turno. Los mensajes del chat se conservan.
+ */
+@Composable
+private fun RevertTurnDialog(
+    files: List<String>,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Revertir cambios de este turno") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text(
+                    "Estos archivos volverán a su estado previo al turno " +
+                        "(lo creado se elimina, lo editado o borrado se restaura):",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    files.forEach { path ->
+                        Text(
+                            text = path,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Text(
+                    "Cambios posteriores sobre estos archivos también se perderán. " +
+                        "No cubre cambios hechos con run_command, MCP o scripts.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Revertir") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
 }
 
 @Composable
@@ -167,10 +246,14 @@ fun ChatContent(
     onSend: () -> Unit,
     onAttach: () -> Unit,
     onRemoveAttachment: () -> Unit = {},
+    attachedTextFiles: List<com.localchatbot.core.fs.AttachedTextFile> = emptyList(),
+    onAttachTextFile: (() -> Unit)? = null,
+    onRemoveTextFile: ((String) -> Unit)? = null,
     onVoice: () -> Unit = {},
     onResendMessage: (String) -> Unit = {},
     onEditMessage: (String) -> Unit = {},
     onChangeModel: () -> Unit = {},
+    onOpenEditor: () -> Unit = {},
     onStop: () -> Unit = {},
     onRegenerate: () -> Unit = {},
     speakingMessageId: String? = null,
@@ -186,8 +269,14 @@ fun ChatContent(
     onPickWorkspace: () -> Unit = {},
     onToggleSandbox: () -> Unit = {},
     onToggleYolo: () -> Unit = {},
+    onTogglePreviewEdits: () -> Unit = {},
+    onToggleMode: () -> Unit = {},
     onSelectSkill: (com.localchatbot.domain.model.SkillDefinition) -> Unit = {},
     onClearSkill: () -> Unit = {},
+    pendingPrompt: com.localchatbot.core.state.PendingUserPrompt? = null,
+    onSelectPromptOption: (String) -> Unit = {},
+    onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
+    onRevertTurn: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -207,7 +296,11 @@ fun ChatContent(
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
         ChatTopBar(
             title = state.activeSession?.title ?: "Nueva conversación",
-            subtitle = state.modelName.ifBlank { "Sin modelo" },
+            subtitle = when {
+                state.modelName.isBlank() -> "Sin modelo"
+                state.modelLoaded == false -> "Sin modelo cargado"
+                else -> state.modelName
+            },
             onMenuClick = onOpenDrawer,
             onNewClick = onNewSession,
             onSubtitleClick = onChangeModel,
@@ -217,6 +310,7 @@ fun ChatContent(
                     if (!searchOpen) { searchQuery = ""; currentMatchIndex = 0 }
                 }
             } else null,
+            onEditorClick = if (showAgentBar && state.fsWorkspaceDir != null) onOpenEditor else null,
             showMenuButton = showMenuButton
         )
 
@@ -277,8 +371,6 @@ fun ChatContent(
         val active = state.activeSession
         if (active == null || active.messages.isEmpty()) {
             ChatEmptyState(
-                suggestions = state.dynamicSuggestions ?: DEFAULT_EMPTY_STATE_SUGGESTIONS,
-                onSuggestion = onDraftChange,
                 modifier = Modifier.weight(1f).then(dismissKeyboardModifier)
             )
         } else {
@@ -297,7 +389,18 @@ fun ChatContent(
                 onStopSpeak = onStopSpeak,
                 onSaveImage = onSaveImage,
                 onTapMessage = { keyboard?.hide() },
+                onOpenFileInEditor = onOpenFileInEditor,
+                onRevertTurn = onRevertTurn,
                 modifier = Modifier.weight(1f).fillMaxWidth().then(dismissKeyboardModifier)
+            )
+        }
+
+        // Indicador de progreso del agente (N tool calls + log) en una barra fija sobre el
+        // composer, fuera de la lista de mensajes, para no afectar el espaciado entre burbujas.
+        if (state.sending && state.toolCallLog.isNotEmpty()) {
+            ToolCallLogChip(
+                toolCallLog = state.toolCallLog,
+                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.xs)
             )
         }
 
@@ -317,6 +420,9 @@ fun ChatContent(
             sending = state.sending,
             attachedImageBytes = state.attachedImageBytes,
             onRemoveAttachment = onRemoveAttachment,
+            attachedTextFiles = attachedTextFiles,
+            onAttachTextFile = onAttachTextFile,
+            onRemoveTextFile = onRemoveTextFile,
             onVoice = onVoice,
             onStop = onStop,
             onTemplates = onOpenTemplates,
@@ -326,6 +432,8 @@ fun ChatContent(
             installedSkills = state.installedEnabledSkills,
             onSelectSkill = onSelectSkill,
             onClearSkill = onClearSkill,
+            pendingPrompt = pendingPrompt,
+            onSelectPromptOption = onSelectPromptOption,
             agentBar = if (showAgentBar) {
                 {
                     AgentControlsBar(
@@ -334,9 +442,13 @@ fun ChatContent(
                         // restringidos al workspace (allowOutside == false).
                         sandboxOn = !state.fsAllowOutsideWorkspace,
                         yoloOn = state.fsYoloMode,
+                        previewEditsOn = state.fsPreviewEdits,
+                        planMode = state.planMode,
                         onPickWorkspace = onPickWorkspace,
                         onToggleSandbox = onToggleSandbox,
-                        onToggleYolo = onToggleYolo
+                        onToggleYolo = onToggleYolo,
+                        onTogglePreviewEdits = onTogglePreviewEdits,
+                        onToggleMode = onToggleMode
                     )
                 }
             } else null

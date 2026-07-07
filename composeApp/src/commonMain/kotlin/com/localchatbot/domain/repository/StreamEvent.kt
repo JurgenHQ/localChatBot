@@ -24,6 +24,8 @@ sealed interface StreamEvent {
         /** Tiempo de generación en ms (del primer token al final), para tokens/s. */
         val generationMs: Long? = null,
         /** True si los tokens son una estimación (no vinieron del servidor). */
-        val estimated: Boolean = false
+        val estimated: Boolean = false,
+        /** Duración del bloque de razonamiento (thinking) en ms. Null si no hubo reasoning. */
+        val reasoningMs: Long? = null
     ) : StreamEvent
 }

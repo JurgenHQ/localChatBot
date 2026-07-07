@@ -30,7 +30,7 @@ class CreateDirectoryTool(
         json.parseToJsonElement(argumentsJson).jsonObject["path"]?.jsonPrimitive?.content
     }.getOrNull()
 
-    override suspend fun isAvailable(): Boolean = FsToolUtil.isAvailable(preferences)
+    override suspend fun isAvailable(): Boolean = FsToolUtil.isWriteAvailable(preferences)
 
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",

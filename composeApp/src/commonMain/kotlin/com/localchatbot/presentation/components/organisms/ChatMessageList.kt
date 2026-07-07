@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.localchatbot.core.state.ToolActivity
 import com.localchatbot.core.theme.Spacing
+import com.localchatbot.domain.tools.RunCommandTool
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.Role
 import com.localchatbot.presentation.components.atoms.AppLogo
@@ -52,19 +53,44 @@ fun ChatMessageList(
     onStopSpeak: () -> Unit = {},
     onSaveImage: (ByteArray) -> Unit,
     onTapMessage: () -> Unit,
+    onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
+    onRevertTurn: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
-    val visibleMessages = session.messages
+    val allMessages = session.messages
+    // Rendering uses a filtered list so LazyColumn spacing doesn't create phantom gaps from
+    // messages that render nothing (empty tool-call announcers, tool results without a renderer).
+    // Mirrors the visibility rules in MessageBubble. All "working" state below is derived from
+    // this same filtered list so the typing indicator never pops up under a reasoning bubble for
+    // an invisible announcer message (that produced spurious vertical gaps between rounds).
+    val visibleMessages = allMessages.filter { msg ->
+        when (msg.role) {
+            Role.User -> true
+            Role.Assistant, Role.System ->
+                msg.content.isNotBlank() ||
+                !msg.sources.isNullOrEmpty() ||
+                msg.imageDataUrl != null ||
+                !msg.reasoning.isNullOrBlank() ||
+                // El anunciador de tool_calls con checkpoint se muestra: renderiza
+                // (solo) el chip "revertir este turno".
+                (msg.checkpointId != null && onRevertTurn != null)
+            Role.Tool -> msg.toolName in RENDERED_TOOL_NAMES
+        }
+    }
     val lastAssistantId = visibleMessages
         .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
         ?.id
     val lastVisible = visibleMessages.lastOrNull { it.role != Role.Tool }
+    val streamingMessageId = if (sending && lastVisible?.role == Role.Assistant) lastVisible.id else null
     val showTyping = sending && toolActivity == null && (
         lastVisible == null ||
         lastVisible.role == Role.User ||
-        (lastVisible.role == Role.Assistant && lastVisible.content.isBlank())
+        (lastVisible.role == Role.Assistant && lastVisible.content.isBlank() && lastVisible.reasoning.isNullOrBlank())
     )
+    // Map back to absolute indices in the full list so search highlighting (matchIndices in
+    // ChatScreen are full-list indices) stays aligned despite the filtering above.
+    val absoluteIndexById = allMessages.withIndex().associate { (i, m) -> m.id to i }
 
     LazyColumn(
         state = listState,
@@ -83,10 +109,11 @@ fun ChatMessageList(
             item(key = "typing") { AssistantTypingRow() }
         }
 
-        itemsIndexed(visibleMessages.reversed(), key = { _, msg -> msg.id }) { reversedIdx, msg ->
-            val originalIdx = visibleMessages.size - 1 - reversedIdx
+        itemsIndexed(visibleMessages.reversed(), key = { _, msg -> msg.id }) { _, msg ->
+            val originalIdx = absoluteIndexById[msg.id] ?: -1
             MessageBubble(
                 message = msg,
+                isStreaming = msg.id == streamingMessageId,
                 onResend = if (msg.role == Role.User && !sending) {
                     { onResendMessage(msg.id) }
                 } else null,
@@ -109,7 +136,9 @@ fun ChatMessageList(
                 onSaveImage = if (msg.imageDataUrl != null) onSaveImage else null,
                 onTap = onTapMessage,
                 highlightQuery = highlightQuery,
-                isCurrentMatch = originalIdx == currentMatchAbsIndex
+                isCurrentMatch = originalIdx == currentMatchAbsIndex,
+                onOpenFileInEditor = onOpenFileInEditor,
+                onRevertTurn = if (!sending) onRevertTurn else null
             )
         }
 
@@ -160,6 +189,11 @@ private fun ToolActivityRow(label: String, detail: String?) {
         }
     }
 }
+
+private val RENDERED_TOOL_NAMES = setOf(
+    RunCommandTool.TOOL_NAME,
+    "edit_file", "multi_edit", "create_file", "create_directory", "delete_file", "save_image"
+)
 
 @Composable
 private fun DayHeader(epochMs: Long) {

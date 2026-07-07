@@ -3,6 +3,7 @@ package com.localchatbot.presentation.features.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.theme.ThemeMode
+import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.usecase.ListModelsUseCase
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,14 +20,20 @@ data class SettingsEditorUiState(
     val availableModels: List<String> = emptyList(),
     val loadingModels: Boolean = false
 ) {
-    /** TavilyApiKey, ApiKey y SystemPrompt permiten valor vacío; el resto requiere contenido. */
+    /** Parámetros vacíos se interpretan como "usar valor por defecto" (null). */
     val canSaveText: Boolean
         get() = when (editor) {
             SettingsEditor.TavilyApiKey,
             SettingsEditor.ApiKey,
             SettingsEditor.Port,
             SettingsEditor.SystemPrompt,
-            SettingsEditor.ImageServiceUrl -> true
+            SettingsEditor.ImageServiceUrl,
+            SettingsEditor.Temperature,
+            SettingsEditor.TopP,
+            SettingsEditor.MaxTokens,
+            SettingsEditor.PresencePenalty,
+            SettingsEditor.FrequencyPenalty,
+            SettingsEditor.Seed -> true
             else -> textDraft.isNotBlank()
         }
 }
@@ -43,6 +50,7 @@ class SettingsEditorViewModel(
     init {
         viewModelScope.launch {
             val prefs = preferences.current()
+            val p = prefs.generationParams
             _state.update {
                 it.copy(
                     textDraft = when (editor) {
@@ -53,6 +61,12 @@ class SettingsEditorViewModel(
                         SettingsEditor.TavilyApiKey -> prefs.tavilyApiKey
                         SettingsEditor.SystemPrompt -> prefs.defaultSystemPrompt
                         SettingsEditor.ImageServiceUrl -> prefs.imageServiceUrl
+                        SettingsEditor.Temperature -> p.temperature?.toString() ?: ""
+                        SettingsEditor.TopP -> p.topP?.toString() ?: ""
+                        SettingsEditor.MaxTokens -> p.maxTokens?.toString() ?: ""
+                        SettingsEditor.PresencePenalty -> p.presencePenalty?.toString() ?: ""
+                        SettingsEditor.FrequencyPenalty -> p.frequencyPenalty?.toString() ?: ""
+                        SettingsEditor.Seed -> p.seed?.toString() ?: ""
                         else -> ""
                     },
                     themeDraft = prefs.themeMode,
@@ -107,6 +121,25 @@ class SettingsEditorViewModel(
                 SettingsEditor.TavilyApiKey -> preferences.updateTavilyApiKey(s.textDraft.trim())
                 SettingsEditor.SystemPrompt -> preferences.updateDefaultSystemPrompt(s.textDraft.trim())
                 SettingsEditor.ImageServiceUrl -> preferences.updateImageServiceUrl(s.textDraft.trim())
+                SettingsEditor.Temperature,
+                SettingsEditor.TopP,
+                SettingsEditor.MaxTokens,
+                SettingsEditor.PresencePenalty,
+                SettingsEditor.FrequencyPenalty,
+                SettingsEditor.Seed -> {
+                    val cur = preferences.current().generationParams
+                    val v = s.textDraft.trim()
+                    val updated = when (editor) {
+                        SettingsEditor.Temperature -> cur.copy(temperature = v.toDoubleOrNull())
+                        SettingsEditor.TopP -> cur.copy(topP = v.toDoubleOrNull())
+                        SettingsEditor.MaxTokens -> cur.copy(maxTokens = v.toIntOrNull())
+                        SettingsEditor.PresencePenalty -> cur.copy(presencePenalty = v.toDoubleOrNull())
+                        SettingsEditor.FrequencyPenalty -> cur.copy(frequencyPenalty = v.toDoubleOrNull())
+                        SettingsEditor.Seed -> cur.copy(seed = v.toIntOrNull())
+                        else -> cur
+                    }
+                    preferences.updateGenerationParams(updated)
+                }
             }
             onDone()
         }

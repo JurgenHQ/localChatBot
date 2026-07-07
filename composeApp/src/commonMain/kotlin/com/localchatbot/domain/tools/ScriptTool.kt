@@ -20,7 +20,8 @@ class ScriptTool(
     private val agent: FilesystemAgent,
     private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
-    private val json: Json
+    private val json: Json,
+    private val skillDir: String? = null
 ) : Tool {
 
     override val name: String = sanitize("sk_${skillId}_${script.name}")
@@ -63,6 +64,16 @@ class ScriptTool(
         args.forEach { (key, value) ->
             val str = runCatching { value.jsonPrimitive.content }.getOrDefault(value.toString())
             command = command.replace("{{$key}}", str)
+        }
+
+        // Resolve relative paths (e.g. "scripts/start-server.sh") against the skill dir
+        if (skillDir != null && !command.startsWith("/")) {
+            val parts = command.split(" ", limit = 2)
+            val executable = parts[0]
+            // Check if the first token is a relative path to a file in the skill dir
+            if (executable.contains("/")) {
+                command = "$skillDir/$executable" + if (parts.size > 1) " ${parts[1]}" else ""
+            }
         }
 
         val prefs = preferences.current()

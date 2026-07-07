@@ -57,6 +57,8 @@ class DiagramRenderTool(
 
     override fun consumeProducedImage(): String? = consumeLastImage()
 
+    override fun peekProducedImage(): String? = _lastImage.value
+
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
         function = FunctionDefinition(

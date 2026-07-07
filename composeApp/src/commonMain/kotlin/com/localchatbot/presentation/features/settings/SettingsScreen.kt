@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
@@ -54,6 +55,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
+    onOpenRemoteViewer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -87,7 +89,12 @@ fun SettingsScreen(
             onToggleHttps = viewModel::toggleHttps,
             onOpenNetworkInspector = onOpenNetworkInspector,
             onExportSettings = viewModel::exportSettings,
-            onImportSettings = importer
+            onImportSettings = importer,
+            onOpenRemoteViewer = onOpenRemoteViewer,
+            remoteClients = state.remoteClients,
+            localIps = state.localIps,
+            onToggleRemoteAccess = viewModel::toggleRemoteAccess,
+            onRegenerateRemotePin = viewModel::regenerateRemotePin
         )
 
         state.openEditor?.let { editor ->
@@ -135,6 +142,11 @@ fun SettingsContent(
     onOpenNetworkInspector: () -> Unit = {},
     onExportSettings: () -> Unit = {},
     onImportSettings: () -> Unit = {},
+    onOpenRemoteViewer: () -> Unit = {},
+    remoteClients: Int = 0,
+    localIps: List<String> = emptyList(),
+    onToggleRemoteAccess: (Boolean) -> Unit = {},
+    onRegenerateRemotePin: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -259,6 +271,52 @@ fun SettingsContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        SectionLabel("Parámetros de generación")
+        val gp = preferences.generationParams
+        SectionCard {
+            SettingsRow(
+                title = "Temperatura",
+                onClick = { onOpenEditor(SettingsEditor.Temperature) },
+                trailing = { MonoValue(gp.temperature?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Top-P",
+                onClick = { onOpenEditor(SettingsEditor.TopP) },
+                trailing = { MonoValue(gp.topP?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Max tokens",
+                onClick = { onOpenEditor(SettingsEditor.MaxTokens) },
+                trailing = { MonoValue(gp.maxTokens?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Presence penalty",
+                onClick = { onOpenEditor(SettingsEditor.PresencePenalty) },
+                trailing = { MonoValue(gp.presencePenalty?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Frequency penalty",
+                onClick = { onOpenEditor(SettingsEditor.FrequencyPenalty) },
+                trailing = { MonoValue(gp.frequencyPenalty?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Seed",
+                onClick = { onOpenEditor(SettingsEditor.Seed) },
+                trailing = { MonoValue(gp.seed?.toString() ?: "aleatorio") }
+            )
+        }
+        Text(
+            "Se envían en cada request. Vacío = el servidor usa su valor por defecto. " +
+                "La temperatura del agente (0.3) se aplica solo cuando no hay un valor configurado aquí.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
         SectionLabel("Imágenes y diagramas (opcional)")
         SectionCard {
             SettingsRow(
@@ -305,6 +363,72 @@ fun SettingsContent(
                 }
                 append("Obtén una key gratis en https://app.tavily.com")
             },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (PlatformCapabilities.isDesktop) {
+            val remote = preferences
+            SectionLabel("Acceso remoto")
+            SectionCard {
+                SettingsRow(
+                    title = "Activar servidor",
+                    onClick = { onToggleRemoteAccess(!remote.remoteAccessEnabled) },
+                    trailing = {
+                        Switch(
+                            checked = remote.remoteAccessEnabled,
+                            onCheckedChange = onToggleRemoteAccess
+                        )
+                    }
+                )
+                if (remote.remoteAccessEnabled) {
+                    Divider()
+                    SettingsRow(
+                        title = "PIN",
+                        onClick = onRegenerateRemotePin,
+                        trailing = { MonoValue(remote.remoteAccessPin.ifBlank { "—" }) }
+                    )
+                    Divider()
+                    SettingsRow(
+                        title = "Conectados",
+                        onClick = {},
+                        trailing = { MonoValue(remoteClients.toString()) }
+                    )
+                    Divider()
+                    Column(modifier = Modifier.fillMaxWidth().padding(Spacing.lg)) {
+                        Text(
+                            "Abre desde otro dispositivo en la misma red/VPN:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val urls = localIps.map { "http://$it:${remote.remoteAccessPort}" }
+                        if (urls.isEmpty()) {
+                            MonoValue("http://<ip-de-este-pc>:${remote.remoteAccessPort}", maxChars = 60)
+                        } else {
+                            urls.forEach { MonoValue(it, maxChars = 60) }
+                        }
+                    }
+                }
+            }
+            Text(
+                "Revisa y aprueba cambios desde otro dispositivo. Aprobar comandos en remoto es " +
+                    "potente: mantenlo sólo en redes/VPN de confianza.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        SectionLabel("Visor remoto")
+        SectionCard {
+            SettingsRow(
+                title = "Abrir visor remoto",
+                onClick = onOpenRemoteViewer,
+                trailing = { MonoValue("Ver →", maxChars = 6) }
+            )
+        }
+        Text(
+            "Conecta con otro equipo que tenga el acceso remoto activo y revisa/aprueba sus " +
+                "cambios desde aquí, sin abrir el navegador.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

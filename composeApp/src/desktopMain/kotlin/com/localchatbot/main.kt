@@ -51,6 +51,7 @@ fun main() {
                 Runtime.getRuntime().addShutdownHook(
                     Thread {
                         c.chatRepository.flushPendingWrites()
+                        c.remoteAccessServer.stop()
                         runBlocking { c.mcpToolProvider.closeAll() }
                     }
                 )

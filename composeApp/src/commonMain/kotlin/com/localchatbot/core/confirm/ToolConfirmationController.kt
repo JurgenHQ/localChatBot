@@ -40,7 +40,7 @@ class ToolConfirmationController(
      */
     private val mutex = Mutex()
 
-    suspend fun requestApproval(title: String, detail: String?, force: Boolean = false): Boolean {
+    suspend fun requestApproval(title: String, detail: String?, diff: String? = null, force: Boolean = false): Boolean {
         if (!force && prefs.current().fsYoloMode) return true
         return mutex.withLock {
             val deferred = CompletableDeferred<Boolean>()
@@ -48,6 +48,7 @@ class ToolConfirmationController(
                 id = nextId(),
                 title = title,
                 detail = detail,
+                diff = diff,
                 response = deferred
             )
             _pending.update { confirmation }
@@ -76,5 +77,7 @@ data class PendingConfirmation(
     val id: String,
     val title: String,
     val detail: String?,
+    /** Diff unificado (líneas con `+`/`-`) para mostrar coloreado en el diálogo. */
+    val diff: String? = null,
     val response: CompletableDeferred<Boolean>
 )

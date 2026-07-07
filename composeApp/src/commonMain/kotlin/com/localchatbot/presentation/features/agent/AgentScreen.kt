@@ -36,6 +36,7 @@ fun AgentScreen(
     viewModel: AgentViewModel,
     onOpenSkills: () -> Unit = {},
     onOpenMcpServers: () -> Unit = {},
+    onOpenEditor: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val preferences by viewModel.state.collectAsStateWithLifecycle()
@@ -43,6 +44,7 @@ fun AgentScreen(
         preferences = preferences,
         onOpenSkills = onOpenSkills,
         onOpenMcpServers = onOpenMcpServers,
+        onOpenEditor = onOpenEditor,
         onPickWorkspace = viewModel::updateFsWorkspaceDir,
         onClearWorkspace = { viewModel.updateFsWorkspaceDir(null) },
         onToggleYolo = viewModel::toggleFsYoloMode,
@@ -56,6 +58,7 @@ fun AgentContent(
     preferences: AppPreferences,
     onOpenSkills: () -> Unit = {},
     onOpenMcpServers: () -> Unit = {},
+    onOpenEditor: () -> Unit = {},
     onPickWorkspace: (String) -> Unit = {},
     onClearWorkspace: () -> Unit = {},
     onToggleYolo: (Boolean) -> Unit = {},
@@ -127,7 +130,8 @@ fun AgentContent(
                 onPickWorkspace = onPickWorkspace,
                 onClearWorkspace = onClearWorkspace,
                 onToggleYolo = onToggleYolo,
-                onToggleAllowOutside = onToggleAllowOutside
+                onToggleAllowOutside = onToggleAllowOutside,
+                onOpenEditor = onOpenEditor
             )
         }
     }
@@ -139,7 +143,8 @@ private fun FilesystemSection(
     onPickWorkspace: (String) -> Unit,
     onClearWorkspace: () -> Unit,
     onToggleYolo: (Boolean) -> Unit,
-    onToggleAllowOutside: (Boolean) -> Unit
+    onToggleAllowOutside: (Boolean) -> Unit,
+    onOpenEditor: () -> Unit
 ) {
     val picker = rememberDirectoryPicker(onResult = onPickWorkspace)
 
@@ -194,6 +199,21 @@ private fun FilesystemSection(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
+
+    if (preferences.fsWorkspaceDir != null) {
+        SectionCard {
+            SettingsRow(
+                title = "Editor de archivos",
+                onClick = onOpenEditor,
+                trailing = { MonoValue("Abrir", maxChars = 8) }
+            )
+        }
+        Text(
+            "Editor de texto ligero con explorador, limitado al workspace. Para ediciones rápidas a mano.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 @Composable

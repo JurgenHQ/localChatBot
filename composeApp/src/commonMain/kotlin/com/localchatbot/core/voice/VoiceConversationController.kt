@@ -1,6 +1,7 @@
 package com.localchatbot.core.voice
 
 import com.localchatbot.core.background.BackgroundExecutor
+import com.localchatbot.core.network.friendlyStreamErrorMessage
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.domain.model.Role
@@ -120,7 +121,7 @@ class VoiceConversationController(
             val failure = sendResult.exceptionOrNull()
                 ?: sendResult.getOrNull()?.exceptionOrNull()
             if (failure != null) {
-                val msg = failure.message ?: "Error enviando el mensaje"
+                val msg = friendlyStreamErrorMessage(failure)
                 _mode.value = VoiceMode.Speaking(msg)
                 runCatching { tts.speak(msg, lang) }
                 continue

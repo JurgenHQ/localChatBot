@@ -1,8 +1,10 @@
 package com.localchatbot.domain.repository
 
 import com.localchatbot.core.theme.ThemeMode
+import com.localchatbot.domain.model.AgentMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
@@ -23,10 +25,15 @@ interface PreferencesRepository {
     suspend fun updateFsWorkspaceDir(value: String?)
     suspend fun updateFsYoloMode(value: Boolean)
     suspend fun updateFsAllowOutsideWorkspace(value: Boolean)
+    suspend fun updateFsPreviewEdits(value: Boolean)
+    suspend fun updateAgentMode(value: AgentMode)
     suspend fun setInstalledSkills(skills: List<InstalledSkill>)
     suspend fun setCustomSkills(skills: List<SkillDefinition>)
     suspend fun refreshCustomSkills()
     suspend fun setMcpServers(servers: List<McpServerConfig>)
+    suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String)
+    suspend fun updateRemoteViewerUrl(value: String)
+    suspend fun updateGenerationParams(params: GenerationParams)
     suspend fun reset()
     suspend fun exportJson(): String
     suspend fun importJson(json: String)   // lanza excepción si el JSON es inválido

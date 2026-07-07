@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,6 +36,7 @@ fun ChatTopBar(
     modifier: Modifier = Modifier,
     onSubtitleClick: (() -> Unit)? = null,
     onSearchClick: (() -> Unit)? = null,
+    onEditorClick: (() -> Unit)? = null,
     showMenuButton: Boolean = true
 ) {
     Row(
@@ -78,6 +80,11 @@ fun ChatTopBar(
         if (onSearchClick != null) {
             Box(modifier = Modifier.size(44.dp).clickable(onClick = onSearchClick), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Search, contentDescription = "Buscar", tint = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        if (onEditorClick != null) {
+            Box(modifier = Modifier.size(44.dp).clickable(onClick = onEditorClick), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.EditNote, contentDescription = "Editor", tint = MaterialTheme.colorScheme.onBackground)
             }
         }
         Box(modifier = Modifier.size(44.dp).clickable(onClick = onNewClick), contentAlignment = Alignment.Center) {

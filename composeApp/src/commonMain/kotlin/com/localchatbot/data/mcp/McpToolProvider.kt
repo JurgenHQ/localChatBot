@@ -61,7 +61,14 @@ class McpToolProvider(
     }
 
     private suspend fun connectServer(server: McpServerConfig): ServerState {
-        val transport = HttpMcpTransport(server.url, server.headers, httpClient, json, inspector)
+        val transport = if (server.isStdio) {
+            val command = server.command?.takeIf { it.isNotBlank() }
+                ?: throw IllegalArgumentException("Servidor stdio sin comando configurado")
+            createStdioMcpTransport(command, server.args, server.env, json, inspector)
+                ?: throw UnsupportedOperationException("Servidores MCP stdio solo disponibles en desktop")
+        } else {
+            HttpMcpTransport(server.url, server.headers, httpClient, json, inspector)
+        }
         val client = McpClient(transport, json)
         return try {
             client.initialize().getOrThrow()

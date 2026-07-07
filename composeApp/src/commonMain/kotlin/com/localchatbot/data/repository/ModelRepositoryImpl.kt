@@ -10,7 +10,10 @@ import com.localchatbot.data.remote.StreamOptions
 import com.localchatbot.data.remote.ToolCall
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.data.remote.Usage
+import com.localchatbot.domain.model.AvailableModel
 import com.localchatbot.domain.model.ChatMessage
+import com.localchatbot.domain.model.GenerationParams
+import com.localchatbot.domain.model.ModelCatalog
 import com.localchatbot.domain.model.Role
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.StreamEvent
@@ -70,22 +73,23 @@ class ModelRepositoryImpl(
         baseUrl: String,
         model: String,
         messages: List<ChatMessage>,
-        tools: List<ToolDefinition>?
+        tools: List<ToolDefinition>?,
+        generationParams: GenerationParams?
     ): Flow<StreamEvent> = flow {
+        val p = generationParams ?: GenerationParams()
         val req = ChatCompletionRequest(
             model = model,
             messages = messages.map { it.toDto() },
             stream = true,
             tools = tools,
             toolChoice = if (tools.isNullOrEmpty()) null else "auto",
-            // Pide tokens (usage) en el chunk final. Servidores que no lo soportan
-            // ignoran el campo; si aun así no llega usage, estimamos por longitud.
-            streamOptions = StreamOptions(includeUsage = true)
-            // Temperatura: dejamos el default del servidor (suele ser ~0.7) para que
-            // las conversaciones normales suenen naturales. El precio es que la
-            // decisión "¿invoco la tool?" no es 100% determinista — pero cuando hay
-            // key configurada y el prompt es claro, los modelos modernos suelen
-            // invocarla de forma consistente.
+            streamOptions = StreamOptions(includeUsage = true),
+            temperature = p.temperature,
+            topP = p.topP,
+            maxTokens = p.maxTokens,
+            presencePenalty = p.presencePenalty,
+            frequencyPenalty = p.frequencyPenalty,
+            seed = p.seed
         )
 
         // Acumuladores para tool_calls que llegan fragmentados.
@@ -95,6 +99,8 @@ class ModelRepositoryImpl(
         var usage: Usage? = null
         var firstTokenMs: Long? = null
         var contentChars = 0
+        var reasoningStartMs: Long? = null
+        var reasoningEndMs: Long? = null
 
         api.streamChatCompletion(baseUrl, req).collect { chunk ->
             if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
@@ -103,11 +109,16 @@ class ModelRepositoryImpl(
             val delta = choice.delta
             delta?.content?.takeIf { it.isNotEmpty() }?.let {
                 if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                if (reasoningStartMs != null && reasoningEndMs == null) {
+                    reasoningEndMs = Clock.System.now().toEpochMilliseconds()
+                }
                 contentChars += it.length
                 emit(StreamEvent.ContentDelta(it))
             }
             delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let {
-                if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                val now = Clock.System.now().toEpochMilliseconds()
+                if (firstTokenMs == null) firstTokenMs = now
+                if (reasoningStartMs == null) reasoningStartMs = now
                 emit(StreamEvent.ReasoningDelta(it))
             }
 
@@ -132,7 +143,9 @@ class ModelRepositoryImpl(
         // de salida por longitud (~4 chars/token, regla de dedo) y marcamos `estimated`.
         val reportedOutput = usage?.completionTokens
         val outputTokens = reportedOutput ?: (contentChars / 4).takeIf { it > 0 }
-        val generationMs = firstTokenMs?.let { Clock.System.now().toEpochMilliseconds() - it }
+        val now = Clock.System.now().toEpochMilliseconds()
+        val generationMs = firstTokenMs?.let { now - it }
+        val reasoningMs = reasoningStartMs?.let { (reasoningEndMs ?: now) - it }
 
         emit(
             StreamEvent.Finish(
@@ -142,7 +155,8 @@ class ModelRepositoryImpl(
                 inputTokens = usage?.promptTokens,
                 outputTokens = outputTokens,
                 generationMs = generationMs,
-                estimated = reportedOutput == null
+                estimated = reportedOutput == null,
+                reasoningMs = reasoningMs
             )
         )
     }
@@ -160,30 +174,67 @@ class ModelRepositoryImpl(
         return api.listModels(baseUrl)
     }
 
+    /**
+     * Fallback en tres niveles:
+     *  1. API v1 de LM Studio (>= 0.4.0): todos los modelos descargados con estado
+     *     de carga y soporte de load/unload (`canManage = true`).
+     *  2. API v0 de LM Studio (0.3.x): lista con estado pero sin load/unload.
+     *  3. `/v1/models` OpenAI estándar (Ollama, llama.cpp…): solo ids, sin estado.
+     */
+    override suspend fun listModelsDetailed(baseUrl: String): Result<ModelCatalog> {
+        lmStudioApi.listModelsV1(baseUrl)?.let { v1 ->
+            val models = v1
+                .filterNot { it.type.equals("embedding", ignoreCase = true) }
+                .map { m ->
+                    AvailableModel(
+                        id = m.key,
+                        displayName = m.displayName,
+                        loaded = m.loadedInstances.isNotEmpty(),
+                        instanceIds = m.loadedInstances.map { it.id },
+                        paramsString = m.paramsString,
+                        maxContextLength = m.maxContextLength
+                    )
+                }
+                .sortedByDescending { it.loaded == true }
+            return Result.success(ModelCatalog(models, canManage = true))
+        }
+        runCatching { lmStudioApi.fetchAllModels(baseUrl) }.getOrNull()?.let { v0 ->
+            val models = v0
+                .filterNot { it.type.equals("embedding", ignoreCase = true) }
+                .map { m ->
+                    AvailableModel(
+                        id = m.id,
+                        loaded = m.state.equals("loaded", ignoreCase = true),
+                        maxContextLength = m.maxContextLength
+                    )
+                }
+                .sortedByDescending { it.loaded == true }
+            return Result.success(ModelCatalog(models, canManage = false))
+        }
+        return api.listModels(baseUrl).map { ids ->
+            ModelCatalog(ids.map { AvailableModel(id = it) }, canManage = false)
+        }
+    }
+
+    override suspend fun loadModel(baseUrl: String, modelId: String): Result<String> =
+        lmStudioApi.loadModel(baseUrl, modelId).map { it.instanceId }
+
+    override suspend fun unloadModel(baseUrl: String, instanceId: String): Result<Unit> =
+        lmStudioApi.unloadModel(baseUrl, instanceId)
+
     override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
         lmStudioApi.fetchContextLength(baseUrl, modelId)
 
-    override suspend fun generateSuggestions(
-        baseUrl: String,
-        model: String
-    ): Result<List<String>> {
-        val request = ChatCompletionRequest(
-            model = model,
-            messages = listOf(
-                OpenAiMessage.text("system", SUGGESTIONS_SYSTEM_PROMPT),
-                OpenAiMessage.text("user", SUGGESTIONS_USER_PROMPT)
-            ),
-            // Subimos un poco la temperatura para que las sugerencias varíen entre llamadas;
-            // si la dejamos al default del servidor (~0.7) tienden a repetirse.
-            temperature = 0.9
-        )
-        return api.chatCompletion(baseUrl, request).mapCatching { response ->
-            val raw = response.choices.firstOrNull()?.message?.content?.asText()
-                ?: throw IllegalStateException("Respuesta vacía al pedir sugerencias")
-            parseSuggestionsArray(raw)
-                ?: throw IllegalStateException("No se pudo parsear el JSON de sugerencias: $raw")
+    override suspend fun isModelLoaded(baseUrl: String, modelId: String): Boolean? {
+        lmStudioApi.listModelsV1(baseUrl)?.let { v1 ->
+            return v1.firstOrNull { it.key == modelId }?.loadedInstances?.isNotEmpty() ?: false
         }
+        runCatching { lmStudioApi.fetchAllModels(baseUrl) }.getOrNull()?.let { v0 ->
+            return v0.firstOrNull { it.id == modelId }?.state.equals("loaded", ignoreCase = true)
+        }
+        return null
     }
+
 
     override suspend fun generateTitle(
         baseUrl: String,
@@ -233,23 +284,18 @@ class ModelRepositoryImpl(
         return if (cleaned.length <= 60) cleaned else cleaned.take(60).substringBeforeLast(' ').ifBlank { cleaned.take(60) }
     }
 
-    /**
-     * El modelo a veces envuelve el JSON en bloques de código (```json … ```) o
-     * añade texto extra antes/después. Extraemos el primer array balanceado
-     * `[...]` y lo decodificamos. Si lo que queda dentro no son strings, devolvemos null.
-     */
-    private fun parseSuggestionsArray(raw: String): List<String>? {
-        val start = raw.indexOf('[')
-        val end = raw.lastIndexOf(']')
-        if (start < 0 || end <= start) return null
-        val slice = raw.substring(start, end + 1)
-        return runCatching {
-            val arr = suggestionsJson.parseToJsonElement(slice) as? JsonArray ?: return null
-            arr.map { (it as JsonPrimitive).content }
-                .filter { it.isNotBlank() }
-                .take(3)
-                .takeIf { it.size == 3 }
-        }.getOrNull()
+    override suspend fun summarize(baseUrl: String, model: String, transcript: String): String? {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", SUMMARY_SYSTEM_PROMPT),
+                OpenAiMessage.text("user", transcript.take(8000))
+            ),
+            temperature = 0.3
+        )
+        return api.chatCompletion(baseUrl, request).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?.trim()?.takeIf { it.isNotBlank() }
     }
 
     private fun ChatMessage.toDto(): OpenAiMessage {
@@ -282,8 +328,6 @@ class ModelRepositoryImpl(
         else -> null
     }
 
-    private val suggestionsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
     private class ToolCallBuilder {
         var id: String? = null
         var name: String? = null
@@ -306,21 +350,10 @@ class ModelRepositoryImpl(
                 "language the user wrote in, no quotes, no trailing period, no markdown, " +
                 "no explanation."
 
-        const val SUGGESTIONS_SYSTEM_PROMPT =
-            "You generate short example prompts for a chat app. Reply with ONLY a JSON array " +
-                "of exactly 3 strings, no markdown fences, no commentary, no extra text."
-
-        val SUGGESTIONS_USER_PROMPT = """
-            Genera 3 ejemplos de prompts en español que un usuario podría tocar para empezar una conversación.
-            Cada uno debe ser una pregunta o instrucción concreta, en una sola frase, idealmente menos de 80 caracteres.
-
-            Categorías exactas y en este orden:
-            1. Desarrollo de software o programación.
-            2. Noticias o eventos actuales (algo que se beneficie de buscar en internet hoy).
-            3. Tema random, creativo, divertido o sorprendente.
-
-            Devuelve SOLO un JSON array con 3 strings. Ejemplo de formato:
-            ["...", "...", "..."]
-        """.trimIndent()
+        const val SUMMARY_SYSTEM_PROMPT =
+            "You summarize chat history. Given a conversation transcript, produce a concise " +
+                "summary (3-8 sentences) capturing the main task, key decisions, files or " +
+                "commands involved, and current state. Write in the same language as the " +
+                "conversation. No markdown, no bullet points, no preamble — just the summary."
     }
 }

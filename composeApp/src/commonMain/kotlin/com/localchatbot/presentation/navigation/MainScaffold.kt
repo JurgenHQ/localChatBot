@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.di.AppContainer
 import com.localchatbot.presentation.components.organisms.AppBottomBar
 import com.localchatbot.presentation.components.organisms.BottomTab
@@ -34,15 +35,19 @@ import com.localchatbot.presentation.features.agent.AgentViewModel
 import com.localchatbot.presentation.features.chat.ChatScreen
 import com.localchatbot.presentation.features.chat.ChatViewModel
 import com.localchatbot.presentation.features.debug.NetworkInspectorScreen
+import com.localchatbot.presentation.features.editor.EditorScreen
+import com.localchatbot.presentation.features.editor.EditorViewModel
 import com.localchatbot.presentation.features.sessions.SessionDrawer
 import com.localchatbot.presentation.features.sessions.SessionsViewModel
-import com.localchatbot.presentation.features.settings.SettingsEditor
-import com.localchatbot.presentation.features.settings.SettingsEditorSheet
+import com.localchatbot.presentation.features.models.ModelPickerSheet
+import com.localchatbot.presentation.features.models.ModelPickerViewModel
 import com.localchatbot.presentation.features.settings.SettingsEditorViewModel
 import com.localchatbot.presentation.features.settings.SettingsScreen
 import com.localchatbot.presentation.features.settings.SettingsViewModel
 import com.localchatbot.presentation.features.mcp.McpServersScreen
 import com.localchatbot.presentation.features.mcp.McpServersViewModel
+import com.localchatbot.presentation.features.remote.RemoteViewerScreen
+import com.localchatbot.presentation.features.remote.RemoteViewerViewModel
 import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
 
@@ -53,6 +58,8 @@ fun MainScaffold(container: AppContainer) {
     var inspectorOpen by rememberSaveable { mutableStateOf(false) }
     var skillsOpen by rememberSaveable { mutableStateOf(false) }
     var mcpOpen by rememberSaveable { mutableStateOf(false) }
+    var editorOpen by rememberSaveable { mutableStateOf(false) }
+    var remoteViewerOpen by rememberSaveable { mutableStateOf(false) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -63,13 +70,15 @@ fun MainScaffold(container: AppContainer) {
             preferences = container.preferencesRepository,
             activeSessionStore = container.activeSessionStore,
             streamingStateStore = container.streamingStateStore,
+            pendingUserPromptStore = container.pendingUserPromptStore,
             applicationScope = container.applicationScope,
             backgroundExecutor = container.backgroundExecutor,
             createSessionUseCase = container.createSession,
             sendMessageUseCase = container.sendMessage,
             modelRepository = container.modelRepository,
             imageSaver = container.imageSaver,
-            textToSpeech = container.textToSpeech
+            textToSpeech = container.textToSpeech,
+            checkpointStore = container.checkpointStore
         )
     }
     val sessionsViewModel = remember {
@@ -77,14 +86,16 @@ fun MainScaffold(container: AppContainer) {
             chatRepository = container.chatRepository,
             preferences = container.preferencesRepository,
             activeSessionStore = container.activeSessionStore,
-            createSessionUseCase = container.createSession
+            createSessionUseCase = container.createSession,
+            checkpointStore = container.checkpointStore
         )
     }
     val settingsViewModel = remember {
         SettingsViewModel(
             preferences = container.preferencesRepository,
             chats = container.chatRepository,
-            checkConnection = container.checkConnection
+            checkConnection = container.checkConnection,
+            remoteAccessServer = container.remoteAccessServer
         )
     }
     val skillsViewModel = remember {
@@ -95,6 +106,12 @@ fun MainScaffold(container: AppContainer) {
     }
     val agentViewModel = remember {
         AgentViewModel(preferences = container.preferencesRepository)
+    }
+    val editorViewModel = remember {
+        EditorViewModel(preferences = container.preferencesRepository, agent = container.filesystemAgent)
+    }
+    val remoteViewerViewModel = remember {
+        RemoteViewerViewModel(preferences = container.preferencesRepository)
     }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
@@ -145,12 +162,22 @@ fun MainScaffold(container: AppContainer) {
                                 else sessionsViewModel.openDrawer()
                             },
                             onChangeModel = { modelPickerOpen = true },
+                            onOpenEditor = { editorOpen = true },
+                            // Click en una referencia a archivo del chat → abre el editor
+                            // en ese archivo. Solo desktop (el editor es desktop-only).
+                            onOpenFileInEditor = if (PlatformCapabilities.isDesktop) {
+                                { path, line ->
+                                    editorViewModel.openFile(path, line)
+                                    editorOpen = true
+                                }
+                            } else null,
                             showMenuButton = true
                         )
                         BottomTab.Agent -> AgentScreen(
                             viewModel = agentViewModel,
                             onOpenSkills = { skillsOpen = true },
-                            onOpenMcpServers = { mcpOpen = true }
+                            onOpenMcpServers = { mcpOpen = true },
+                            onOpenEditor = { editorOpen = true }
                         )
                         BottomTab.Settings -> SettingsScreen(
                             viewModel = settingsViewModel,
@@ -161,7 +188,8 @@ fun MainScaffold(container: AppContainer) {
                                     listModels = container.listModels
                                 )
                             },
-                            onOpenNetworkInspector = { inspectorOpen = true }
+                            onOpenNetworkInspector = { inspectorOpen = true },
+                            onOpenRemoteViewer = { remoteViewerOpen = true }
                         )
                     }
                 }
@@ -204,16 +232,32 @@ fun MainScaffold(container: AppContainer) {
             )
         }
 
+        if (editorOpen) {
+            EditorScreen(
+                viewModel = editorViewModel,
+                onClose = { editorOpen = false }
+            )
+        }
+
+        if (remoteViewerOpen) {
+            RemoteViewerScreen(
+                viewModel = remoteViewerViewModel,
+                onClose = { remoteViewerOpen = false }
+            )
+        }
+
         if (modelPickerOpen) {
-            val modelEditorVm = remember(modelPickerOpen) {
-                SettingsEditorViewModel(
+            val modelPickerVm = remember(modelPickerOpen) {
+                ModelPickerViewModel(
                     preferences = container.preferencesRepository,
-                    editor = SettingsEditor.Model,
-                    listModels = container.listModels
+                    modelRepository = container.modelRepository,
+                    chatRepository = container.chatRepository,
+                    activeSessionStore = container.activeSessionStore,
+                    streamingStateStore = container.streamingStateStore
                 )
             }
-            SettingsEditorSheet(
-                viewModel = modelEditorVm,
+            ModelPickerSheet(
+                viewModel = modelPickerVm,
                 onDismiss = { modelPickerOpen = false }
             )
         }

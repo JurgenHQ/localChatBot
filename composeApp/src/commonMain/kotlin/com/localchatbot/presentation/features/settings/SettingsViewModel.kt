@@ -2,12 +2,15 @@ package com.localchatbot.presentation.features.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.localchatbot.core.remote.RemoteAccessServer
+import com.localchatbot.core.remote.localIpAddresses
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
+import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -28,6 +31,12 @@ sealed interface SettingsEditor {
     data object TavilyApiKey : SettingsEditor
     data object SystemPrompt : SettingsEditor
     data object ImageServiceUrl : SettingsEditor
+    data object Temperature : SettingsEditor
+    data object TopP : SettingsEditor
+    data object MaxTokens : SettingsEditor
+    data object PresencePenalty : SettingsEditor
+    data object FrequencyPenalty : SettingsEditor
+    data object Seed : SettingsEditor
 }
 
 data class SettingsUiState(
@@ -37,13 +46,18 @@ data class SettingsUiState(
     /** JSON pendiente de importar; cuando es != null se muestra el diálogo de confirmación. */
     val pendingImportJson: String? = null,
     /** Mensaje efímero para snackbar (éxito o error de export/import). */
-    val message: String? = null
+    val message: String? = null,
+    /** Nº de dispositivos remotos conectados al servidor de acceso remoto. */
+    val remoteClients: Int = 0,
+    /** IPs LAN/VPN de esta máquina para mostrar la URL del remoto. */
+    val localIps: List<String> = emptyList()
 )
 
 class SettingsViewModel(
     private val preferences: PreferencesRepository,
     private val chats: ChatRepository,
-    private val checkConnection: CheckConnectionUseCase
+    private val checkConnection: CheckConnectionUseCase,
+    private val remoteAccessServer: RemoteAccessServer
 ) : ViewModel() {
 
     private val _status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
@@ -60,14 +74,24 @@ class SettingsViewModel(
         _status,
         _openEditor,
         _pendingImportJson,
-        _message
-    ) { prefs, status, editor, pendingImport, message ->
+        _message,
+        remoteAccessServer.connectedClients
+    ) { array ->
+        @Suppress("UNCHECKED_CAST")
+        val prefs = array[0] as AppPreferences
+        val status = array[1] as ConnectionStatus
+        val editor = array[2] as SettingsEditor?
+        val pendingImport = array[3] as String?
+        val message = array[4] as String?
+        val clients = array[5] as Int
         SettingsUiState(
             preferences = prefs,
             status = status,
             openEditor = editor,
             pendingImportJson = pendingImport,
-            message = message
+            message = message,
+            remoteClients = clients,
+            localIps = localIpAddresses()
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUiState())
 
@@ -126,6 +150,24 @@ class SettingsViewModel(
 
     fun consumeMessage() {
         _message.value = null
+    }
+
+    /** Activa/desactiva el acceso remoto. Al activar genera un PIN si no hay. */
+    fun toggleRemoteAccess(enabled: Boolean) {
+        viewModelScope.launch {
+            val cur = preferences.current()
+            val pin = cur.remoteAccessPin.ifBlank { Random.nextInt(100_000, 1_000_000).toString() }
+            preferences.updateRemoteAccess(enabled, cur.remoteAccessPort, pin)
+        }
+    }
+
+    /** Regenera el PIN (invalida las sesiones remotas activas tras reinicio del server). */
+    fun regenerateRemotePin() {
+        viewModelScope.launch {
+            val cur = preferences.current()
+            val pin = Random.nextInt(100_000, 1_000_000).toString()
+            preferences.updateRemoteAccess(cur.remoteAccessEnabled, cur.remoteAccessPort, pin)
+        }
     }
 
     private suspend fun refreshStatus(cfg: ConnectionConfig) {

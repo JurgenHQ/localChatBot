@@ -25,6 +25,15 @@ interface Tool {
      */
     val requiresConfirmation: Boolean get() = false
 
+    /**
+     * Si true, ejecutar esta tool TERMINA el turno del modelo en vez de
+     * re-stremear. Se usa para `ask_user`: tras publicar la pregunta el loop
+     * cede el control al usuario, cuya respuesta llega como el siguiente
+     * mensaje `role=user`. El protocolo OpenAI sigue exigiendo un `role=tool`
+     * por cada tool_call, así que `execute` igual devuelve un resultado.
+     */
+    val endsTurn: Boolean get() = false
+
     val activityLabel: String? get() = null
 
     /**
@@ -39,6 +48,23 @@ interface Tool {
      * el data URL y consume el estado interno. Llamado por el use case tras cada ronda.
      */
     fun consumeProducedImage(): String? = null
+
+    /**
+     * Igual que [consumeProducedImage] pero SIN limpiar el estado interno: devuelve
+     * la última imagen producida dejándola disponible para que el use case la siga
+     * adjuntando al chat. Lo usa `save_image` para persistir en disco la imagen que
+     * ya se está mostrando, sin "robarla" del flujo normal.
+     */
+    fun peekProducedImage(): String? = null
+
+    /**
+     * Igual que [consumeProducedImage] pero para video (`animate`/`cartoon_video`): devuelve
+     * el data URL y consume el estado interno.
+     */
+    fun consumeProducedVideo(): String? = null
+
+    /** Igual que [peekProducedImage] pero para video. Lo usa `save_video`. */
+    fun peekProducedVideo(): String? = null
 }
 
 private const val MAX_TOOL_OUTPUT_CHARS = 8_000

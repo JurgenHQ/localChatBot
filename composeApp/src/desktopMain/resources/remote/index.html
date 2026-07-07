@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>LocalChatBot — Remoto</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; margin: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0e1116; color: #e6e6e6; }
+  #login { display: flex; flex-direction: column; gap: 12px; max-width: 320px; margin: 18vh auto; padding: 24px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  input, button, textarea { font: inherit; }
+  input, textarea { background: #1a1f29; border: 1px solid #2b3240; color: #e6e6e6; border-radius: 10px; padding: 10px 12px; width: 100%; }
+  button { background: #3b82f6; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+  button.secondary { background: #2b3240; }
+  button.danger { background: #b3261e; }
+  button.stop { background: #b3261e; }
+  button.yolo { background: #2b3240; border: 1.5px solid #4b5563; font-size: 12px; padding: 6px 10px; }
+  button.yolo.active { background: #78350f; border-color: #f59e0b; color: #fcd34d; }
+  #app { display: none; height: 100dvh; grid-template-rows: auto 1fr auto; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #1c2230; flex-shrink: 0; }
+  header select { flex: 1; background: #1a1f29; color: #e6e6e6; border: 1px solid #2b3240; border-radius: 10px; padding: 8px; }
+  #messages { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .msg { padding: 10px 12px; border-radius: 14px; max-width: 88%; word-wrap: break-word; }
+  .user { align-self: flex-end; background: #3b82f6; color: #fff; white-space: pre-wrap; }
+  .assistant { align-self: flex-start; background: #1a1f29; }
+  .tool-call { align-self: flex-start; background: #161b22; border: 1px solid #2b3240; font-size: 12px; max-width: 92%; }
+  .tool-result { align-self: flex-start; background: #0d1117; border: 1px solid #21262d; font-family: monospace; font-size: 12px; max-width: 92%; }
+  .tool-result pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow-y: auto; color: #a8d8a8; }
+  .role { font-size: 11px; opacity: .6; margin-bottom: 4px; }
+  .tool-label { font-size: 11px; color: #7d8590; margin-bottom: 4px; font-family: monospace; }
+  .tool-cmd { color: #e6e6e6; font-family: monospace; word-break: break-all; }
+  #footer { border-top: 1px solid #1c2230; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; gap: 8px; }
+  .banner { background: #2a1f12; border: 1px solid #5a3d1a; border-radius: 12px; padding: 12px; }
+  .banner pre { white-space: pre-wrap; margin: 6px 0; font-size: 12px; max-height: 180px; overflow: auto; }
+  .prompt { background: #131c2a; border: 1px solid #24364f; border-radius: 12px; padding: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { background: #1a1f29; border: 1px solid #2b3240; border-radius: 999px; padding: 6px 12px; }
+  .status { font-size: 12px; opacity: .6; }
+  .err { color: #ff8a80; font-size: 13px; }
+
+  /* ── Markdown ────────────────────────────────────────────────────────── */
+  .md h1,.md h2,.md h3,.md h4 { margin: 10px 0 4px; font-weight: 600; }
+  .md h1 { font-size: 1.25em; } .md h2 { font-size: 1.1em; } .md h3 { font-size: 1em; }
+  .md p { margin: 4px 0; line-height: 1.55; }
+  .md pre { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+  .md pre code { background: none; padding: 0; font-size: 12px; color: #a8d8a8; white-space: pre; }
+  .md code { background: #21262d; padding: 2px 5px; border-radius: 4px; font-family: monospace; font-size: 13px; }
+  .md ul,.md ol { margin: 4px 0; padding-left: 20px; }
+  .md li { margin: 2px 0; line-height: 1.5; }
+  .md blockquote { border-left: 3px solid #3b82f6; margin: 6px 0; padding: 2px 10px; color: #9ca3af; }
+  .md hr { border: none; border-top: 1px solid #2b3240; margin: 8px 0; }
+  .md a { color: #60a5fa; text-decoration: underline; }
+  .md strong { font-weight: 600; }
+  .md em { font-style: italic; }
+  .md table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
+  .md th,.md td { border: 1px solid #2b3240; padding: 4px 8px; }
+  .md th { background: #1a1f29; }
+
+  /* ── Diff en banner de confirmación ─────────────────────────────────── */
+  .diff-view { font-family: monospace; font-size: 12px; max-height: 220px; overflow-y: auto; margin: 6px 0; border-radius: 6px; overflow-x: auto; }
+  .diff-add { background: #0d2d0d; color: #4ade80; display: block; white-space: pre; }
+  .diff-del { background: #2d0d0d; color: #f87171; display: block; white-space: pre; }
+  .diff-ctx { color: #6b7280; display: block; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>LocalChatBot — Acceso remoto</h1>
+  <input id="pin" type="password" inputmode="numeric" placeholder="PIN" autocomplete="off" />
+  <button id="loginBtn">Conectar</button>
+  <div id="loginErr" class="err"></div>
+</div>
+
+<div id="app">
+  <header>
+    <select id="sessions"></select>
+    <button class="yolo" id="yoloBtn" title="Omitir confirmaciones de herramientas">YOLO</button>
+    <button class="secondary" id="newBtn">+</button>
+  </header>
+  <div id="messages"></div>
+  <div id="footer">
+    <div id="confirm"></div>
+    <div id="prompt"></div>
+    <div class="row">
+      <textarea id="input" rows="1" placeholder="Escribe un mensaje…"></textarea>
+      <button id="sendBtn">Enviar</button>
+      <button class="stop" id="stopBtn" style="display:none">&#9632;</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+</div>
+
+<script>
+  let ws = null, token = null;
+  const $ = (id) => document.getElementById(id);
+
+  // ── Markdown renderer ──────────────────────────────────────────────────────
+  function renderMd(raw) {
+    if (!raw) return '';
+    const codes = []; // stores extracted code blocks/spans
+
+    // 1. Extract fenced code blocks
+    let s = raw.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      codes.push({ lang: lang.trim(), code: code.trimEnd(), inline: false });
+      return '\x00B' + (codes.length - 1) + '\x00';
+    });
+
+    // 2. Extract inline code spans
+    s = s.replace(/`([^`\n]+)`/g, (_, c) => {
+      codes.push({ code: c, inline: true });
+      return '\x00B' + (codes.length - 1) + '\x00';
+    });
+
+    // Process line by line
+    const lines = s.split('\n');
+    let html = '';
+    let listStack = []; // [{type:'ul'|'ol', depth}]
+    let inParagraph = false;
+
+    function closeParagraph() { if (inParagraph) { html += '</p>'; inParagraph = false; } }
+    function closeLists() {
+      while (listStack.length) { html += '</' + listStack.pop().type + '>'; }
+    }
+
+    function inlineEsc(t) {
+      // HTML-escape, then apply inline markdown patterns
+      t = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      t = t.replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>');
+      t = t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+      t = t.replace(/__(.+?)__/g,'<strong>$1</strong>');
+      t = t.replace(/\*(.+?)\*/g,'<em>$1</em>');
+      t = t.replace(/\[(.+?)\]\((.+?)\)/g,(_, tx, u) => `<a href="${u.replace(/"/g,'&quot;')}" target="_blank" rel="noopener">${tx}</a>`);
+      t = t.replace(/\~~(.+?)\~~/g,'<del>$1</del>');
+      // Restore code placeholders inside inline text
+      t = t.replace(/\x00B(\d+)\x00/g, (_, i) => {
+        const c = codes[parseInt(i)];
+        return `<code>${c.code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`;
+      });
+      return t;
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Block code placeholder
+      if (/^\x00B\d+\x00$/.test(line.trim())) {
+        closeParagraph(); closeLists();
+        const c = codes[parseInt(line.trim().slice(2, -1))];
+        const esc = c.code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html += `<pre><code>${esc}</code></pre>`;
+        continue;
+      }
+
+      // Header
+      const hm = line.match(/^(#{1,4})\s+(.+)/);
+      if (hm) { closeParagraph(); closeLists(); html += `<h${hm[1].length}>${inlineEsc(hm[2])}</h${hm[1].length}>`; continue; }
+
+      // Blockquote
+      if (line.startsWith('> ')) { closeParagraph(); closeLists(); html += `<blockquote>${inlineEsc(line.slice(2))}</blockquote>`; continue; }
+
+      // HR
+      if (/^[-*_]{3,}$/.test(line.trim())) { closeParagraph(); closeLists(); html += '<hr>'; continue; }
+
+      // List item
+      const ulm = line.match(/^(\s*)[-*+]\s+(.+)/);
+      const olm = line.match(/^(\s*)\d+\.\s+(.+)/);
+      const listMatch = ulm || olm;
+      if (listMatch) {
+        closeParagraph();
+        const type = ulm ? 'ul' : 'ol';
+        const depth = listMatch[1].length;
+        // Open new list if needed
+        if (!listStack.length || listStack[listStack.length-1].type !== type) {
+          if (listStack.length && depth <= listStack[listStack.length-1].depth) {
+            html += '</' + listStack.pop().type + '>';
+          }
+          html += '<' + type + '>';
+          listStack.push({ type, depth });
+        }
+        html += `<li>${inlineEsc(listMatch[2])}</li>`;
+        continue;
+      }
+
+      // Empty line — ends lists & paragraphs
+      if (line.trim() === '') {
+        closeParagraph(); closeLists();
+        continue;
+      }
+
+      // Remaining code placeholders that didn't end up alone on a line
+      if (/\x00B\d+\x00/.test(line)) {
+        closeParagraph(); closeLists();
+        html += `<p>${inlineEsc(line)}</p>`;
+        continue;
+      }
+
+      // Regular line — continuation or new paragraph
+      closeLists();
+      if (!inParagraph) { html += '<p>'; inParagraph = true; }
+      else html += ' ';
+      html += inlineEsc(line);
+    }
+    closeParagraph(); closeLists();
+    return html;
+  }
+
+  // ── Diff renderer ──────────────────────────────────────────────────────────
+  function renderDiff(diff) {
+    if (!diff) return '';
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    let html = '<div class="diff-view">';
+    diff.split('\n').forEach(line => {
+      if (line.startsWith('+ ') || line === '+')
+        html += `<span class="diff-add">${esc(line)}</span>`;
+      else if (line.startsWith('- ') || line === '-')
+        html += `<span class="diff-del">${esc(line)}</span>`;
+      else if (line.startsWith('@@'))
+        html += `<span class="diff-ctx">${esc(line)}</span>`;
+      else
+        html += `<span class="diff-ctx">${esc(line)}</span>`;
+    });
+    html += '</div>';
+    return html;
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────────────────────
+  async function login() {
+    const pin = $('pin').value.trim();
+    $('loginErr').textContent = '';
+    try {
+      const res = await fetch('/auth', { method: 'POST', body: JSON.stringify({ pin }) });
+      const data = await res.json();
+      if (!res.ok || !data.token) { $('loginErr').textContent = data.error || 'Error'; return; }
+      token = data.token;
+      $('login').style.display = 'none';
+      $('app').style.display = 'grid';
+      connect();
+    } catch (e) { $('loginErr').textContent = 'No se pudo conectar'; }
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
+    ws.onmessage = (ev) => render(JSON.parse(ev.data));
+    ws.onclose = () => { $('status').textContent = 'Desconectado — reintentando…'; setTimeout(connect, 1500); };
+    ws.onopen = () => { $('status').textContent = 'Conectado'; };
+  }
+
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function render(s) {
+    if (s.type !== 'state') return;
+
+    // Sesiones
+    const sel = $('sessions');
+    sel.innerHTML = '';
+    s.sessions.forEach(se => {
+      const o = document.createElement('option');
+      o.value = se.id; o.textContent = se.title; if (se.active) o.selected = true;
+      sel.appendChild(o);
+    });
+
+    // Mensajes
+    const box = $('messages');
+    // Scroll "sticky al fondo": guardamos si el usuario ya estaba abajo ANTES de
+    // reconstruir la lista. Si lo estaba (o aún no hay scroll), tras el rebuild lo
+    // llevamos al fondo; si había scrolleado hacia arriba a leer, conservamos su
+    // posición en vez de arrastrarlo al fondo en cada token del streaming.
+    const prevScrollTop = box.scrollTop;
+    const wasNearBottom = (box.scrollHeight - prevScrollTop - box.clientHeight) < 80;
+    box.innerHTML = '';
+    const esc = (t) => (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    function toolLabel(name) {
+      const labels = {
+        run_command: '▶ comando', read_file: '📄 leer archivo', edit_file: '✏️ editar archivo',
+        multi_edit: '✏️ multi_edit', create_file: '📝 crear archivo',
+        delete_file: '🗑️ borrar archivo', list_directory: '📁 listar directorio',
+        search_web: '🔍 búsqueda web', generate_image: '🖼️ generar imagen',
+        render_diagram: '📊 diagrama', manage_todos: '✅ todos', use_skill: '🔧 skill'
+      };
+      return labels[name] || ('🔧 ' + name);
+    }
+
+    function summarizeArgs(name, argsJson) {
+      try {
+        const a = JSON.parse(argsJson);
+        if (['run_command'].includes(name)) return a.command || argsJson;
+        if (['read_file','edit_file','create_file','delete_file','multi_edit'].includes(name)) return a.path || argsJson;
+        if (name === 'list_directory') return a.path || argsJson;
+        if (name === 'search_web') return a.query || argsJson;
+        return Object.values(a).slice(0, 2).join(' · ') || argsJson;
+      } catch { return argsJson; }
+    }
+
+    s.messages.forEach(m => {
+      // Tool call announcement
+      if (m.role === 'Assistant' && m.toolCalls && m.toolCalls.length > 0 && !m.content) {
+        m.toolCalls.forEach(tc => {
+          const d = document.createElement('div');
+          d.className = 'msg tool-call';
+          d.innerHTML = `<div class="tool-label">${toolLabel(tc.name)}</div><span class="tool-cmd">${esc(summarizeArgs(tc.name, tc.args))}</span>`;
+          box.appendChild(d);
+        });
+        return;
+      }
+      // Tool result
+      if (m.role === 'Tool') {
+        const d = document.createElement('div');
+        d.className = 'msg tool-result';
+        d.innerHTML = `<div class="tool-label">${toolLabel(m.toolName || '')} — salida</div><pre>${esc(m.content)}</pre>`;
+        box.appendChild(d);
+        return;
+      }
+      // User or Assistant message with content
+      const d = document.createElement('div');
+      if (m.role === 'User') {
+        d.className = 'msg user';
+        d.innerHTML = `<div class="role">Tú${m.hasImage ? ' 🖼️' : ''}</div>${esc(m.content)}`;
+      } else {
+        d.className = 'msg assistant';
+        d.innerHTML = `<div class="role">Asistente${m.hasImage ? ' 🖼️' : ''}</div><div class="md">${renderMd(m.content)}</div>`;
+      }
+      box.appendChild(d);
+    });
+
+    if (s.streaming) {
+      const d = document.createElement('div');
+      d.className = 'msg assistant'; d.textContent = '…';
+      box.appendChild(d);
+    }
+    if (wasNearBottom) box.scrollTop = box.scrollHeight;
+    else box.scrollTop = prevScrollTop;
+
+    // Stop / Send buttons
+    $('stopBtn').style.display = s.streaming ? 'block' : 'none';
+    $('sendBtn').style.display = s.streaming ? 'none' : 'block';
+
+    // YOLO toggle
+    const yolo = $('yoloBtn');
+    yolo.classList.toggle('active', !!s.yoloMode);
+    yolo.title = s.yoloMode ? 'YOLO activo — las tools se ejecutan sin pedir permiso' : 'YOLO desactivado';
+
+    // Confirmación pendiente
+    const c = $('confirm');
+    if (s.pendingConfirmation) {
+      const p = s.pendingConfirmation;
+      const diffHtml = p.diff ? renderDiff(p.diff) : (p.detail ? `<pre>${esc(p.detail)}</pre>` : '');
+      c.innerHTML = `<div class="banner"><b>${esc(p.title)}</b>${diffHtml}</div>`;
+      const row = document.createElement('div'); row.className = 'row';
+      const ok = document.createElement('button'); ok.textContent = 'Aprobar';
+      ok.onclick = () => send({ type: 'approve', id: p.id, approved: true });
+      const no = document.createElement('button'); no.className = 'danger'; no.textContent = 'Rechazar';
+      no.onclick = () => send({ type: 'approve', id: p.id, approved: false });
+      row.appendChild(ok); row.appendChild(no);
+      c.querySelector('.banner').appendChild(row);
+    } else { c.innerHTML = ''; }
+
+    // Prompt ask_user
+    const pr = $('prompt');
+    if (s.pendingPrompt) {
+      const q = s.pendingPrompt;
+      pr.innerHTML = `<div class="prompt">${esc(q.question)}<div class="chips"></div></div>`;
+      const chips = pr.querySelector('.chips');
+      (q.options || []).forEach(opt => {
+        const b = document.createElement('button'); b.className = 'chip'; b.textContent = opt;
+        b.onclick = () => send({ type: 'answerPrompt', text: opt });
+        chips.appendChild(b);
+      });
+    } else { pr.innerHTML = ''; }
+  }
+
+  $('loginBtn').onclick = login;
+  $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+  $('newBtn').onclick = () => send({ type: 'newSession' });
+  $('sessions').onchange = (e) => send({ type: 'selectSession', id: e.target.value });
+  $('yoloBtn').onclick = () => send({ type: 'toggleYolo' });
+  $('stopBtn').onclick = () => send({ type: 'stop' });
+  $('sendBtn').onclick = () => {
+    const t = $('input').value.trim(); if (!t) return;
+    send({ type: 'sendMessage', text: t }); $('input').value = '';
+  };
+  $('input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('sendBtn').click(); }
+  });
+</script>
+</body>
+</html>

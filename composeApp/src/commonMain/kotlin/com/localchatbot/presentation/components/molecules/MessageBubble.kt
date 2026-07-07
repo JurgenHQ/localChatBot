@@ -5,6 +5,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +14,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,10 +40,13 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
@@ -47,6 +55,7 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,11 +66,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -80,17 +94,29 @@ import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.tools.RunCommandTool
 import com.localchatbot.presentation.components.atoms.AppLogo
 import com.localchatbot.presentation.components.util.SelectableOnDesktop
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBackground
+import com.mikepenz.markdown.compose.elements.MarkdownHeader
+import com.mikepenz.markdown.compose.elements.MarkdownParagraph
+import com.mikepenz.markdown.compose.elements.MarkdownBulletList
+import com.mikepenz.markdown.compose.elements.MarkdownOrderedList
+import org.intellij.markdown.MarkdownElementTypes
+import org.intellij.markdown.MarkdownTokenTypes
 import com.mikepenz.markdown.compose.LocalMarkdownColors
 import com.mikepenz.markdown.compose.LocalMarkdownDimens
 import com.mikepenz.markdown.compose.LocalMarkdownPadding
 import com.mikepenz.markdown.compose.LocalMarkdownTypography
 import androidx.compose.ui.text.style.TextOverflow
 import com.mikepenz.markdown.m3.Markdown
+import org.intellij.markdown.flavours.gfm.GFMElementTypes
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.io.encoding.Base64
@@ -116,29 +142,43 @@ fun MessageBubble(
     onSaveImage: ((ByteArray) -> Unit)? = null,
     onTap: () -> Unit = {},
     highlightQuery: String? = null,
-    isCurrentMatch: Boolean = false
+    isCurrentMatch: Boolean = false,
+    isStreaming: Boolean = false,
+    /** Si no es null, las referencias a archivos del workspace se vuelven clicables y abren el editor. */
+    onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
+    /** Si no es null y el mensaje tiene checkpoint, muestra el chip "revertir este turno". */
+    onRevertTurn: ((String) -> Unit)? = null
 ) {
     when (message.role) {
         Role.User -> UserBubble(message, modifier, onResend, onEdit, onSaveImage, onTap, highlightQuery, isCurrentMatch)
         Role.Assistant, Role.System -> {
-            // Si el assistant no tiene contenido visible ni sources, es un mensaje
+            // Si el assistant no tiene contenido visible ni sources ni reasoning, es un mensaje
             // intermedio de tool_calls (necesario en el historial para el modelo,
             // pero no aporta nada al usuario). Ocultarlo.
             val hasVisibleContent = message.content.isNotBlank() ||
                 !message.sources.isNullOrEmpty() ||
-                message.imageDataUrl != null
-            if (hasVisibleContent) {
-                AssistantBubble(message, modifier, onCopy, onRegenerate, onSpeak, isSpeaking, onSaveImage, onTap, highlightQuery, isCurrentMatch)
-            } else {
-                Spacer(modifier = Modifier.height(0.dp))
+                message.imageDataUrl != null ||
+                message.videoDataUrl != null ||
+                !message.reasoning.isNullOrBlank()
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (hasVisibleContent) {
+                    AssistantBubble(message, modifier, onCopy, onRegenerate, onSpeak, isSpeaking, onSaveImage, onTap, highlightQuery, isCurrentMatch, isStreaming, onOpenFileInEditor)
+                }
+                // El chip se renderiza aunque el bubble esté oculto: el mensaje que
+                // anuncia tool_calls suele tener content vacío.
+                if (message.checkpointId != null && onRevertTurn != null && !isStreaming) {
+                    RevertTurnChip(onClick = { onRevertTurn(message.checkpointId) })
+                }
             }
         }
         Role.Tool -> {
-            if (message.toolName == RunCommandTool.TOOL_NAME) {
-                TerminalOutputBubble(message, modifier)
+            when (message.toolName) {
+                RunCommandTool.TOOL_NAME -> TerminalOutputBubble(message, modifier)
+                "edit_file", "multi_edit",
+                "create_file", "create_directory",
+                "save_image", "save_video",
+                "delete_file" -> FileActionBubble(message, modifier)
             }
-            // Otras tools (search_web, render_diagram, etc.) no se renderizan:
-            // sus resultados aparecen como sources/imagen bajo el assistant.
         }
     }
 }
@@ -172,7 +212,18 @@ private fun UserBubble(
                     onSave = onSaveImage
                 )
             }
-            if (message.content.isNotBlank() && message.content != "(imagen)") {
+            // Chips de archivos adjuntos: el contenido va al modelo, no a la burbuja.
+            message.attachments?.takeIf { it.isNotEmpty() }?.let { atts ->
+                Column(
+                    modifier = Modifier.padding(bottom = Spacing.xs),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+                ) {
+                    atts.forEach { AttachedFileChip(it.name) }
+                }
+            }
+            val hasText = message.content.isNotBlank() && message.content != "(imagen)"
+            if (hasText) {
                 val bubbleShape = RoundedCornerShape(
                     topStart = 18.dp,
                     topEnd = 18.dp,
@@ -206,21 +257,46 @@ private fun UserBubble(
                         )
                     }
                 }
-                if (actionable) {
-                    Row(
-                        modifier = Modifier.padding(top = Spacing.xs),
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
-                    ) {
-                        if (onEdit != null) {
-                            BubbleActionIcon(Icons.Default.Edit, "Editar", onEdit)
-                        }
-                        if (onResend != null) {
-                            BubbleActionIcon(Icons.AutoMirrored.Filled.Send, "Reenviar", onResend)
-                        }
+            }
+            if (actionable && (hasText || !message.attachments.isNullOrEmpty())) {
+                Row(
+                    modifier = Modifier.padding(top = Spacing.xs),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+                ) {
+                    if (onEdit != null) {
+                        BubbleActionIcon(Icons.Default.Edit, "Editar", onEdit)
+                    }
+                    if (onResend != null) {
+                        BubbleActionIcon(Icons.AutoMirrored.Filled.Send, "Reenviar", onResend)
                     }
                 }
             }
         }
+    }
+}
+
+/** Chip compacto con el nombre de un archivo adjunto del usuario (sin el contenido). */
+@Composable
+private fun AttachedFileChip(name: String) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.pill))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = Spacing.sm, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            Icons.Outlined.Description,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            name,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
     }
 }
 
@@ -235,7 +311,9 @@ private fun AssistantBubble(
     onSaveImage: ((ByteArray) -> Unit)? = null,
     onTap: () -> Unit = {},
     highlightQuery: String? = null,
-    isCurrentMatch: Boolean = false
+    isCurrentMatch: Boolean = false,
+    isStreaming: Boolean = false,
+    onOpenFileInEditor: ((String, Int?) -> Unit)? = null
 ) {
     val interaction = remember { MutableInteractionSource() }
     val actionable = onCopy != null || onRegenerate != null || onSpeak != null
@@ -263,28 +341,52 @@ private fun AssistantBubble(
             if (message.imageDataUrl != null) {
                 AttachedImage(dataUrl = message.imageDataUrl, onSave = onSaveImage)
             }
+            if (message.videoDataUrl != null) {
+                GeneratedVideoChip()
+            }
+            message.reasoning?.takeIf { it.isNotBlank() }?.let { reasoning ->
+                ReasoningPanel(
+                    reasoning = reasoning,
+                    live = isStreaming && message.content.isBlank(),
+                    durationMs = message.metrics?.reasoningMs
+                )
+            }
             if (message.content.isNotBlank()) {
+                val parsed = remember(message.content) { parseTaskListBlocks(message.content) }
+                val displayContent = parsed.stripped
                 val hasMatch = !highlightQuery.isNullOrBlank() &&
                     message.content.contains(highlightQuery, ignoreCase = true)
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .matchOutline(isCurrentMatch, RoundedCornerShape(8.dp))
-                        .background(
-                            if (isCurrentMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.10f)
-                            else if (hasMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
-                            else Color.Transparent
-                        )
-                        .padding(if (hasMatch) 4.dp else 0.dp)
-                ) {
-                    SelectableOnDesktop {
-                        // Markdown no soporta inline-highlight directo. Cuando hay
-                        // match, el modelo todavía ve la salida con formato; el
-                        // resaltado se logra con el background/border del Box.
-                        Markdown(
-                            content = message.content,
-                            components = codeBlockComponents()
-                        )
+
+                // Render parsed task groups (from <task_list> blocks)
+                parsed.taskGroups.forEach { tasks ->
+                    InlineTaskList(tasks = tasks)
+                }
+
+                if (displayContent.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .matchOutline(isCurrentMatch, RoundedCornerShape(8.dp))
+                            .background(
+                                if (isCurrentMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.10f)
+                                else if (hasMatch) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
+                                else Color.Transparent
+                            )
+                            .padding(if (hasMatch) 4.dp else 0.dp)
+                    ) {
+                        SelectableOnDesktop {
+                            // Markdown no soporta inline-highlight directo. Cuando hay
+                            // match, el modelo todavía ve la salida con formato; el
+                            // resaltado se logra con el background/border del Box.
+                            if (onOpenFileInEditor != null) {
+                                FileAwareMarkdown(displayContent, onOpenFileInEditor)
+                            } else {
+                                Markdown(
+                                    content = displayContent,
+                                    components = codeBlockComponents()
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -386,12 +488,43 @@ private fun AttachedImage(
     }
 }
 
+/**
+ * Placeholder simple para un video generado (`animate_image`/`cartoon_video`). No hay
+ * reproductor embebido en Compose Multiplatform hoy — el usuario le pide al modelo que lo
+ * guarde con `save_video` para verlo con su reproductor del sistema.
+ */
+@Composable
+private fun GeneratedVideoChip(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+    ) {
+        Text("🎬", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "Video generado — pídele que lo guarde para verlo",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @Composable
 private fun ImagePreviewDialog(
     bitmap: androidx.compose.ui.graphics.ImageBitmap,
     onDismiss: () -> Unit,
     onSave: (() -> Unit)?
 ) {
+    // Zoom + arrastre: pinch (móvil / trackpad) escala entre 1x y 5x; al hacer zoom se
+    // puede arrastrar la imagen. Doble-tap alterna entre ajustado (1x) y 2.5x. Resetea
+    // el offset al volver a 1x para que la imagen no quede descentrada.
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    val zoomed = scale > 1f
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -403,7 +536,9 @@ private fun ImagePreviewDialog(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = onDismiss
+                    // Tap en el fondo cierra solo si no hay zoom (con zoom el tap-fuera
+                    // podría ser accidental mientras se explora la imagen).
+                    onClick = { if (!zoomed) onDismiss() }
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -424,7 +559,41 @@ private fun ImagePreviewDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 520.dp)
-                        .clip(RoundedCornerShape(16.dp)),
+                        .clip(RoundedCornerShape(16.dp))
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val newScale = (scale * zoom).coerceIn(1f, 5f)
+                                // Pan solo tiene sentido con zoom; al volver a 1x, recentrar.
+                                offset = if (newScale > 1f) {
+                                    val limit = (newScale - 1f) * 600f
+                                    Offset(
+                                        (offset.x + pan.x).coerceIn(-limit, limit),
+                                        (offset.y + pan.y).coerceIn(-limit, limit)
+                                    )
+                                } else {
+                                    Offset.Zero
+                                }
+                                scale = newScale
+                            }
+                        }
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (zoomed) {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    } else {
+                                        scale = 2.5f
+                                    }
+                                }
+                            )
+                        },
                     contentScale = ContentScale.Fit
                 )
                 if (onSave != null) {
@@ -576,15 +745,279 @@ private fun formatDecimals(v: Double, decimals: Int): String {
 // Code block with copy button
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Referencias a archivos clicables (abren el editor)
+// ---------------------------------------------------------------------------
+
+/** Esquema sintético para los links de archivo; lo intercepta el UriHandler. */
+private const val FILE_LINK_SCHEME = "lcb-file:"
+
+/** Líneas que abren/cierran un bloque de código cercado (``` o ~~~). */
+private val FENCE_REGEX = Regex("""^\s*(```|~~~)""")
+
+/** Code-span inline: `texto` (sin backticks ni saltos de línea dentro). */
+private val INLINE_CODE_REGEX = Regex("`([^`\\n]+)`")
+
+/** Token con pinta de ruta de archivo: algo.ext, a/b/c.kt, con `:linea` opcional. */
+private val FILE_TOKEN_REGEX = Regex("""^[\w.\-/]+\.[A-Za-z0-9]+(?::\d+)?$""")
+
+private val LINE_SUFFIX_REGEX = Regex(""":\d+$""")
+
+/**
+ * Reescribe los code-spans que parecen rutas de archivo (`` `src/Foo.kt` ``) como
+ * links markdown con esquema [FILE_LINK_SCHEME], conservando el estilo monoespaciado
+ * (el texto del link sigue siendo un code-span). Respeta los bloques cercados y no
+ * toca code-spans que ya son el texto de un link.
+ */
+private fun linkifyFileReferences(content: String): String {
+    if (!content.contains('`')) return content
+    var inFence = false
+    return content.split("\n").joinToString("\n") { line ->
+        if (FENCE_REGEX.containsMatchIn(line)) {
+            inFence = !inFence
+            return@joinToString line
+        }
+        if (inFence) return@joinToString line
+        INLINE_CODE_REGEX.replace(line) { m ->
+            val inner = m.groupValues[1].trim()
+            val followedByLink = line.getOrNull(m.range.last + 1) == ']'
+            if (!followedByLink && FILE_TOKEN_REGEX.matches(inner)) {
+                "[`$inner`]($FILE_LINK_SCHEME$inner)"
+            } else {
+                m.value
+            }
+        }
+    }
+}
+
+/**
+ * Markdown con referencias a archivos clicables. Intercepta los links con esquema
+ * [FILE_LINK_SCHEME] vía un [UriHandler] propio y delega el resto al handler de la
+ * plataforma (URLs http normales). Extrae el sufijo `:línea` si existe y lo pasa
+ * como segundo argumento para que el editor salte a esa línea.
+ */
+@Composable
+private fun FileAwareMarkdown(content: String, onOpenFile: (String, Int?) -> Unit) {
+    val platformHandler = LocalUriHandler.current
+    val handler = remember(onOpenFile, platformHandler) {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                if (uri.startsWith(FILE_LINK_SCHEME)) {
+                    val raw = uri.removePrefix(FILE_LINK_SCHEME)
+                    val lineMatch = LINE_SUFFIX_REGEX.find(raw)
+                    val line = lineMatch?.value?.removePrefix(":")?.toIntOrNull()
+                    val path = if (lineMatch != null) raw.removeSuffix(lineMatch.value) else raw
+                    onOpenFile(path, line)
+                } else {
+                    runCatching { platformHandler.openUri(uri) }
+                }
+            }
+        }
+    }
+    val linkified = remember(content) { linkifyFileReferences(content) }
+    CompositionLocalProvider(LocalUriHandler provides handler) {
+        Markdown(content = linkified, components = codeBlockComponents())
+    }
+}
+
+/**
+ * Workaround para CMP-8028: en iOS el motor de render de Compose a veces pinta texto
+ * en negro ignorando el color especificado (aleatorio, típico con streaming y scroll;
+ * sin fix al menos hasta CMP 1.10). Un saveLayer con ColorFilter.tint fuerza el color
+ * a nivel de píxeles preservando el alpha (los fondos translúcidos de inline-code se
+ * mantienen). En Android/Desktop es un no-op sin coste.
+ */
+private fun Modifier.forceTextColor(color: Color): Modifier =
+    if (!PlatformCapabilities.needsTextColorWorkaround) this
+    else drawWithCache {
+        val paint = Paint().apply { colorFilter = ColorFilter.tint(color) }
+        onDrawWithContent {
+            drawIntoCanvas { it.saveLayer(Rect(Offset.Zero, size), paint) }
+            drawContent()
+            drawIntoCanvas { it.restore() }
+        }
+    }
+
 @Composable
 private fun codeBlockComponents() = markdownComponents(
+    // Texto de párrafos y headings con color forzado en iOS (ver forceTextColor).
+    paragraph = {
+        MarkdownParagraph(
+            it.content, it.node,
+            modifier = Modifier.forceTextColor(LocalMarkdownColors.current.text),
+            style = it.typography.paragraph
+        )
+    },
+    heading1 = { HeaderWithForcedColor(it.content, it.node, it.typography.h1) },
+    heading2 = { HeaderWithForcedColor(it.content, it.node, it.typography.h2) },
+    heading3 = { HeaderWithForcedColor(it.content, it.node, it.typography.h3) },
+    heading4 = { HeaderWithForcedColor(it.content, it.node, it.typography.h4) },
+    heading5 = { HeaderWithForcedColor(it.content, it.node, it.typography.h5) },
+    heading6 = { HeaderWithForcedColor(it.content, it.node, it.typography.h6) },
     codeFence = {
         MarkdownCodeFence(it.content, it.node) { code, _ -> CopyableCodeBlock(code) }
     },
     codeBlock = {
         MarkdownCodeBlock(it.content, it.node) { code, _ -> CopyableCodeBlock(code) }
+    },
+    // La librería invoca `custom` para todo nodo que no esté en su `when` interno
+    // (ver Markdown.handleElement). Como `invoke()` devuelve Unit (siempre `!= null`),
+    // el nodo queda marcado como "handled" → la lib NO recursa a sus hijos. Por eso
+    // aquí hay que renderizar el contenido completo de cada tipo, no solo tablas.
+    custom = { type, model ->
+        val src = runCatching {
+            model.content.substring(model.node.startOffset, model.node.endOffset)
+        }.getOrNull()
+        when (type) {
+            // Tablas GFM: la lib 0.27.0 no las soporta y, sin esto, apila las celdas
+            // en vertical. Recortamos por offsets y dibujamos un grid.
+            GFMElementTypes.TABLE -> {
+                val rows = src?.let { parseMarkdownTable(it) }
+                if (rows != null) MarkdownTableBlock(rows)
+                else if (!src.isNullOrBlank()) Text(
+                    src,
+                    modifier = Modifier.forceTextColor(MaterialTheme.colorScheme.onSurface),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            // Cada LIST_ITEM cae aquí (no está en el `when` de la lib). Sin esto su
+            // contenido se pintaba como texto crudo SIN color (negro, ilegible en modo
+            // oscuro) y sin parsear (`**`, enlaces, marcadores anidados literales).
+            // Renderizamos sus hijos con los composables reales de la librería.
+            MarkdownElementTypes.LIST_ITEM -> {
+                model.node.children.forEach { child ->
+                    when (child.type) {
+                        MarkdownElementTypes.PARAGRAPH ->
+                            MarkdownParagraph(
+                                model.content, child,
+                                modifier = Modifier.forceTextColor(LocalMarkdownColors.current.text),
+                                style = model.typography.paragraph
+                            )
+                        MarkdownElementTypes.UNORDERED_LIST ->
+                            MarkdownBulletList(model.content, child, style = model.typography.bullet)
+                        MarkdownElementTypes.ORDERED_LIST ->
+                            MarkdownOrderedList(model.content, child, style = model.typography.ordered)
+                        MarkdownElementTypes.CODE_FENCE ->
+                            MarkdownCodeFence(model.content, child) { code, _ -> CopyableCodeBlock(code) }
+                        MarkdownElementTypes.CODE_BLOCK ->
+                            MarkdownCodeBlock(model.content, child) { code, _ -> CopyableCodeBlock(code) }
+                        // Marcadores y saltos del propio ítem: no se pintan.
+                        MarkdownTokenTypes.LIST_BULLET,
+                        MarkdownTokenTypes.LIST_NUMBER,
+                        MarkdownTokenTypes.WHITE_SPACE,
+                        MarkdownTokenTypes.EOL -> Unit
+                        // Cualquier otro hijo: texto crudo pero con color legible.
+                        else -> runCatching {
+                            model.content.substring(child.startOffset, child.endOffset)
+                        }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                it,
+                                modifier = Modifier.forceTextColor(MaterialTheme.colorScheme.onSurface),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+            // Resto de tipos no soportados: texto crudo con color legible para no
+            // perder contenido.
+            else -> src?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    modifier = Modifier.forceTextColor(MaterialTheme.colorScheme.onSurface),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
     }
 )
+
+/** [MarkdownHeader] no acepta modifier: se envuelve para aplicar [forceTextColor]. */
+@Composable
+private fun HeaderWithForcedColor(
+    content: String,
+    node: org.intellij.markdown.ast.ASTNode,
+    style: androidx.compose.ui.text.TextStyle
+) {
+    Box(modifier = Modifier.forceTextColor(LocalMarkdownColors.current.text)) {
+        MarkdownHeader(content, node, style)
+    }
+}
+
+/**
+ * Parsea el texto fuente de una tabla GFM en filas de celdas. Devuelve null si no
+ * parece una tabla. La fila separadora (`|---|---|`) se descarta.
+ */
+private fun parseMarkdownTable(src: String): List<List<String>>? {
+    fun isSeparator(line: String): Boolean {
+        val stripped = line.replace("|", "").replace(":", "").trim()
+        return stripped.isNotEmpty() && stripped.all { it == '-' || it.isWhitespace() } && stripped.contains('-')
+    }
+    fun splitRow(line: String): List<String> {
+        var s = line.trim()
+        if (s.startsWith("|")) s = s.substring(1)
+        if (s.endsWith("|")) s = s.dropLast(1)
+        return s.split("|").map { it.trim() }
+    }
+    val lines = src.trim().lines().map { it.trim() }.filter { it.isNotEmpty() }
+    if (lines.size < 2) return null
+    val rows = lines.filterNot { isSeparator(it) }.map { splitRow(it) }
+    return rows.takeIf { it.isNotEmpty() && it.any { r -> r.size > 1 } }
+}
+
+@Composable
+private fun MarkdownTableBlock(rows: List<List<String>>) {
+    val cols = rows.maxOf { it.size }
+    val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+    val headerBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+
+    Column(
+        modifier = Modifier
+            .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+    ) {
+        rows.forEachIndexed { rowIdx, cells ->
+            val isHeader = rowIdx == 0
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (isHeader) headerBg else Color.Transparent)
+                    .height(IntrinsicSize.Min)
+            ) {
+                for (c in 0 until cols) {
+                    if (c > 0) {
+                        Box(
+                            Modifier
+                                .width(1.dp)
+                                .fillMaxHeight()
+                                .background(borderColor)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = cells.getOrElse(c) { "" },
+                            modifier = Modifier.forceTextColor(MaterialTheme.colorScheme.onSurface),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (isHeader) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+            if (rowIdx < rows.size - 1) {
+                HorizontalDivider(thickness = 1.dp, color = borderColor)
+            }
+        }
+    }
+}
 
 @Composable
 private fun CopyableCodeBlock(code: String) {
@@ -607,7 +1040,8 @@ private fun CopyableCodeBlock(code: String) {
                 color = colors.codeText,
                 modifier = androidx.compose.ui.Modifier
                     .horizontalScroll(rememberScrollState())
-                    .padding(padding.codeBlock),
+                    .padding(padding.codeBlock)
+                    .forceTextColor(colors.codeText),
                 style = typography.code
             )
         }
@@ -692,6 +1126,131 @@ private fun highlightedText(
 private fun Modifier.matchOutline(isCurrentMatch: Boolean, shape: Shape): Modifier =
     if (isCurrentMatch) this.border(width = 2.dp, color = Color(0xFFFFC107), shape = shape)
     else this
+
+// ---------------------------------------------------------------------------
+// Task list inline renderer
+// ---------------------------------------------------------------------------
+
+private data class ParsedTask(val text: String, val done: Boolean)
+
+/**
+ * Extracts all <task_list> blocks from [content] and returns:
+ * - stripped: the content with those blocks removed (trimmed)
+ * - taskGroups: one list of tasks per <task_list> found
+ *
+ * Handles tasks as <task>…</task> elements, and also markdown checkbox lines
+ * ("- [ ] …" / "- [x] …") inside the XML block. Empty blocks are dropped.
+ */
+private data class TaskListParseResult(val stripped: String, val taskGroups: List<List<ParsedTask>>)
+
+private val TASK_LIST_BLOCK_REGEX = Regex(
+    """<task_list[^>]*>([\s\S]*?)</task_list>""",
+    RegexOption.IGNORE_CASE
+)
+private val TASK_TAG_REGEX = Regex(
+    """<task(?:\s+[^>]*)?>([^<]*)</task>""",
+    RegexOption.IGNORE_CASE
+)
+private val TASK_STATUS_DONE_REGEX = Regex("""status\s*=\s*["']?done["']?""", RegexOption.IGNORE_CASE)
+private val CHECKBOX_LINE_REGEX = Regex("""^\s*[-*]\s+\[([ xX])\]\s+(.+)$""")
+
+private fun parseTaskListBlocks(content: String): TaskListParseResult {
+    if (!content.contains("<task_list", ignoreCase = true)) {
+        // Trim leading/trailing whitespace: muchos modelos emiten saltos de línea
+        // sobrantes antes de un tool_call, que el markdown renderiza como huecos
+        // verticales que se acumulan ronda tras ronda.
+        return TaskListParseResult(content.trim(), emptyList())
+    }
+    val groups = mutableListOf<List<ParsedTask>>()
+    val stripped = TASK_LIST_BLOCK_REGEX.replace(content) { match ->
+        val inner = match.groupValues[1]
+        val tasks = mutableListOf<ParsedTask>()
+
+        // Try <task> tags first
+        TASK_TAG_REGEX.findAll(inner).forEach { m ->
+            val rawTag = m.value
+            val text = m.groupValues[1].trim()
+            if (text.isNotBlank()) {
+                val done = TASK_STATUS_DONE_REGEX.containsMatchIn(rawTag)
+                tasks += ParsedTask(text, done)
+            }
+        }
+
+        // Fall back to markdown checkbox lines if no <task> tags found
+        if (tasks.isEmpty()) {
+            inner.lines().forEach { line ->
+                val cm = CHECKBOX_LINE_REGEX.matchEntire(line)
+                if (cm != null) {
+                    val check = cm.groupValues[1]
+                    val text = cm.groupValues[2].trim()
+                    tasks += ParsedTask(text, check.equals("x", ignoreCase = true))
+                } else {
+                    val trimmed = line.trim().removePrefix("-").removePrefix("*").trim()
+                    if (trimmed.isNotBlank()) tasks += ParsedTask(trimmed, false)
+                }
+            }
+        }
+
+        if (tasks.isNotEmpty()) groups += tasks
+        "" // remove the block from the markdown content
+    }.trim()
+
+    return TaskListParseResult(stripped, groups)
+}
+
+@Composable
+private fun InlineTaskList(tasks: List<ParsedTask>) {
+    val doneCount = tasks.count { it.done }
+    val totalCount = tasks.size
+    val surfaceColor = MaterialTheme.colorScheme.surfaceVariant
+    val onSurface = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.md))
+            .background(surfaceColor)
+            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            Text(
+                text = "Tareas",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = onSurface
+            )
+            if (totalCount > 0) {
+                Text(
+                    text = "$doneCount/$totalCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (doneCount == totalCount) MaterialTheme.colorScheme.primary else onSurface
+                )
+            }
+        }
+        tasks.forEach { task ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                modifier = Modifier.padding(vertical = 1.dp)
+            ) {
+                Icon(
+                    imageVector = if (task.done) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (task.done) MaterialTheme.colorScheme.primary else onSurface,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = task.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (task.done) onSurface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Terminal output collapsible
@@ -812,5 +1371,88 @@ private fun TerminalOutputBubble(message: ChatMessage, modifier: Modifier = Modi
                 )
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Revert turn chip (checkpoint del turno)
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun RevertTurnChip(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .padding(start = Spacing.lg, end = Spacing.lg, top = 2.dp, bottom = 2.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "↩ Revertir cambios de este turno",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File action chip (edit_file / create_file / delete_file / multi_edit)
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun FileActionBubble(message: ChatMessage, modifier: Modifier = Modifier) {
+    val toolName = message.toolName ?: return
+
+    val label = when (toolName) {
+        "edit_file", "multi_edit" -> "Editado"
+        "create_file", "create_directory" -> "Creado"
+        "save_image" -> "Imagen guardada"
+        "save_video" -> "Video guardado"
+        "delete_file" -> "Eliminado"
+        else -> return
+    }
+
+    val editedColor = Color(0xFF2EBD66)
+    val deletedColor = MaterialTheme.colorScheme.error
+    val createdColor = MaterialTheme.colorScheme.primary
+
+    val color = when (toolName) {
+        "edit_file", "multi_edit" -> editedColor
+        "create_file", "create_directory", "save_image", "save_video" -> createdColor
+        else -> deletedColor
+    }
+
+    val path = remember(message.content) {
+        runCatching {
+            Json.parseToJsonElement(message.content).jsonObject.let { obj ->
+                if (obj["error"] != null) null
+                else obj["_path"]?.jsonPrimitive?.content
+            }
+        }.getOrNull()
+    } ?: return
+
+    val displayPath = remember(path) {
+        val parts = path.replace('\\', '/').trimEnd('/').split('/')
+        if (parts.size >= 2) "${parts[parts.size - 2]}/${parts.last()}"
+        else parts.lastOrNull() ?: path
+    }
+
+    Row(
+        modifier = modifier.padding(start = Spacing.lg, end = Spacing.lg, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(Modifier.size(7.dp).background(color, CircleShape))
+        Text(
+            text = "$label  $displayPath",
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

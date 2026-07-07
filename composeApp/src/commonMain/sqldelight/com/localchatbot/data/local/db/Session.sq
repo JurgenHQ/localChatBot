@@ -1,0 +1,44 @@
+import com.localchatbot.domain.model.GenerationParams;
+import kotlin.Boolean;
+
+CREATE TABLE session (
+    id TEXT NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at_epoch_ms INTEGER NOT NULL,
+    updated_at_epoch_ms INTEGER NOT NULL,
+    pinned INTEGER AS Boolean NOT NULL DEFAULT 0,
+    generation_params TEXT AS GenerationParams,
+    context_summary TEXT
+);
+
+selectAllSessions:
+SELECT * FROM session ORDER BY pinned DESC, updated_at_epoch_ms DESC;
+
+selectSessionById:
+SELECT * FROM session WHERE id = :id;
+
+insertSession:
+INSERT INTO session(id, title, model, created_at_epoch_ms, updated_at_epoch_ms, pinned, generation_params, context_summary)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+updateSessionTitle:
+UPDATE session SET title = :title WHERE id = :id;
+
+updateSessionModel:
+UPDATE session SET model = :model WHERE id = :id;
+
+updateSessionPinned:
+UPDATE session SET pinned = :pinned WHERE id = :id;
+
+updateSessionContextSummary:
+UPDATE session SET context_summary = :contextSummary WHERE id = :id;
+
+updateSessionTimestamp:
+UPDATE session SET updated_at_epoch_ms = :updatedAtEpochMs WHERE id = :id;
+
+deleteSession:
+DELETE FROM session WHERE id = :id;
+
+deleteAllSessions:
+DELETE FROM session;

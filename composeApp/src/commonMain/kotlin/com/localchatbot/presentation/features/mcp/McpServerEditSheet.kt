@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.util.newId
@@ -53,9 +54,19 @@ fun McpServerEditSheet(
 ) {
     var name by remember { mutableStateOf(editing?.name ?: "") }
     var url by remember { mutableStateOf(editing?.url ?: "") }
+    // Stdio solo tiene sentido en desktop (lanza un proceso local).
+    val stdioAvailable = PlatformCapabilities.isDesktop
+    var stdio by remember { mutableStateOf(stdioAvailable && editing?.isStdio == true) }
+    var command by remember { mutableStateOf(editing?.command ?: "") }
+    var argsText by remember { mutableStateOf(editing?.args?.joinToString(" ") ?: "") }
     val headerPairs = remember {
         mutableStateListOf<KvPair>().apply {
             editing?.headers?.forEach { (k, v) -> add(KvPair(k, v)) }
+        }
+    }
+    val envPairs = remember {
+        mutableStateListOf<KvPair>().apply {
+            editing?.env?.forEach { (k, v) -> add(KvPair(k, v)) }
         }
     }
 
@@ -89,19 +100,50 @@ fun McpServerEditSheet(
                 placeholder = "Nombre (ej. Context7)"
             )
 
-            AppTextField(
-                value = url,
-                onValueChange = { url = it },
-                placeholder = "URL del servidor MCP (ej. https://mcp.context7.com/mcp)"
-            )
+            if (stdioAvailable) {
+                TransportSelector(stdio = stdio, onChange = { stdio = it })
+            }
 
-            KeyValueEditor(
-                title = "Headers (opcional — para autenticación)",
-                pairs = headerPairs,
-                keyPlaceholder = "Header (ej. Authorization)",
-                valuePlaceholder = "valor (ej. Bearer xxx)",
-                addLabel = "Agregar header"
-            )
+            if (!stdio) {
+                AppTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    placeholder = "URL del servidor MCP (ej. https://mcp.context7.com/mcp)"
+                )
+
+                KeyValueEditor(
+                    title = "Headers (opcional — para autenticación)",
+                    pairs = headerPairs,
+                    keyPlaceholder = "Header (ej. Authorization)",
+                    valuePlaceholder = "valor (ej. Bearer xxx)",
+                    addLabel = "Agregar header"
+                )
+            } else {
+                AppTextField(
+                    value = command,
+                    onValueChange = { command = it },
+                    placeholder = "Comando (ej. npx)",
+                    monospace = true
+                )
+                AppTextField(
+                    value = argsText,
+                    onValueChange = { argsText = it },
+                    placeholder = "Argumentos (ej. -y @modelcontextprotocol/server-filesystem /tmp)",
+                    monospace = true
+                )
+                Text(
+                    "Los argumentos se separan por espacios (sin soporte de comillas).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                KeyValueEditor(
+                    title = "Variables de entorno (opcional)",
+                    pairs = envPairs,
+                    keyPlaceholder = "Variable (ej. API_KEY)",
+                    valuePlaceholder = "valor",
+                    addLabel = "Agregar variable"
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 SecondaryButton(
@@ -113,17 +155,22 @@ fun McpServerEditSheet(
                     text = "Guardar",
                     onClick = {
                         val trimmedUrl = url.trim()
+                        val trimmedCommand = command.trim()
                         onSave(
                             McpServerConfig(
                                 id = editing?.id ?: "mcp_${newId()}",
-                                name = name.trim().ifBlank { trimmedUrl },
+                                name = name.trim().ifBlank { if (stdio) trimmedCommand else trimmedUrl },
                                 url = trimmedUrl,
                                 headers = headerPairs.toMap(),
-                                enabled = editing?.enabled ?: true
+                                enabled = editing?.enabled ?: true,
+                                transport = if (stdio) McpServerConfig.TRANSPORT_STDIO else McpServerConfig.TRANSPORT_HTTP,
+                                command = trimmedCommand.takeIf { stdio && it.isNotBlank() },
+                                args = if (stdio) argsText.trim().split(Regex("\\s+")).filter { it.isNotBlank() } else emptyList(),
+                                env = if (stdio) envPairs.toMap() else emptyMap()
                             )
                         )
                     },
-                    enabled = url.isNotBlank(),
+                    enabled = if (stdio) command.isNotBlank() else url.isNotBlank(),
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -134,6 +181,40 @@ fun McpServerEditSheet(
 /** Convierte la lista de pares a un Map, descartando los que tengan key en blanco. */
 private fun List<KvPair>.toMap(): Map<String, String> =
     filter { it.key.isNotBlank() }.associate { it.key.trim() to it.value }
+
+/** Selector HTTP | Stdio (solo desktop). */
+@Composable
+private fun TransportSelector(stdio: Boolean, onChange: (Boolean) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+        Text(
+            "Transporte",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+            TransportChip(label = "HTTP", selected = !stdio, onClick = { onChange(false) })
+            TransportChip(label = "Stdio (proceso local)", selected = stdio, onClick = { onChange(true) })
+        }
+    }
+}
+
+@Composable
+private fun TransportChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    val fg = if (selected) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        color = fg,
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.sm))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Spacing.sm, vertical = Spacing.xs)
+    )
+}
 
 @Composable
 private fun KeyValueEditor(
