@@ -8,6 +8,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
+
+/**
+ * Marcador de contexto de corutina que hace que [ToolConfirmationController.requestApproval]
+ * apruebe automáticamente cualquier confirmación (incluso las forzadas por la denylist).
+ *
+ * Se propaga por el árbol de corutinas del turno (incluyendo la ejecución paralela de
+ * tools), así que scopea la auto-aprobación al run que lo instala — típicamente una tarea
+ * automatizada corriendo sin el usuario delante — sin afectar el chat interactivo, que
+ * corre en otra corutina sin este marcador.
+ */
+class AutoApproveConfirmations : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<AutoApproveConfirmations>
+}
 
 /**
  * Coordina solicitudes de aprobación humana entre las tools (capa de datos)
@@ -41,6 +57,8 @@ class ToolConfirmationController(
     private val mutex = Mutex()
 
     suspend fun requestApproval(title: String, detail: String?, diff: String? = null, force: Boolean = false): Boolean {
+        // Run automatizado sin usuario delante: aprueba todo (incluso forzadas).
+        if (coroutineContext[AutoApproveConfirmations] != null) return true
         if (!force && prefs.current().fsYoloMode) return true
         return mutex.withLock {
             val deferred = CompletableDeferred<Boolean>()

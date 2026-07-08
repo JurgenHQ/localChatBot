@@ -18,5 +18,6 @@ data class SettingsExport(
     val fsAllowOutsideWorkspace: Boolean,
     val installedSkills: List<InstalledSkill>,
     val customSkills: List<SkillDefinition>,
-    val mcpServers: List<McpServerConfig>
+    val mcpServers: List<McpServerConfig>,
+    val scheduledTasks: List<ScheduledTask> = emptyList()
 )

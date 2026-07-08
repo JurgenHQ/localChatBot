@@ -8,6 +8,7 @@ import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
+import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.russhwolf.settings.Settings
@@ -29,6 +30,7 @@ class PreferencesRepositoryImpl(
     private val skillsSerializer = ListSerializer(InstalledSkill.serializer())
     private val customSkillsSerializer = ListSerializer(SkillDefinition.serializer())
     private val mcpSerializer = ListSerializer(McpServerConfig.serializer())
+    private val scheduledTasksSerializer = ListSerializer(ScheduledTask.serializer())
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
@@ -134,6 +136,11 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(mcpServers = servers)
     }
 
+    override suspend fun setScheduledTasks(tasks: List<ScheduledTask>) {
+        settings.putString(KEY_SCHEDULED_TASKS, templatesJson.encodeToString(scheduledTasksSerializer, tasks))
+        _state.value = _state.value.copy(scheduledTasks = tasks)
+    }
+
     override suspend fun exportJson(): String {
         val export = SettingsExport(
             connection = _state.value.connection,
@@ -148,7 +155,8 @@ class PreferencesRepositoryImpl(
             fsAllowOutsideWorkspace = _state.value.fsAllowOutsideWorkspace,
             installedSkills = _state.value.installedSkills,
             customSkills = _state.value.customSkills,
-            mcpServers = _state.value.mcpServers
+            mcpServers = _state.value.mcpServers,
+            scheduledTasks = _state.value.scheduledTasks
         )
         return exportFormat.encodeToString(SettingsExport.serializer(), export)
     }
@@ -170,6 +178,7 @@ class PreferencesRepositoryImpl(
             setInstalledSkills(export.installedSkills)
             setCustomSkills(export.customSkills)
             setMcpServers(export.mcpServers)
+            setScheduledTasks(export.scheduledTasks)
         } catch (e: Exception) {
             throw Exception("Error parsing settings JSON: ${e.message}")
         }
@@ -202,7 +211,7 @@ class PreferencesRepositoryImpl(
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
-            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS,
+            KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
             KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
             KEY_GEN_PARAMS
         ).forEach(settings::remove)
@@ -242,6 +251,10 @@ class PreferencesRepositoryImpl(
             mcpServers = runCatching {
                 val raw = settings.getStringOrNull(KEY_MCP_SERVERS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(mcpSerializer, raw)
+            }.getOrDefault(emptyList()),
+            scheduledTasks = runCatching {
+                val raw = settings.getStringOrNull(KEY_SCHEDULED_TASKS) ?: return@runCatching emptyList()
+                templatesJson.decodeFromString(scheduledTasksSerializer, raw)
             }.getOrDefault(emptyList()),
             remoteAccessEnabled = settings.getBoolean(KEY_REMOTE_ENABLED, default.remoteAccessEnabled),
             remoteAccessPort = settings.getInt(KEY_REMOTE_PORT, default.remoteAccessPort),
@@ -338,6 +351,7 @@ class PreferencesRepositoryImpl(
         const val KEY_INSTALLED_SKILLS = "installed_skills"
         const val KEY_CUSTOM_SKILLS = "custom_skills"
         const val KEY_MCP_SERVERS = "mcp_servers"
+        const val KEY_SCHEDULED_TASKS = "scheduled_tasks"
         const val KEY_REMOTE_ENABLED = "remote_access_enabled"
         const val KEY_REMOTE_PORT = "remote_access_port"
         const val KEY_REMOTE_PIN = "remote_access_pin"

@@ -1,8 +1,10 @@
 package com.localchatbot.di
 
+import com.localchatbot.core.automation.AutomationScheduler
 import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.background.createBackgroundExecutor
 import com.localchatbot.core.confirm.ToolConfirmationController
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.debug.NetworkInspector
 import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.core.image.ImageSaver
@@ -303,6 +305,18 @@ class AppContainer {
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
 
+    /**
+     * Programador de tareas automatizadas. Solo se arranca en desktop (necesita la
+     * app abierta y las tools locales/MCP); en móvil se construye pero no corre.
+     */
+    val automationScheduler = AutomationScheduler(
+        prefs = preferencesRepository,
+        chats = chatRepository,
+        createSession = createSession,
+        sendMessage = sendMessage,
+        scope = applicationScope
+    )
+
     /** TTS compartido: lo usa el modo voz (móvil) y el botón "leer" por mensaje (todas las plataformas). */
     val textToSpeech = TextToSpeech()
 
@@ -336,6 +350,14 @@ class AppContainer {
             scope = applicationScope
         )
     )
+
+    init {
+        // Tareas automatizadas: solo en desktop (la app debe estar abierta y las
+        // tools locales/MCP disponibles). En móvil el scheduler queda inerte.
+        if (PlatformCapabilities.isDesktop) {
+            automationScheduler.start()
+        }
+    }
 
     init {
         // Reacciona al toggle/puerto/PIN de acceso remoto.

@@ -31,6 +31,7 @@ interface PreferencesRepository {
     suspend fun setCustomSkills(skills: List<SkillDefinition>)
     suspend fun refreshCustomSkills()
     suspend fun setMcpServers(servers: List<McpServerConfig>)
+    suspend fun setScheduledTasks(tasks: List<com.localchatbot.domain.model.ScheduledTask>)
     suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String)
     suspend fun updateRemoteViewerUrl(value: String)
     suspend fun updateGenerationParams(params: GenerationParams)

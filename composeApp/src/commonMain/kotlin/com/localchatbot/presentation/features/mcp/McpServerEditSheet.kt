@@ -2,6 +2,7 @@ package com.localchatbot.presentation.features.mcp
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
@@ -74,14 +76,17 @@ fun McpServerEditSheet(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.4f))
-            .clickable(onClick = onDismiss)
+            // pointerInput, no clickable: en desktop `clickable` reacciona a
+            // Espacio/Enter (semántica de teclado) y cerraría el sheet al teclear.
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg))
                 .background(MaterialTheme.colorScheme.surface)
-                .clickable(enabled = false, onClick = {})
+                // Consume los taps sobre el sheet para que no lleguen al scrim.
+                .pointerInput(Unit) { detectTapGestures { } }
                 .statusBarsPadding()
                 .imePadding()
                 .verticalScroll(rememberScrollState())

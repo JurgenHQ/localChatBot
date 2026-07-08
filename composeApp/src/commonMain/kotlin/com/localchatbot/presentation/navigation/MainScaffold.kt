@@ -50,6 +50,8 @@ import com.localchatbot.presentation.features.remote.RemoteViewerScreen
 import com.localchatbot.presentation.features.remote.RemoteViewerViewModel
 import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
+import com.localchatbot.presentation.features.tasks.TasksScreen
+import com.localchatbot.presentation.features.tasks.TasksViewModel
 
 @Composable
 fun MainScaffold(container: AppContainer) {
@@ -60,6 +62,7 @@ fun MainScaffold(container: AppContainer) {
     var mcpOpen by rememberSaveable { mutableStateOf(false) }
     var editorOpen by rememberSaveable { mutableStateOf(false) }
     var remoteViewerOpen by rememberSaveable { mutableStateOf(false) }
+    var tasksOpen by rememberSaveable { mutableStateOf(false) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -113,6 +116,12 @@ fun MainScaffold(container: AppContainer) {
     val remoteViewerViewModel = remember {
         RemoteViewerViewModel(preferences = container.preferencesRepository)
     }
+    val tasksViewModel = remember {
+        TasksViewModel(
+            preferences = container.preferencesRepository,
+            scheduler = container.automationScheduler
+        )
+    }
 
     val drawerState by sessionsViewModel.state.collectAsStateWithLifecycle()
     val density = LocalDensity.current
@@ -132,8 +141,8 @@ fun MainScaffold(container: AppContainer) {
                 Row {
                     SessionDrawer(
                         viewModel = sessionsViewModel,
-                        onOpenSettings = { selected = BottomTab.Settings },
                         onNewSession = { selected = BottomTab.Chat },
+                        onOpenTasks = { tasksOpen = true },
                         showScrim = false
                     )
                     Box(
@@ -206,8 +215,8 @@ fun MainScaffold(container: AppContainer) {
         if (!permanentDrawer && drawerState.drawerOpen) {
             SessionDrawer(
                 viewModel = sessionsViewModel,
-                onOpenSettings = { selected = BottomTab.Settings },
-                onNewSession = { selected = BottomTab.Chat }
+                onNewSession = { selected = BottomTab.Chat },
+                onOpenTasks = { tasksOpen = true }
             )
         }
 
@@ -243,6 +252,13 @@ fun MainScaffold(container: AppContainer) {
             RemoteViewerScreen(
                 viewModel = remoteViewerViewModel,
                 onClose = { remoteViewerOpen = false }
+            )
+        }
+
+        if (tasksOpen) {
+            TasksScreen(
+                viewModel = tasksViewModel,
+                onClose = { tasksOpen = false }
             )
         }
 

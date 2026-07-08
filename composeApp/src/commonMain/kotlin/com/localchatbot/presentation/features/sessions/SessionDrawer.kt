@@ -21,7 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.DateRange
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,10 +31,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
@@ -50,8 +52,8 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 @Composable
 fun SessionDrawer(
     viewModel: SessionsViewModel,
-    onOpenSettings: () -> Unit,
     onNewSession: () -> Unit = {},
+    onOpenTasks: (() -> Unit)? = null,
     showScrim: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -69,9 +71,11 @@ fun SessionDrawer(
         },
         onRename = viewModel::renameSession,
         onTogglePin = viewModel::togglePinned,
-        onOpenSettings = {
-            viewModel.closeDrawer()
-            onOpenSettings()
+        onOpenTasks = onOpenTasks?.let {
+            {
+                viewModel.closeDrawer()
+                it()
+            }
         },
         onDismiss = viewModel::closeDrawer,
         showScrim = showScrim,
@@ -88,8 +92,8 @@ fun SessionDrawerContent(
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
     onNew: () -> Unit,
-    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
+    onOpenTasks: (() -> Unit)? = null,
     onRename: (String, String) -> Unit = { _, _ -> },
     onTogglePin: (String) -> Unit = {},
     showScrim: Boolean = true,
@@ -164,29 +168,14 @@ fun SessionDrawerContent(
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onOpenSettings)
-                    .padding(vertical = Spacing.sm),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Spacing.md)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(RoundedCornerShape(Radius.sm))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Outlined.Settings,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Text("Configuración", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground)
+            // Tareas automatizadas: solo desktop (el scheduler necesita la app abierta
+            // y las tools locales/MCP). En móvil no se muestra la entrada.
+            if (onOpenTasks != null && PlatformCapabilities.isDesktop) {
+                DrawerNavRow(
+                    icon = Icons.Outlined.DateRange,
+                    label = "Tareas",
+                    onClick = onOpenTasks
+                )
             }
         }
 
@@ -204,6 +193,38 @@ fun SessionDrawerContent(
     }
 }
 
+@Composable
+private fun DrawerNavRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(Radius.sm))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground)
+    }
+}
+
 @Preview
 @Composable
 private fun SessionDrawerPreview() = PreviewSurface {
@@ -212,7 +233,7 @@ private fun SessionDrawerPreview() = PreviewSurface {
         query = "",
         connectionLabel = "192.168.1.42:1234",
         onQueryChange = {}, onSelect = {}, onDelete = {},
-        onNew = {}, onOpenSettings = {}, onDismiss = {}
+        onNew = {}, onDismiss = {}
     )
 }
 
@@ -224,7 +245,7 @@ private fun SessionDrawerWithSearchPreview() = PreviewSurface {
         query = "auth",
         connectionLabel = "192.168.1.42:1234",
         onQueryChange = {}, onSelect = {}, onDelete = {},
-        onNew = {}, onOpenSettings = {}, onDismiss = {}
+        onNew = {}, onDismiss = {}
     )
 }
 
@@ -236,7 +257,7 @@ private fun SessionDrawerEmptyPreview() = PreviewSurface {
         query = "",
         connectionLabel = "192.168.1.42:1234",
         onQueryChange = {}, onSelect = {}, onDelete = {},
-        onNew = {}, onOpenSettings = {}, onDismiss = {}
+        onNew = {}, onDismiss = {}
     )
 }
 
@@ -248,6 +269,6 @@ private fun SessionDrawerDarkPreview() = PreviewSurface(themeMode = ThemeMode.Da
         query = "",
         connectionLabel = "192.168.1.42:1234",
         onQueryChange = {}, onSelect = {}, onDelete = {},
-        onNew = {}, onOpenSettings = {}, onDismiss = {}
+        onNew = {}, onDismiss = {}
     )
 }

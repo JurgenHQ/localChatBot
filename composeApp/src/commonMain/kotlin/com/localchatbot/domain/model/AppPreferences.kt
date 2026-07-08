@@ -59,6 +59,11 @@ data class AppPreferences(
     val customSkills: List<SkillDefinition> = emptyList(),
     val mcpServers: List<McpServerConfig> = emptyList(),
     /**
+     * Tareas automatizadas que el agente dispara solo (a una hora o cada cierto
+     * intervalo) mientras el desktop esté abierto. Solo desktop.
+     */
+    val scheduledTasks: List<ScheduledTask> = emptyList(),
+    /**
      * Si está activo, el desktop levanta un servidor HTTP/WebSocket en la LAN/VPN
      * para revisar y aprobar cambios desde otro dispositivo. Apagado por defecto.
      */
@@ -110,6 +115,7 @@ data class AppPreferences(
             installedSkills = emptyList(),
             customSkills = emptyList(),
             mcpServers = emptyList(),
+            scheduledTasks = emptyList(),
             remoteAccessEnabled = false,
             remoteAccessPort = 7676,
             remoteAccessPin = "",
