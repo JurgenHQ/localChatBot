@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 actual fun createStdioMcpTransport(
@@ -73,6 +74,7 @@ class StdioMcpTransport(
         }
 
         val proc = ProcessBuilder(*shellArgs)
+            .directory(mcpWorkingDir())
             .redirectErrorStream(false)
             .also { it.environment().putAll(env) }
             .start()
@@ -203,6 +205,19 @@ class StdioMcpTransport(
             }
             onProcessDead(proc)
         }
+    }
+
+    /**
+     * Directorio de trabajo del proceso MCP. Las apps GUI (lanzadas desde Finder/Dock)
+     * heredan `cwd = /` (no escribible); sin fijarlo, los servidores que escriben
+     * archivos relativos (p. ej. Playwright y su `.playwright-mcp/`) fallan con ENOENT.
+     * Usa un directorio propio dentro de `~/.localchatbot`; cae a `home` si no se crea.
+     */
+    private fun mcpWorkingDir(): File {
+        val home = System.getProperty("user.home")
+        val dir = File(home, ".localchatbot/mcp")
+        runCatching { dir.mkdirs() }
+        return if (dir.isDirectory) dir else File(home)
     }
 
     /** Quote naive para la shell: envuelve en comillas simples escapando las internas. */

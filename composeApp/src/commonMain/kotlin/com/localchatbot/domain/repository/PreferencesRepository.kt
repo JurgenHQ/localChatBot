@@ -27,6 +27,10 @@ interface PreferencesRepository {
     suspend fun updateFsAllowOutsideWorkspace(value: Boolean)
     suspend fun updateFsPreviewEdits(value: Boolean)
     suspend fun updateAgentMode(value: AgentMode)
+    /** Fija el modo del agente para una sesión concreta (override de [updateAgentMode]). */
+    suspend fun updateSessionAgentMode(sessionId: String, value: AgentMode)
+    /** Quita todos los overrides de modo por sesión (usado por clearAll). */
+    suspend fun clearSessionAgentModes()
     suspend fun setInstalledSkills(skills: List<InstalledSkill>)
     suspend fun setCustomSkills(skills: List<SkillDefinition>)
     suspend fun refreshCustomSkills()
@@ -34,6 +38,7 @@ interface PreferencesRepository {
     suspend fun setScheduledTasks(tasks: List<com.localchatbot.domain.model.ScheduledTask>)
     suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String)
     suspend fun updateRemoteViewerUrl(value: String)
+    suspend fun updateDesktopNotifications(value: Boolean)
     suspend fun updateGenerationParams(params: GenerationParams)
     suspend fun reset()
     suspend fun exportJson(): String

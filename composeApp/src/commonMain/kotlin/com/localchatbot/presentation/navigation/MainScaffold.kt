@@ -71,6 +71,7 @@ fun MainScaffold(container: AppContainer) {
         ChatViewModel(
             chatRepository = container.chatRepository,
             preferences = container.preferencesRepository,
+            projectRepository = container.projectRepository,
             activeSessionStore = container.activeSessionStore,
             streamingStateStore = container.streamingStateStore,
             pendingUserPromptStore = container.pendingUserPromptStore,
@@ -81,6 +82,7 @@ fun MainScaffold(container: AppContainer) {
             modelRepository = container.modelRepository,
             imageSaver = container.imageSaver,
             textToSpeech = container.textToSpeech,
+            systemNotifier = container.systemNotifier,
             checkpointStore = container.checkpointStore
         )
     }
@@ -90,6 +92,7 @@ fun MainScaffold(container: AppContainer) {
             preferences = container.preferencesRepository,
             activeSessionStore = container.activeSessionStore,
             createSessionUseCase = container.createSession,
+            projectRepository = container.projectRepository,
             checkpointStore = container.checkpointStore
         )
     }
@@ -98,7 +101,8 @@ fun MainScaffold(container: AppContainer) {
             preferences = container.preferencesRepository,
             chats = container.chatRepository,
             checkConnection = container.checkConnection,
-            remoteAccessServer = container.remoteAccessServer
+            remoteAccessServer = container.remoteAccessServer,
+            projects = container.projectRepository
         )
     }
     val skillsViewModel = remember {

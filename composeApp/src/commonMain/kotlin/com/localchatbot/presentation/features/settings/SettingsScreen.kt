@@ -94,7 +94,8 @@ fun SettingsScreen(
             remoteClients = state.remoteClients,
             localIps = state.localIps,
             onToggleRemoteAccess = viewModel::toggleRemoteAccess,
-            onRegenerateRemotePin = viewModel::regenerateRemotePin
+            onRegenerateRemotePin = viewModel::regenerateRemotePin,
+            onToggleDesktopNotifications = viewModel::toggleDesktopNotifications
         )
 
         state.openEditor?.let { editor ->
@@ -147,6 +148,7 @@ fun SettingsContent(
     localIps: List<String> = emptyList(),
     onToggleRemoteAccess: (Boolean) -> Unit = {},
     onRegenerateRemotePin: () -> Unit = {},
+    onToggleDesktopNotifications: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -263,6 +265,29 @@ fun SettingsContent(
                         maxChars = 18
                     )
                 }
+            )
+            if (PlatformCapabilities.isDesktop) {
+                Divider()
+                SettingsRow(
+                    title = "Notificaciones",
+                    onClick = {
+                        onToggleDesktopNotifications(!preferences.desktopNotificationsEnabled)
+                    },
+                    trailing = {
+                        Switch(
+                            checked = preferences.desktopNotificationsEnabled,
+                            onCheckedChange = onToggleDesktopNotifications
+                        )
+                    }
+                )
+            }
+        }
+        if (PlatformCapabilities.isDesktop) {
+            Text(
+                "Muestra un aviso del sistema y rebota el icono del dock al terminar " +
+                    "una respuesta o una tarea programada.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Text(

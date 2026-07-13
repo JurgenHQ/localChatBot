@@ -6,6 +6,7 @@ import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -97,6 +99,9 @@ private class DesktopRemoteAccessServer(
                         m.role == Role.User ||
                         (m.role == Role.Assistant && m.content.isNotBlank()) ||
                         (m.role == Role.Assistant && !m.toolCalls.isNullOrEmpty()) ||
+                        // Imagen generada: la burbuja del asistente puede tener content
+                        // vacío pero llevar imageDataUrl — hay que mostrarla igual.
+                        (m.role == Role.Assistant && m.imageDataUrl != null) ||
                         m.role == Role.Tool
                     }
                     ?.forEach { m ->
@@ -161,6 +166,29 @@ private class DesktopRemoteAccessServer(
                             HttpStatusCode.Unauthorized
                         )
                     }
+                }
+                // Sirve la imagen (usuario o generada) de un mensaje bajo demanda. No va
+                // en el snapshot del WebSocket para no reenviar el base64 en cada token.
+                get("/image") {
+                    val token = call.request.queryParameters["token"]
+                    if (token == null || token !in tokens) {
+                        call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
+                        return@get
+                    }
+                    val msgId = call.request.queryParameters["msg"]
+                    val dataUrl = msgId?.let { id ->
+                        deps.chats.sessions.first()
+                            .firstNotNullOfOrNull { s -> s.messages.firstOrNull { it.id == id }?.imageDataUrl }
+                    }
+                    val decoded = dataUrl?.let { decodeDataUrl(it) }
+                    if (decoded == null) {
+                        call.respondText("not found", status = HttpStatusCode.NotFound)
+                        return@get
+                    }
+                    // La imagen de un mensaje es inmutable → cachear evita re-descargas y
+                    // parpadeo cuando la lista se reconstruye en cada frame del streaming.
+                    call.response.headers.append("Cache-Control", "private, max-age=86400, immutable")
+                    call.respondBytes(decoded.second, ContentType.parse(decoded.first))
                 }
                 webSocket("/ws") {
                     val token = call.request.queryParameters["token"]
@@ -245,6 +273,24 @@ private class DesktopRemoteAccessServer(
                 activeStreamJob = null
             }
         }
+    }
+
+    /**
+     * Parsea un data URL (`data:<mime>;base64,<datos>`) a (mime, bytes). Soporta
+     * base64 y, por robustez, payload URL-encoded. Devuelve null si no es válido.
+     */
+    private fun decodeDataUrl(dataUrl: String): Pair<String, ByteArray>? {
+        if (!dataUrl.startsWith("data:")) return null
+        val comma = dataUrl.indexOf(',')
+        if (comma < 0) return null
+        val meta = dataUrl.substring(5, comma) // p.ej. "image/jpeg;base64"
+        val mime = meta.substringBefore(';').ifBlank { "image/png" }
+        val payload = dataUrl.substring(comma + 1)
+        val bytes = runCatching {
+            if (meta.contains("base64")) java.util.Base64.getDecoder().decode(payload)
+            else java.net.URLDecoder.decode(payload, "UTF-8").toByteArray()
+        }.getOrNull() ?: return null
+        return mime to bytes
     }
 
     /** Carga la SPA estática del cliente remoto desde resources. */

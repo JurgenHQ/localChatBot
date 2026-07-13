@@ -22,8 +22,13 @@
   #app { display: none; height: 100dvh; grid-template-rows: auto 1fr auto; }
   header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #1c2230; flex-shrink: 0; }
   header select { flex: 1; background: #1a1f29; color: #e6e6e6; border: 1px solid #2b3240; border-radius: 10px; padding: 8px; }
-  #messages { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-  .msg { padding: 10px 12px; border-radius: 14px; max-width: 88%; word-wrap: break-word; }
+  /* touch-action: pan-y → un arrastre vertical sobre una burbuja siempre scrollea
+     la lista en vez de iniciar selección de texto (causa de "solo scrollea en el
+     filo"). overscroll-behavior contain + momentum para un scroll fluido en móvil. */
+  #messages { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .msg { padding: 10px 12px; border-radius: 14px; max-width: 88%; word-wrap: break-word; touch-action: pan-y; }
+  .msg * { touch-action: pan-y; }
+  .msg img.att { display: block; max-width: 100%; height: auto; border-radius: 10px; margin-top: 8px; }
   .user { align-self: flex-end; background: #3b82f6; color: #fff; white-space: pre-wrap; }
   .assistant { align-self: flex-start; background: #1a1f29; }
   .tool-call { align-self: flex-start; background: #161b22; border: 1px solid #2b3240; font-size: 12px; max-width: 92%; }
@@ -321,10 +326,20 @@
       const d = document.createElement('div');
       if (m.role === 'User') {
         d.className = 'msg user';
-        d.innerHTML = `<div class="role">Tú${m.hasImage ? ' 🖼️' : ''}</div>${esc(m.content)}`;
+        d.innerHTML = `<div class="role">Tú</div>${esc(m.content)}`;
       } else {
         d.className = 'msg assistant';
-        d.innerHTML = `<div class="role">Asistente${m.hasImage ? ' 🖼️' : ''}</div><div class="md">${renderMd(m.content)}</div>`;
+        d.innerHTML = `<div class="role">Asistente</div><div class="md">${renderMd(m.content)}</div>`;
+      }
+      // Imagen adjunta/generada: se pide bajo demanda al endpoint /image (cacheado).
+      if (m.hasImage) {
+        const img = document.createElement('img');
+        img.className = 'att';
+        img.alt = 'imagen';
+        img.loading = 'lazy';
+        img.src = `/image?msg=${encodeURIComponent(m.id)}&token=${encodeURIComponent(token)}`;
+        img.onerror = () => { img.remove(); };
+        d.appendChild(img);
       }
       box.appendChild(d);
     });

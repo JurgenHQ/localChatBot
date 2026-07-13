@@ -55,6 +55,13 @@ data class AppPreferences(
      * (solo lectura — las tools que mutan el proyecto se desactivan). Build por defecto.
      */
     val agentMode: AgentMode = AgentMode.Build,
+    /**
+     * Override de [agentMode] por sesión (`sessionId -> AgentMode`). Cuando la sesión activa
+     * tiene una entrada aquí, ese modo manda sobre [agentMode] (que actúa como valor por
+     * defecto para sesiones sin override). Desktop only. Entradas de sesiones borradas son
+     * inocuas (nunca se consultan).
+     */
+    val sessionAgentModes: Map<String, AgentMode> = emptyMap(),
     val installedSkills: List<InstalledSkill> = emptyList(),
     val customSkills: List<SkillDefinition> = emptyList(),
     val mcpServers: List<McpServerConfig> = emptyList(),
@@ -78,6 +85,12 @@ data class AppPreferences(
      * externo. Se recuerda entre sesiones.
      */
     val remoteViewerUrl: String = "",
+    /**
+     * Si está activo (solo desktop), el SO muestra una notificación nativa y el
+     * icono del dock/taskbar rebota cuando termina una respuesta de chat o una
+     * tarea programada. Activado por defecto.
+     */
+    val desktopNotificationsEnabled: Boolean = true,
     /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
     val generationParams: GenerationParams = GenerationParams()
 ) {
@@ -120,6 +133,7 @@ data class AppPreferences(
             remoteAccessPort = 7676,
             remoteAccessPin = "",
             remoteViewerUrl = "",
+            desktopNotificationsEnabled = true,
             generationParams = GenerationParams()
         )
     }

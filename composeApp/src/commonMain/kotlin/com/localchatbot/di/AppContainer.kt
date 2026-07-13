@@ -5,6 +5,7 @@ import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.background.createBackgroundExecutor
 import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.platform.PlatformCapabilities
+import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.core.debug.NetworkInspector
 import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.core.image.ImageSaver
@@ -16,6 +17,7 @@ import com.localchatbot.core.remote.RemoteAccessDeps
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.createRemoteAccessServer
 import com.localchatbot.core.state.ActiveSessionStore
+import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.storage.SettingsFactory
@@ -41,10 +43,13 @@ import com.localchatbot.data.remote.VideoGenApi
 import com.localchatbot.data.repository.ChatRepositoryImpl
 import com.localchatbot.data.repository.ModelRepositoryImpl
 import com.localchatbot.data.repository.PreferencesRepositoryImpl
+import com.localchatbot.data.repository.ProjectRepositoryImpl
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.domain.repository.ProjectRepository
 import com.localchatbot.domain.tools.AnimateTool
+import com.localchatbot.domain.tools.FsToolUtil
 import com.localchatbot.domain.tools.AskUserTool
 import com.localchatbot.domain.tools.CartoonTool
 import com.localchatbot.domain.tools.CartoonVideoTool
@@ -138,11 +143,24 @@ class AppContainer {
     val memoryStore: MemoryStore = createMemoryStore()
     val checkpointStore: CheckpointStore = CheckpointStore()
     val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
+    val projectRepository: ProjectRepository = ProjectRepositoryImpl(settings, json)
     val chatRepository: ChatRepository = ChatRepositoryImpl(database, json)
     val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi)
 
     val activeSessionStore = ActiveSessionStore()
     val streamingStateStore = StreamingStateStore()
+
+    /**
+     * Workspace efectivo de la sesión activa (carpeta del proyecto asignado, o el global).
+     * Lo consumen las tools fs (vía [FsToolUtil.workspaceStore], enlazado abajo) y el bloque
+     * `<workspace>` del system prompt en [SendMessageUseCase].
+     */
+    val activeWorkspaceStore = ActiveWorkspaceStore(
+        activeSessionStore = activeSessionStore,
+        projectRepository = projectRepository,
+        preferencesRepository = preferencesRepository,
+        scope = applicationScope
+    ).also { FsToolUtil.workspaceStore = it }
 
     /**
      * Preguntas pendientes que el modelo lanza al usuario vía `ask_user`.
@@ -300,7 +318,8 @@ class AppContainer {
         memoryStore = memoryStore,
         activeSessionStore = activeSessionStore,
         appLifecycle = appLifecycle,
-        checkpointStore = checkpointStore
+        checkpointStore = checkpointStore,
+        activeWorkspaceStore = activeWorkspaceStore
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)
@@ -309,12 +328,17 @@ class AppContainer {
      * Programador de tareas automatizadas. Solo se arranca en desktop (necesita la
      * app abierta y las tools locales/MCP); en móvil se construye pero no corre.
      */
+    /** Notificaciones nativas + rebote del dock (real solo en desktop). */
+    val systemNotifier = SystemNotifier()
+
     val automationScheduler = AutomationScheduler(
         prefs = preferencesRepository,
         chats = chatRepository,
+        projects = projectRepository,
         createSession = createSession,
         sendMessage = sendMessage,
-        scope = applicationScope
+        scope = applicationScope,
+        notifier = systemNotifier
     )
 
     /** TTS compartido: lo usa el modo voz (móvil) y el botón "leer" por mensaje (todas las plataformas). */

@@ -44,3 +44,7 @@ Pods/
 
 # Notas de sesión de trabajo
 working-session.md
+
+# Claves privadas de firma de código (nunca commitear)
+*.pfx
+*.p12

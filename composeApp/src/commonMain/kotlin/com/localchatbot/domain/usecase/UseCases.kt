@@ -100,7 +100,13 @@ class SendMessageUseCase(
      * que una tool de mutación lo toque, para poder "revertir este turno" desde
      * la UI. Real solo en desktop.
      */
-    private val checkpointStore: com.localchatbot.core.storage.CheckpointStore? = null
+    private val checkpointStore: com.localchatbot.core.storage.CheckpointStore? = null,
+    /**
+     * Workspace efectivo de la sesión activa (carpeta del proyecto o el global). Se usa para
+     * resolver rutas del checkpoint y construir el bloque `<workspace>`. Si es null se cae al
+     * `fsWorkspaceDir` global de preferences (comportamiento previo a proyectos). Real solo en desktop.
+     */
+    private val activeWorkspaceStore: com.localchatbot.core.state.ActiveWorkspaceStore? = null
 ) {
     /**
      * Persiste el mensaje del usuario y consume el stream. Si el modelo emite tool_calls,
@@ -467,7 +473,7 @@ class SendMessageUseCase(
                                 if (mutatedPath != null) {
                                     val current = prefs.current()
                                     val resolved = fsAgent.resolveSafePath(
-                                        current.fsWorkspaceDir,
+                                        activeWorkspaceStore?.current() ?: current.fsWorkspaceDir,
                                         mutatedPath,
                                         current.fsAllowOutsideWorkspace
                                     )
@@ -598,7 +604,7 @@ class SendMessageUseCase(
             // y se filtraría a una conversación posterior. Si no hay mensaje final, caemos al
             // último assistant creado (típicamente el "anunciador" de tool_calls), que el
             // MessageBubble ya muestra cuando tiene imageDataUrl aunque content esté vacío.
-            val producedImage = toolRegistry.allTools()
+            val producedImage = (toolRegistry.allTools() + scriptTools + mcpTools)
                 .firstNotNullOfOrNull { it.consumeProducedImage() }
             val targetId = lastAssistantId ?: latestAssistantId
             if (producedImage != null && targetId != null) {
@@ -708,7 +714,8 @@ class SendMessageUseCase(
         val model = cfg.connection.model
         val allSkills = SkillCatalog.allFor(cfg.customSkills)
         val skillsIndex = buildSkillsIndex(cfg.installedSkills.filter { it.enabled }, allSkills)
-        val toolPrompt = if (hasTools) buildAgentPrompt(yolo, skillsIndex, cfg.agentMode) else ""
+        val agentMode = activeWorkspaceStore?.currentAgentMode() ?: cfg.agentMode
+        val toolPrompt = if (hasTools) buildAgentPrompt(yolo, skillsIndex, agentMode) else ""
         val suffix = buildModelSuffix(model)
         // Orden pensado para el KV-cache de llama.cpp/LM Studio: las partes ESTABLES
         // entre turnos (system del usuario, prompt de agente, suffix de modelo) van
@@ -891,7 +898,7 @@ class SendMessageUseCase(
     private suspend fun buildWorkspaceContext(): String? {
         val agent = filesystemAgent ?: return null
         if (!PlatformCapabilities.isDesktop) return null
-        val ws = prefs.current().fsWorkspaceDir ?: return null
+        val ws = (activeWorkspaceStore?.current() ?: prefs.current().fsWorkspaceDir) ?: return null
 
         // Árbol raíz (no recursivo): barato y suficiente para que el modelo sepa qué
         // hay sin tener que llamar `list_directory` antes de cada tarea.
@@ -1126,6 +1133,11 @@ class SendMessageUseCase(
             skillsIndex: String = "",
             agentMode: com.localchatbot.domain.model.AgentMode = com.localchatbot.domain.model.AgentMode.Build
         ): String {
+            // En móvil no existen las tools de filesystem/shell/run_command, ni el bloque
+            // workspace, ni memoria/checkpoints/plan-mode. Enviar toda esa guía desperdicia
+            // tokens; devolvemos un prompt reducido con solo lo que sí aplica en móvil.
+            if (!PlatformCapabilities.isDesktop) return buildMobileAgentPrompt(skillsIndex)
+
             val planBlock = if (agentMode == com.localchatbot.domain.model.AgentMode.Plan) {
                 "=== PLAN MODE (read-only) ===\n" +
                     "You are in PLAN mode: investigate and produce a concrete plan, but DO NOT " +
@@ -1218,6 +1230,42 @@ class SendMessageUseCase(
                 "\n\nAlways answer in the same language the user used." +
                 (if (skillsIndex.isNotBlank()) "\n\n$skillsIndex" else "")
         }
+
+        /**
+         * Prompt de agente reducido para móvil: solo cubre las tools que existen en
+         * móvil (search_web, generate_image, render_diagram, manage_todos, ask_user y
+         * tools MCP HTTP). Omite todo lo de filesystem/shell/run_command, workspace,
+         * plan-mode y memoria — inexistente en móvil — para no inflar el system prompt.
+         */
+        fun buildMobileAgentPrompt(skillsIndex: String = ""): String =
+            "You have a few function tools. Prefer using them over asking the user to do " +
+                "something a tool can do.\n\n" +
+                "=== CRITICAL RULE: HOW TO ASK THE USER SOMETHING ===\n" +
+                "Whenever you need input from the user — a decision, a choice, missing " +
+                "information, clarification — you MUST call the `ask_user` tool. NEVER write a " +
+                "question as plain text: it does NOT pause your turn, so the user won't answer " +
+                "and you'll be stuck. Use `options` for choices and set `recommended` to your " +
+                "best default.\n" +
+                "=====================================================\n\n" +
+                "When to reach for each tool:\n" +
+                "• News, recent events, prices, current facts, or anything that may have changed " +
+                "since training → `search_web`.\n" +
+                "• A diagram / flowchart / mind map / sequence/class/ER diagram → `render_diagram` " +
+                "with Mermaid syntax (not `generate_image`).\n" +
+                "• An artistic / photorealistic image → `generate_image` with a detailed English " +
+                "SDXL prompt.\n" +
+                "• You need a decision or missing information no tool can get → `ask_user` (see " +
+                "CRITICAL RULE above).\n\n" +
+                "Working agreement:\n" +
+                "1. Never fabricate tool results — if you didn't call a tool, don't claim you did. " +
+                "When a tool fails, quote its `error` field in the user's language.\n" +
+                "2. After a tool result, summarize briefly in the user's language. Don't paste " +
+                "base64 image data into your reply.\n" +
+                "3. For a complex multi-step task, plan it first with `manage_todos` operation=add " +
+                "(ideally ONE call passing all steps in `texts`), then complete each step with " +
+                "operation=complete as it finishes.\n\n" +
+                "Always answer in the same language the user used." +
+                (if (skillsIndex.isNotBlank()) "\n\n$skillsIndex" else "")
     }
 }
 

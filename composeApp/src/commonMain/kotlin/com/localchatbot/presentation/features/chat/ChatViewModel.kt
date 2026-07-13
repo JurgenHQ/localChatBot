@@ -10,6 +10,7 @@ import com.localchatbot.core.state.PendingUserPrompt
 import com.localchatbot.core.state.PendingUserPromptStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.storage.CheckpointStore
+import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.core.voice.TextToSpeech
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
@@ -19,6 +20,7 @@ import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.domain.repository.ProjectRepository
 import com.localchatbot.domain.usecase.CreateSessionUseCase
 import com.localchatbot.domain.usecase.SendMessageUseCase
 import kotlinx.coroutines.CoroutineScope
@@ -79,6 +81,7 @@ data class ChatUiState(
 class ChatViewModel(
     private val chatRepository: ChatRepository,
     private val preferences: PreferencesRepository,
+    private val projectRepository: ProjectRepository,
     private val activeSessionStore: ActiveSessionStore,
     private val streamingStateStore: StreamingStateStore,
     private val pendingUserPromptStore: PendingUserPromptStore,
@@ -89,6 +92,7 @@ class ChatViewModel(
     private val modelRepository: ModelRepository,
     private val imageSaver: ImageSaver,
     private val textToSpeech: TextToSpeech,
+    private val systemNotifier: SystemNotifier,
     private val checkpointStore: CheckpointStore? = null
 ) : ViewModel() {
 
@@ -202,8 +206,9 @@ class ChatViewModel(
         combine(
             chatRepository.sessions,
             activeSessionStore.activeSessionId,
-            preferences.preferences
-        ) { sessions, activeId, prefs -> Triple(sessions, activeId, prefs) },
+            preferences.preferences,
+            projectRepository.state
+        ) { sessions, activeId, prefs, projectState -> SessionData(sessions, activeId, prefs, projectState) },
         combine(
             streamingStateStore.streaming,
             streamingStateStore.activity,
@@ -211,10 +216,17 @@ class ChatViewModel(
         ) { streaming, activity, logs -> Triple(streaming, activity, logs) },
         _local,
         combine(_tokensMax, _modelLoaded) { tokensMax, modelLoaded -> tokensMax to modelLoaded }
-    ) { sessionTriple, streamTriple, local, tokensState ->
+    ) { sessionData, streamTriple, local, tokensState ->
         val (tokensMax, modelLoaded) = tokensState
-        val (sessions, activeId, prefs) = sessionTriple
+        val (sessions, activeId, prefs, projectState) = sessionData
         val (streamingIds, activityMap, toolCallLogs) = streamTriple
+        // Workspace y modo EFECTIVOS de la sesión activa (carpeta del proyecto o global;
+        // override de modo por sesión o el global). Así los chips reflejan la sesión actual.
+        val effectiveWorkspace = activeId
+            ?.let { projectState.assignments[it] }
+            ?.let { pid -> projectState.projects.firstOrNull { it.id == pid } }
+            ?.workspaceDir ?: prefs.fsWorkspaceDir
+        val effectiveAgentMode = activeId?.let { prefs.sessionAgentModes[it] } ?: prefs.agentMode
         val active = sessions.firstOrNull { it.id == activeId }
         // Tokens de contexto, lo más realista posible:
         // - Si hay una respuesta del modelo con `contextTokens` reales (prompt_tokens de
@@ -242,11 +254,11 @@ class ChatViewModel(
             tokensUsed = tokensUsed,
             tokensMax = tokensMax,
             promptTemplates = prefs.promptTemplates,
-            fsWorkspaceDir = prefs.fsWorkspaceDir,
+            fsWorkspaceDir = effectiveWorkspace,
             fsYoloMode = prefs.fsYoloMode,
             fsAllowOutsideWorkspace = prefs.fsAllowOutsideWorkspace,
             fsPreviewEdits = prefs.fsPreviewEdits,
-            planMode = prefs.agentMode == com.localchatbot.domain.model.AgentMode.Plan,
+            planMode = effectiveAgentMode == com.localchatbot.domain.model.AgentMode.Plan,
             pendingSkill = local.pendingSkill,
             attachedTextFiles = local.attachedTextFiles,
             installedEnabledSkills = installedEnabled,
@@ -277,7 +289,11 @@ class ChatViewModel(
         // Auto-seleccionar la primera sesión si no hay activa.
         viewModelScope.launch {
             combine(chatRepository.sessions, activeSessionStore.activeSessionId) { list, active ->
-                if (active == null) list.firstOrNull()?.id else active
+                // Validar que la sesión activa siga existiendo: si fue borrada (o el
+                // auto-select la fijó desde una lista aún no propagada), caer a la
+                // primera disponible, o a null si no quedan → pantalla inicial.
+                if (active != null && list.any { it.id == active }) active
+                else list.firstOrNull()?.id
             }.collect { id ->
                 if (id != activeSessionStore.activeSessionId.value) {
                     activeSessionStore.set(id)
@@ -345,6 +361,20 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Notificación de sistema (solo desktop) al terminar un turno de chat: éxito o
+     * fallo. Se omite si el usuario canceló el stream (no es un "final" real) o si
+     * desactivó las notificaciones en Ajustes.
+     */
+    private suspend fun notifyChatFinished(sessionId: String, error: Throwable?) {
+        if (error is kotlinx.coroutines.CancellationException) return
+        if (!preferences.current().desktopNotificationsEnabled) return
+        val title = chatRepository.getSession(sessionId)?.title
+            ?.takeIf { it.isNotBlank() } ?: "LocalChatBot"
+        val body = if (error == null) "Respuesta lista" else "La respuesta no se pudo completar"
+        systemNotifier.notify(title, body)
+    }
+
     @OptIn(ExperimentalEncodingApi::class)
     fun send() {
         val current = _local.value
@@ -390,7 +420,11 @@ class ChatViewModel(
         // El stream se lanza en applicationScope: sobrevive a la destrucción de este VM.
         // Además pedimos al SO mantener el proceso vivo mientras dure el stream.
         streamJob = applicationScope.launch {
-            val sessionId = activeId ?: createSessionUseCase().id.also(activeSessionStore::set)
+            // Si la sesión activa fue borrada mientras estábamos en ella, activeId apunta
+            // a una sesión inexistente → crear una nueva en vez de fallar con
+            // "session not found". Cubre también la carrera del auto-select tras borrar.
+            val sessionId = activeId?.takeIf { chatRepository.getSession(it) != null }
+                ?: createSessionUseCase().id.also(activeSessionStore::set)
             // Esta respuesta cierra cualquier pregunta `ask_user` pendiente de la sesión.
             pendingUserPromptStore.clear(sessionId)
             streamingStateStore.start(sessionId)
@@ -406,6 +440,7 @@ class ChatViewModel(
                 result.exceptionOrNull()?.let { e ->
                     _local.update { it.copy(errorMessage = friendlyStreamErrorMessage(e)) }
                 }
+                notifyChatFinished(sessionId, result.exceptionOrNull())
             } finally {
                 streamingStateStore.stop(sessionId)
                 backgroundExecutor.stop()
@@ -471,6 +506,7 @@ class ChatViewModel(
                 result.exceptionOrNull()?.let { e ->
                     _local.update { it.copy(errorMessage = friendlyStreamErrorMessage(e)) }
                 }
+                notifyChatFinished(activeId, result.exceptionOrNull())
             } finally {
                 streamingStateStore.stop(activeId)
                 backgroundExecutor.stop()
@@ -515,9 +551,21 @@ class ChatViewModel(
         applicationScope.launch { preferences.setPromptTemplates(list) }
     }
 
-    /** Cambia el workspace para las fs tools desde la barra del chat. */
+    /**
+     * Cambia el workspace desde la barra del chat. Si la sesión activa pertenece a un
+     * proyecto, actualiza la carpeta de ESE proyecto (coherente con lo que muestra el chip);
+     * si no, cambia el workspace global. Limpiar (value null) solo aplica al global.
+     */
     fun updateFsWorkspaceDir(value: String?) {
-        applicationScope.launch { preferences.updateFsWorkspaceDir(value) }
+        applicationScope.launch {
+            val activeId = activeSessionStore.activeSessionId.value
+            val projectId = activeId?.let { projectRepository.current().assignments[it] }
+            if (projectId != null && value != null) {
+                projectRepository.updateWorkspace(projectId, value)
+            } else {
+                preferences.updateFsWorkspaceDir(value)
+            }
+        }
     }
 
     /** Toggle del modo YOLO desde la barra del chat. */
@@ -535,16 +583,22 @@ class ChatViewModel(
         }
     }
 
-    /** Alterna entre modo Plan (solo lectura) y Build (puede escribir). */
+    /**
+     * Alterna entre modo Plan (solo lectura) y Build (puede escribir) para la sesión activa.
+     * El modo se guarda como override por sesión; si no hay sesión activa, cambia el global.
+     */
     fun toggleAgentMode() {
         applicationScope.launch {
-            val current = preferences.current().agentMode
+            val activeId = activeSessionStore.activeSessionId.value
+            val prefs = preferences.current()
+            val current = activeId?.let { prefs.sessionAgentModes[it] } ?: prefs.agentMode
             val next = if (current == com.localchatbot.domain.model.AgentMode.Plan) {
                 com.localchatbot.domain.model.AgentMode.Build
             } else {
                 com.localchatbot.domain.model.AgentMode.Plan
             }
-            preferences.updateAgentMode(next)
+            if (activeId != null) preferences.updateSessionAgentMode(activeId, next)
+            else preferences.updateAgentMode(next)
         }
     }
 
@@ -572,6 +626,14 @@ class ChatViewModel(
     }
 
     fun dismissError() = _local.update { it.copy(errorMessage = null) }
+
+    /** Snapshot combinado de sesión activa + preferencias + proyectos para construir el estado. */
+    private data class SessionData(
+        val sessions: List<ChatSession>,
+        val activeId: String?,
+        val prefs: com.localchatbot.domain.model.AppPreferences,
+        val projectState: com.localchatbot.domain.model.ProjectState
+    )
 
     private data class LocalState(
         val draft: String = "",

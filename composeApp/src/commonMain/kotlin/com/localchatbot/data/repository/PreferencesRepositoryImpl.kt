@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import com.localchatbot.domain.model.SettingsExport
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 
 class PreferencesRepositoryImpl(
     private val settings: Settings,
@@ -31,6 +33,7 @@ class PreferencesRepositoryImpl(
     private val customSkillsSerializer = ListSerializer(SkillDefinition.serializer())
     private val mcpSerializer = ListSerializer(McpServerConfig.serializer())
     private val scheduledTasksSerializer = ListSerializer(ScheduledTask.serializer())
+    private val sessionAgentModesSerializer = MapSerializer(String.serializer(), String.serializer())
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
@@ -109,6 +112,24 @@ class PreferencesRepositoryImpl(
     override suspend fun updateAgentMode(value: com.localchatbot.domain.model.AgentMode) {
         settings.putString(KEY_AGENT_MODE, value.name)
         _state.value = _state.value.copy(agentMode = value)
+    }
+
+    override suspend fun updateSessionAgentMode(sessionId: String, value: com.localchatbot.domain.model.AgentMode) {
+        val next = _state.value.sessionAgentModes + (sessionId to value)
+        persistSessionAgentModes(next)
+        _state.value = _state.value.copy(sessionAgentModes = next)
+    }
+
+    override suspend fun clearSessionAgentModes() {
+        persistSessionAgentModes(emptyMap())
+        _state.value = _state.value.copy(sessionAgentModes = emptyMap())
+    }
+
+    private fun persistSessionAgentModes(modes: Map<String, com.localchatbot.domain.model.AgentMode>) {
+        settings.putString(
+            KEY_SESSION_AGENT_MODES,
+            templatesJson.encodeToString(sessionAgentModesSerializer, modes.mapValues { it.value.name })
+        )
     }
 
     override suspend fun setInstalledSkills(skills: List<InstalledSkill>) {
@@ -200,6 +221,11 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(remoteViewerUrl = value)
     }
 
+    override suspend fun updateDesktopNotifications(value: Boolean) {
+        settings.putBoolean(KEY_DESKTOP_NOTIFICATIONS, value)
+        _state.value = _state.value.copy(desktopNotificationsEnabled = value)
+    }
+
     override suspend fun updateGenerationParams(params: GenerationParams) {
         settings.putString(KEY_GEN_PARAMS, templatesJson.encodeToString(GenerationParams.serializer(), params))
         _state.value = _state.value.copy(generationParams = params)
@@ -211,9 +237,10 @@ class PreferencesRepositoryImpl(
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
+            KEY_SESSION_AGENT_MODES,
             KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
             KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
-            KEY_GEN_PARAMS
+            KEY_DESKTOP_NOTIFICATIONS, KEY_GEN_PARAMS
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -243,6 +270,13 @@ class PreferencesRepositoryImpl(
                     settings.getString(KEY_AGENT_MODE, default.agentMode.name)
                 )
             }.getOrDefault(default.agentMode),
+            sessionAgentModes = runCatching {
+                val raw = settings.getStringOrNull(KEY_SESSION_AGENT_MODES) ?: return@runCatching emptyMap()
+                templatesJson.decodeFromString(sessionAgentModesSerializer, raw)
+                    .mapNotNull { (id, name) ->
+                        runCatching { id to com.localchatbot.domain.model.AgentMode.valueOf(name) }.getOrNull()
+                    }.toMap()
+            }.getOrDefault(emptyMap()),
             installedSkills = runCatching {
                 val raw = settings.getStringOrNull(KEY_INSTALLED_SKILLS) ?: return@runCatching emptyList()
                 templatesJson.decodeFromString(skillsSerializer, raw)
@@ -260,6 +294,9 @@ class PreferencesRepositoryImpl(
             remoteAccessPort = settings.getInt(KEY_REMOTE_PORT, default.remoteAccessPort),
             remoteAccessPin = settings.getString(KEY_REMOTE_PIN, default.remoteAccessPin),
             remoteViewerUrl = settings.getString(KEY_REMOTE_VIEWER_URL, default.remoteViewerUrl),
+            desktopNotificationsEnabled = settings.getBoolean(
+                KEY_DESKTOP_NOTIFICATIONS, default.desktopNotificationsEnabled
+            ),
             generationParams = runCatching {
                 val raw = settings.getStringOrNull(KEY_GEN_PARAMS) ?: return@runCatching GenerationParams()
                 templatesJson.decodeFromString(GenerationParams.serializer(), raw)
@@ -348,6 +385,7 @@ class PreferencesRepositoryImpl(
         const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
         const val KEY_FS_PREVIEW_EDITS = "fs_preview_edits"
         const val KEY_AGENT_MODE = "agent_mode"
+        const val KEY_SESSION_AGENT_MODES = "session_agent_modes"
         const val KEY_INSTALLED_SKILLS = "installed_skills"
         const val KEY_CUSTOM_SKILLS = "custom_skills"
         const val KEY_MCP_SERVERS = "mcp_servers"
@@ -356,6 +394,7 @@ class PreferencesRepositoryImpl(
         const val KEY_REMOTE_PORT = "remote_access_port"
         const val KEY_REMOTE_PIN = "remote_access_pin"
         const val KEY_REMOTE_VIEWER_URL = "remote_viewer_url"
+        const val KEY_DESKTOP_NOTIFICATIONS = "desktop_notifications_enabled"
         const val KEY_GEN_PARAMS = "generation_params"
     }
 }

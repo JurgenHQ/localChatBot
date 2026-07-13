@@ -9,6 +9,7 @@ import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.domain.repository.ProjectRepository
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
 import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -57,7 +58,8 @@ class SettingsViewModel(
     private val preferences: PreferencesRepository,
     private val chats: ChatRepository,
     private val checkConnection: CheckConnectionUseCase,
-    private val remoteAccessServer: RemoteAccessServer
+    private val remoteAccessServer: RemoteAccessServer,
+    private val projects: ProjectRepository
 ) : ViewModel() {
 
     private val _status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
@@ -114,7 +116,16 @@ class SettingsViewModel(
         viewModelScope.launch { refreshStatus(preferences.current().connection) }
     }
 
-    fun clearHistory() = viewModelScope.launch { chats.clearAll() }
+    fun clearHistory() = viewModelScope.launch {
+        chats.clearAll()
+        projects.clearAssignments()
+        preferences.clearSessionAgentModes()
+    }
+
+    /** Activa/desactiva las notificaciones de escritorio (banner + rebote del dock). */
+    fun toggleDesktopNotifications(value: Boolean) {
+        viewModelScope.launch { preferences.updateDesktopNotifications(value) }
+    }
 
     /** Construye el JSON y lo emite a la pantalla (que abre el diálogo "guardar como"). */
     fun exportSettings() {

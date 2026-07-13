@@ -1,9 +1,11 @@
 package com.localchatbot.core.automation
 
 import com.localchatbot.core.confirm.AutoApproveConfirmations
+import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.domain.repository.ProjectRepository
 import com.localchatbot.domain.usecase.CreateSessionUseCase
 import com.localchatbot.domain.usecase.SendMessageUseCase
 import kotlinx.coroutines.CancellationException
@@ -42,9 +44,11 @@ import kotlinx.datetime.toLocalDateTime
 class AutomationScheduler(
     private val prefs: PreferencesRepository,
     private val chats: ChatRepository,
+    private val projects: ProjectRepository,
     private val createSession: CreateSessionUseCase,
     private val sendMessage: SendMessageUseCase,
     private val scope: CoroutineScope,
+    private val notifier: SystemNotifier,
     private val tickIntervalMs: Long = 30_000L
 ) {
     data class RunStatus(
@@ -105,6 +109,8 @@ class AutomationScheduler(
             val session = createSession()
             sessionId = session.id
             chats.updateTitle(session.id, "⏰ ${task.name}")
+            // Agrupa la sesión bajo la sección "Tareas automatizadas" del drawer.
+            projects.assignSession(session.id, ProjectRepository.AUTOMATION_GROUP_ID)
             val result = withContext(AutoApproveConfirmations()) {
                 sendMessage(session.id, task.instructions)
             }
@@ -117,6 +123,7 @@ class AutomationScheduler(
                     lastSessionId = session.id
                 ))
             }
+            notifyFinished(task, result.exceptionOrNull()?.message)
         } catch (e: CancellationException) {
             _status.update { it + (task.id to (it[task.id] ?: RunStatus()).copy(running = false)) }
             throw e
@@ -130,7 +137,19 @@ class AutomationScheduler(
                     lastSessionId = sessionId
                 ))
             }
+            notifyFinished(task, e.message ?: "Error")
         }
+    }
+
+    /** Avisa (desktop) de que la tarea terminó, distinguiendo éxito de fallo. */
+    private suspend fun notifyFinished(task: ScheduledTask, error: String?) {
+        if (!prefs.current().desktopNotificationsEnabled) return
+        val body = if (error == null) {
+            "Tarea completada"
+        } else {
+            "Tarea con error: ${error.take(80)}"
+        }
+        notifier.notify("⏰ ${task.name}", body)
     }
 
     private suspend fun markRun(taskId: String, ts: Long) {
