@@ -769,8 +769,8 @@ class SendMessageUseCase(
         // Compactación: si hay resumen previo (generado por el modelo), lo inyectamos
         // como system message — da al modelo contexto real del historial descartado.
         // Si no hay resumen aún, anclamos la tarea original (sin llamada al modelo).
-        val truncationNotice = if (truncated) {
-            val content = if (!contextSummary.isNullOrBlank()) {
+        val truncationNoticeText = if (truncated) {
+            if (!contextSummary.isNullOrBlank()) {
                 "Resumen del historial anterior:\n$contextSummary"
             } else {
                 val firstUserTask = history.firstOrNull { it.role == Role.User }
@@ -785,44 +785,35 @@ class SendMessageUseCase(
                     }
                 }
             }
-            listOf(
-                ChatMessage(
-                    id = "context-truncation-notice",
-                    role = Role.System,
-                    content = content,
-                    timestampEpochMs = 0L
-                )
-            )
-        } else emptyList()
-
-        // Instrucción efímera (re-prompt tras una acción anunciada sin ejecutar).
-        // Va al FINAL para ser lo último que ve el modelo antes de responder.
-        val nudge = ephemeralNudge?.let {
-            listOf(
-                ChatMessage(
-                    id = "stalled-action-nudge",
-                    role = Role.System,
-                    content = it,
-                    timestampEpochMs = 0L
-                )
-            )
-        } ?: emptyList()
+        } else null
 
         // Los adjuntos del usuario viven en un campo aparte (no se muestran crudos en
         // la burbuja). Aquí, SOLO para la petición al modelo, se expanden a bloques
         // fenced al inicio del contenido. La copia es efímera: no se persiste.
         val windowedForApi = windowed.map(::expandAttachmentsForApi)
 
-        val apiMessages = if (combined.isBlank()) {
-            truncationNotice + windowedForApi + nudge
+        // Algunos chat templates Jinja (LM Studio/llama.cpp) exigen que el system sea
+        // el ÚNICO mensaje de ese rol y esté en la posición 0. Por eso truncationNotice
+        // y la instrucción efímera (nudge) se pliegan dentro del mismo system message
+        // en vez de ir como mensajes `role=system` separados — el nudge iba al FINAL de
+        // la lista y rompía ese contrato. Se agrega último dentro del bloque para
+        // conservar su efecto de "última instrucción leída" antes de generar.
+        val finalSystemContent = listOfNotNull(
+            combined.takeIf { it.isNotBlank() },
+            truncationNoticeText,
+            ephemeralNudge?.trim()?.takeIf { it.isNotBlank() }
+        ).joinToString("\n\n")
+
+        val apiMessages = if (finalSystemContent.isBlank()) {
+            windowedForApi
         } else {
             val systemMsg = ChatMessage(
                 id = SYSTEM_PROMPT_ID,
                 role = Role.System,
-                content = combined,
+                content = finalSystemContent,
                 timestampEpochMs = 0L
             )
-            listOf(systemMsg) + truncationNotice + windowedForApi + nudge
+            listOf(systemMsg) + windowedForApi
         }
         return apiMessages to discarded
     }

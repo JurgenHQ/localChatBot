@@ -115,7 +115,7 @@ fun MainScaffold(container: AppContainer) {
         AgentViewModel(preferences = container.preferencesRepository)
     }
     val editorViewModel = remember {
-        EditorViewModel(preferences = container.preferencesRepository, agent = container.filesystemAgent)
+        EditorViewModel(activeWorkspaceStore = container.activeWorkspaceStore, agent = container.filesystemAgent)
     }
     val remoteViewerViewModel = remember {
         RemoteViewerViewModel(preferences = container.preferencesRepository)

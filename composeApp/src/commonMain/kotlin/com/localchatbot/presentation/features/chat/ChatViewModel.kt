@@ -286,17 +286,21 @@ class ChatViewModel(
     }
 
     init {
-        // Auto-seleccionar la primera sesión si no hay activa.
+        // Auto-seleccionar la primera sesión si no hay activa. Dispara SOLO cuando
+        // cambia la lista de sesiones (no cuando cambia activeSessionId): si
+        // recombináramos también con activeSessionId, un `set(newId)` recién hecho
+        // (p.ej. desde newSession()) se re-evaluaría contra un snapshot de `sessions`
+        // que aún no incluye esa sesión (el flow de SQLDelight se re-emite async tras
+        // el insert), la daríamos por inexistente y la pisaríamos con la anterior.
         viewModelScope.launch {
-            combine(chatRepository.sessions, activeSessionStore.activeSessionId) { list, active ->
-                // Validar que la sesión activa siga existiendo: si fue borrada (o el
-                // auto-select la fijó desde una lista aún no propagada), caer a la
-                // primera disponible, o a null si no quedan → pantalla inicial.
-                if (active != null && list.any { it.id == active }) active
-                else list.firstOrNull()?.id
-            }.collect { id ->
-                if (id != activeSessionStore.activeSessionId.value) {
-                    activeSessionStore.set(id)
+            chatRepository.sessions.collect { list ->
+                val active = activeSessionStore.activeSessionId.value
+                val valid = active != null && list.any { it.id == active }
+                if (!valid) {
+                    val fallback = list.firstOrNull()?.id
+                    if (fallback != activeSessionStore.activeSessionId.value) {
+                        activeSessionStore.set(fallback)
+                    }
                 }
             }
         }

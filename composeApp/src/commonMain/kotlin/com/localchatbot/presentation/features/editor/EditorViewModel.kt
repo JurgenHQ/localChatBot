@@ -5,7 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.core.fs.FsResult
 import com.localchatbot.core.fs.SafePathResult
-import com.localchatbot.domain.repository.PreferencesRepository
+import com.localchatbot.core.state.ActiveWorkspaceStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,14 +59,15 @@ data class EditorUiState(
 }
 
 /**
- * Editor de texto ligero con explorador, restringido SIEMPRE al workspace
- * configurado ([PreferencesRepository.current].fsWorkspaceDir). Solo se usa en
- * desktop: llama a [FilesystemAgent] directo (acción explícita del usuario, sin
- * pasar por la confirmación de tools) y resuelve cada ruta con
- * `allowOutside = false` para no poder salir del workspace ni con `..`.
+ * Editor de texto ligero con explorador, restringido SIEMPRE al workspace efectivo
+ * de la sesión activa ([ActiveWorkspaceStore.current] — el proyecto asignado, o el
+ * `fsWorkspaceDir` global si no hay proyecto). Solo se usa en desktop: llama a
+ * [FilesystemAgent] directo (acción explícita del usuario, sin pasar por la
+ * confirmación de tools) y resuelve cada ruta con `allowOutside = false` para no
+ * poder salir del workspace ni con `..`.
  */
 class EditorViewModel(
-    private val preferences: PreferencesRepository,
+    private val activeWorkspaceStore: ActiveWorkspaceStore,
     private val agent: FilesystemAgent
 ) : ViewModel() {
 
@@ -82,7 +83,7 @@ class EditorViewModel(
      */
     fun onOpen() {
         viewModelScope.launch {
-            val root = preferences.current().fsWorkspaceDir
+            val root = activeWorkspaceStore.current()
             if (root == null) {
                 _state.update { it.copy(workspaceRoot = null) }
                 return@launch
@@ -271,7 +272,7 @@ class EditorViewModel(
 
     /** Resuelve siempre contra el workspace, sin permitir salir de él. */
     private suspend fun resolve(input: String): String? {
-        val root = preferences.current().fsWorkspaceDir
+        val root = activeWorkspaceStore.current()
         return when (val r = agent.resolveSafePath(workspace = root, input = input, allowOutside = false)) {
             is SafePathResult.Ok -> r.absPath
             is SafePathResult.Err -> {
