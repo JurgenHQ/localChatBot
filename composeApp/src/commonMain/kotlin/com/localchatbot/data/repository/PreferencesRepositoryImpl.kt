@@ -2,8 +2,10 @@ package com.localchatbot.data.repository
 
 import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.theme.ThemeMode
+import com.localchatbot.core.util.newId
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
@@ -34,6 +36,7 @@ class PreferencesRepositoryImpl(
     private val mcpSerializer = ListSerializer(McpServerConfig.serializer())
     private val scheduledTasksSerializer = ListSerializer(ScheduledTask.serializer())
     private val sessionAgentModesSerializer = MapSerializer(String.serializer(), String.serializer())
+    private val connectionProfilesSerializer = ListSerializer(ConnectionProfile.serializer())
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
@@ -41,12 +44,31 @@ class PreferencesRepositoryImpl(
     override suspend fun current(): AppPreferences = _state.value
 
     override suspend fun updateConnection(config: ConnectionConfig) {
-        settings.putString(KEY_IP, config.ip)
-        settings.putString(KEY_PORT, config.port)
-        settings.putBoolean(KEY_HTTPS, config.useHttps)
-        settings.putString(KEY_MODEL, config.model)
-        settings.putString(KEY_API_KEY, config.apiKey)
-        _state.value = _state.value.copy(connection = config)
+        val current = _state.value
+        val updated = current.connectionProfiles.map {
+            if (it.id == current.activeConnectionProfileId) it.copy(config = config) else it
+        }
+        persistConnectionProfiles(updated)
+        _state.value = current.copy(connectionProfiles = updated)
+    }
+
+    override suspend fun setConnectionProfiles(profiles: List<ConnectionProfile>) {
+        val capped = profiles.take(3)
+        persistConnectionProfiles(capped)
+        val activeStillValid = capped.any { it.id == _state.value.activeConnectionProfileId }
+        val nextActive = if (activeStillValid) _state.value.activeConnectionProfileId else capped.firstOrNull()?.id.orEmpty()
+        if (!activeStillValid) settings.putString(KEY_ACTIVE_CONNECTION_PROFILE, nextActive)
+        _state.value = _state.value.copy(connectionProfiles = capped, activeConnectionProfileId = nextActive)
+    }
+
+    override suspend fun setActiveConnectionProfile(id: String) {
+        if (_state.value.connectionProfiles.none { it.id == id }) return
+        settings.putString(KEY_ACTIVE_CONNECTION_PROFILE, id)
+        _state.value = _state.value.copy(activeConnectionProfileId = id)
+    }
+
+    private fun persistConnectionProfiles(profiles: List<ConnectionProfile>) {
+        settings.putString(KEY_CONNECTION_PROFILES, templatesJson.encodeToString(connectionProfilesSerializer, profiles))
     }
 
     override suspend fun updateThemeMode(mode: ThemeMode) {
@@ -164,7 +186,8 @@ class PreferencesRepositoryImpl(
 
     override suspend fun exportJson(): String {
         val export = SettingsExport(
-            connection = _state.value.connection,
+            connectionProfiles = _state.value.connectionProfiles,
+            activeConnectionProfileId = _state.value.activeConnectionProfileId,
             themeMode = _state.value.themeMode,
             accentSeed = _state.value.accentSeed,
             tavilyApiKey = _state.value.tavilyApiKey,
@@ -186,7 +209,12 @@ class PreferencesRepositoryImpl(
         try {
             val export = templatesJson.decodeFromString(SettingsExport.serializer(), json)
 
-            updateConnection(export.connection)
+            val profiles = export.connectionProfiles.ifEmpty {
+                val legacy = export.connection ?: ConnectionConfig()
+                listOf(ConnectionProfile(id = newId(), name = "Perfil 1", config = legacy))
+            }.take(3)
+            setConnectionProfiles(profiles)
+            setActiveConnectionProfile(export.activeConnectionProfileId.ifBlank { profiles.first().id })
             updateThemeMode(export.themeMode)
             updateAccent(export.accentSeed)
             updateTavilyApiKey(export.tavilyApiKey)
@@ -234,6 +262,7 @@ class PreferencesRepositoryImpl(
     override suspend fun reset() {
         listOf(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL, KEY_HTTPS, KEY_API_KEY,
+            KEY_CONNECTION_PROFILES, KEY_ACTIVE_CONNECTION_PROFILE,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
             KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
@@ -247,8 +276,10 @@ class PreferencesRepositoryImpl(
 
     private fun load(): AppPreferences {
         val default = AppPreferences.Default
+        val (profiles, activeId) = loadConnectionProfiles(default)
         return AppPreferences(
-            connection = loadConnection(default.connection),
+            connectionProfiles = profiles,
+            activeConnectionProfileId = activeId,
             themeMode = runCatching {
                 ThemeMode.valueOf(settings.getString(KEY_THEME, default.themeMode.name))
             }.getOrDefault(default.themeMode),
@@ -305,10 +336,35 @@ class PreferencesRepositoryImpl(
     }
 
     /**
-     * Carga la conexión. Migra la antigua "URL directa" (modo eliminado) hacia
-     * host/puerto/https la primera vez, y limpia las llaves obsoletas.
+     * Carga los perfiles de conexión. Si ya existen (`KEY_CONNECTION_PROFILES`), los usa tal
+     * cual. Si no (primer arranque tras introducir perfiles), envuelve la conexión legada
+     * (single-profile) en un "Perfil 1" y lo persiste de una vez, para que la migración
+     * solo corra una vez.
      */
-    private fun loadConnection(default: ConnectionConfig): ConnectionConfig {
+    private fun loadConnectionProfiles(default: AppPreferences): Pair<List<ConnectionProfile>, String> {
+        val raw = settings.getStringOrNull(KEY_CONNECTION_PROFILES)
+        val existing = raw?.let {
+            runCatching { templatesJson.decodeFromString(connectionProfilesSerializer, it) }.getOrNull()
+        }
+        if (!existing.isNullOrEmpty()) {
+            val activeId = settings.getStringOrNull(KEY_ACTIVE_CONNECTION_PROFILE)
+                ?.takeIf { id -> existing.any { it.id == id } }
+                ?: existing.first().id
+            return existing to activeId
+        }
+
+        val legacy = loadLegacyConnection(default.connection)
+        val profile = ConnectionProfile(id = newId(), name = "Perfil 1", config = legacy)
+        settings.putString(KEY_CONNECTION_PROFILES, templatesJson.encodeToString(connectionProfilesSerializer, listOf(profile)))
+        settings.putString(KEY_ACTIVE_CONNECTION_PROFILE, profile.id)
+        return listOf(profile) to profile.id
+    }
+
+    /**
+     * Carga la conexión legada (single-profile). Migra la antigua "URL directa" (modo
+     * eliminado) hacia host/puerto/https la primera vez, y limpia las llaves obsoletas.
+     */
+    private fun loadLegacyConnection(default: ConnectionConfig): ConnectionConfig {
         var ip = settings.getString(KEY_IP, default.ip)
         var port = settings.getString(KEY_PORT, default.port)
         var useHttps = settings.getBoolean(KEY_HTTPS, default.useHttps)
@@ -373,6 +429,8 @@ class PreferencesRepositoryImpl(
         const val KEY_DIRECT_URL = "conn_direct_url"
         const val KEY_HTTPS = "conn_https"
         const val KEY_API_KEY = "conn_api_key"
+        const val KEY_CONNECTION_PROFILES = "connection_profiles"
+        const val KEY_ACTIVE_CONNECTION_PROFILE = "active_connection_profile"
         const val KEY_THEME = "theme_mode"
         const val KEY_ACCENT = "accent_seed"
         const val KEY_ONBOARDED = "onboarding_done"

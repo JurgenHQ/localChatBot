@@ -11,7 +11,12 @@ data class PromptTemplate(
 )
 
 data class AppPreferences(
-    val connection: ConnectionConfig,
+    /**
+     * Perfiles de conexión disponibles (máx. 3). El usuario alterna entre ellos (p. ej.
+     * "IA local" vs. una suscripción cloud); [connection] siempre refleja el activo.
+     */
+    val connectionProfiles: List<ConnectionProfile>,
+    val activeConnectionProfileId: String,
     val themeMode: ThemeMode,
     val accentSeed: Long,
     val onboardingDone: Boolean,
@@ -94,6 +99,11 @@ data class AppPreferences(
     /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
     val generationParams: GenerationParams = GenerationParams()
 ) {
+    /** Config de conexión del perfil activo. Nunca vacía: [Default] ya trae un perfil. */
+    val connection: ConnectionConfig
+        get() = connectionProfiles.firstOrNull { it.id == activeConnectionProfileId }?.config
+            ?: ConnectionConfig()
+
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()
 
@@ -112,7 +122,10 @@ data class AppPreferences(
 
     companion object {
         val Default = AppPreferences(
-            connection = ConnectionConfig(ip = "", port = "1234", model = ""),
+            connectionProfiles = listOf(
+                ConnectionProfile(id = "default", name = "Perfil 1", config = ConnectionConfig(ip = "", port = "1234", model = ""))
+            ),
+            activeConnectionProfileId = "default",
             themeMode = ThemeMode.System,
             accentSeed = 0L,
             onboardingDone = false,

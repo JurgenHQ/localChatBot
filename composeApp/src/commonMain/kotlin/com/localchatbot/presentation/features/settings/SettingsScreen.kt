@@ -15,13 +15,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +44,7 @@ import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.presentation.components.atoms.SectionLabel
 import com.localchatbot.presentation.components.atoms.StatusDot
@@ -85,6 +95,10 @@ fun SettingsScreen(
             status = state.status,
             onOpenEditor = viewModel::open,
             onRetryConnection = viewModel::retryConnection,
+            onActivateProfile = viewModel::activateProfile,
+            onAddProfile = viewModel::addProfile,
+            onDeleteProfile = viewModel::deleteProfile,
+            onRenameProfile = viewModel::renameProfile,
             onClearHistory = viewModel::clearHistory,
             onToggleHttps = viewModel::toggleHttps,
             onOpenNetworkInspector = onOpenNetworkInspector,
@@ -138,6 +152,10 @@ fun SettingsContent(
     status: ConnectionStatus,
     onOpenEditor: (SettingsEditor) -> Unit,
     onRetryConnection: () -> Unit,
+    onActivateProfile: (String) -> Unit = {},
+    onAddProfile: () -> Unit = {},
+    onDeleteProfile: (String) -> Unit = {},
+    onRenameProfile: (String, String) -> Unit = { _, _ -> },
     onClearHistory: () -> Unit,
     onToggleHttps: (Boolean) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
@@ -152,6 +170,7 @@ fun SettingsContent(
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
+    var renamingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
 
     Column(
         modifier = modifier
@@ -166,6 +185,40 @@ fun SettingsContent(
             style = MaterialTheme.typography.headlineLarge,
             color = MaterialTheme.colorScheme.onBackground
         )
+
+        SectionLabel("Perfiles de conexión")
+        SectionCard {
+            preferences.connectionProfiles.forEachIndexed { idx, profile ->
+                SettingsRow(
+                    title = profile.name,
+                    onClick = { onActivateProfile(profile.id) },
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (profile.id == preferences.activeConnectionProfileId) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Activo",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            IconButton(onClick = { renamingProfile = profile }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Renombrar perfil")
+                            }
+                            if (preferences.connectionProfiles.size > 1) {
+                                IconButton(onClick = { onDeleteProfile(profile.id) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Borrar perfil")
+                                }
+                            }
+                        }
+                    }
+                )
+                if (idx < preferences.connectionProfiles.lastIndex) Divider()
+            }
+            if (preferences.connectionProfiles.size < 3) {
+                Divider()
+                SettingsRow(title = "+ Añadir perfil", onClick = onAddProfile, trailing = {})
+            }
+        }
 
         SectionLabel("Servidor")
         SectionCard {
@@ -510,6 +563,33 @@ fun SettingsContent(
             )
         }
     }
+
+    renamingProfile?.let { profile ->
+        var value by remember(profile.id) { mutableStateOf(profile.name) }
+        AlertDialog(
+            onDismissRequest = { renamingProfile = null },
+            title = { Text("Renombrar perfil") },
+            text = {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = value.isNotBlank(),
+                    onClick = {
+                        onRenameProfile(profile.id, value)
+                        renamingProfile = null
+                    }
+                ) { Text("Guardar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingProfile = null }) { Text("Cancelar") }
+            }
+        )
+    }
 }
 
 private fun String.maskKey(): String {
@@ -565,19 +645,33 @@ private fun Divider() {
 }
 
 private val SamplePrefs = AppPreferences(
-    connection = ConnectionConfig(ip = "192.168.1.42", port = "1234", model = "llama-3.1-8b-instruct"),
+    connectionProfiles = listOf(
+        ConnectionProfile(
+            id = "p1",
+            name = "Perfil 1",
+            config = ConnectionConfig(ip = "192.168.1.42", port = "1234", model = "llama-3.1-8b-instruct")
+        )
+    ),
+    activeConnectionProfileId = "p1",
     themeMode = ThemeMode.System,
     accentSeed = 0L,
     onboardingDone = true
 )
 
 private val SamplePrefsUrl = AppPreferences(
-    connection = ConnectionConfig(
-        ip = "abc.trycloudflare.com",
-        port = "",
-        useHttps = true,
-        model = "llama-3.1-8b-instruct"
+    connectionProfiles = listOf(
+        ConnectionProfile(
+            id = "p1",
+            name = "Perfil 1",
+            config = ConnectionConfig(
+                ip = "abc.trycloudflare.com",
+                port = "",
+                useHttps = true,
+                model = "llama-3.1-8b-instruct"
+            )
+        )
     ),
+    activeConnectionProfileId = "p1",
     themeMode = ThemeMode.System,
     accentSeed = 0L,
     onboardingDone = true

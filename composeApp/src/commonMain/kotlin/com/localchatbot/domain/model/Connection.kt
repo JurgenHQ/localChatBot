@@ -36,6 +36,17 @@ data class ConnectionConfig(
     fun isValid(): Boolean = ip.isNotBlank() && model.isNotBlank()
 }
 
+/**
+ * Perfil de conexión nombrado (p. ej. "IA local", "OpenAI"). El usuario puede tener hasta 3
+ * y elegir cuál está activo; ver [AppPreferences.connection].
+ */
+@Serializable
+data class ConnectionProfile(
+    val id: String,
+    val name: String,
+    val config: ConnectionConfig = ConnectionConfig()
+)
+
 sealed interface ConnectionStatus {
     data object Unknown : ConnectionStatus
     data object Checking : ConnectionStatus

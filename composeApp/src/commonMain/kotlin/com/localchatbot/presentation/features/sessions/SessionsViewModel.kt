@@ -6,6 +6,7 @@ import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.storage.CheckpointStore
 import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.Project
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -36,12 +37,15 @@ data class SessionsUiState(
     val drawerOpen: Boolean = false,
     val connectionLabel: String = "",
     /** True en Desktop: habilita la UI de proyectos (secciones, crear, mover…). */
-    val projectsEnabled: Boolean = false
+    val projectsEnabled: Boolean = false,
+    /** Perfiles de conexión disponibles (máx. 3), para el switcher de la cabecera del drawer. */
+    val connectionProfiles: List<ConnectionProfile> = emptyList(),
+    val activeConnectionProfileId: String = ""
 )
 
 class SessionsViewModel(
     private val chatRepository: ChatRepository,
-    preferences: PreferencesRepository,
+    private val preferences: PreferencesRepository,
     private val activeSessionStore: ActiveSessionStore,
     private val createSessionUseCase: CreateSessionUseCase,
     private val projectRepository: ProjectRepository,
@@ -72,7 +76,9 @@ class SessionsViewModel(
                 query = local.query,
                 drawerOpen = local.drawerOpen,
                 connectionLabel = connectionLabel,
-                projectsEnabled = false
+                projectsEnabled = false,
+                connectionProfiles = prefs.connectionProfiles,
+                activeConnectionProfileId = prefs.activeConnectionProfileId
             )
         }
 
@@ -104,9 +110,16 @@ class SessionsViewModel(
             query = local.query,
             drawerOpen = local.drawerOpen,
             connectionLabel = connectionLabel,
-            projectsEnabled = projectsEnabled
+            projectsEnabled = projectsEnabled,
+            connectionProfiles = prefs.connectionProfiles,
+            activeConnectionProfileId = prefs.activeConnectionProfileId
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, SessionsUiState())
+
+    /** Cambia el perfil de conexión activo desde el switcher de la cabecera del drawer. */
+    fun switchConnectionProfile(id: String) {
+        viewModelScope.launch { preferences.setActiveConnectionProfile(id) }
+    }
 
     fun openDrawer() = _local.update { it.copy(drawerOpen = true) }
     fun closeDrawer() = _local.update { it.copy(drawerOpen = false) }

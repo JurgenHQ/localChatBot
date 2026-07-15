@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.localIpAddresses
+import com.localchatbot.core.util.newId
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -114,6 +116,34 @@ class SettingsViewModel(
 
     fun retryConnection() {
         viewModelScope.launch { refreshStatus(preferences.current().connection) }
+    }
+
+    fun activateProfile(id: String) = viewModelScope.launch {
+        preferences.setActiveConnectionProfile(id)
+    }
+
+    fun addProfile() = viewModelScope.launch {
+        val cur = preferences.current()
+        if (cur.connectionProfiles.size >= 3) return@launch
+        val profile = ConnectionProfile(id = newId(), name = "Perfil ${cur.connectionProfiles.size + 1}")
+        preferences.setConnectionProfiles(cur.connectionProfiles + profile)
+        preferences.setActiveConnectionProfile(profile.id)
+    }
+
+    fun renameProfile(id: String, name: String) = viewModelScope.launch {
+        val cleaned = name.trim().ifBlank { return@launch }
+        val cur = preferences.current()
+        val updated = cur.connectionProfiles.map { if (it.id == id) it.copy(name = cleaned) else it }
+        preferences.setConnectionProfiles(updated)
+    }
+
+    fun deleteProfile(id: String) = viewModelScope.launch {
+        val cur = preferences.current()
+        if (cur.connectionProfiles.size <= 1) {
+            _message.value = "Debe quedar al menos un perfil de conexión"
+            return@launch
+        }
+        preferences.setConnectionProfiles(cur.connectionProfiles.filter { it.id != id })
     }
 
     fun clearHistory() = viewModelScope.launch {

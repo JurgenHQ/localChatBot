@@ -6,7 +6,10 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class SettingsExport(
     val version: Int = 1,                 // versión de esquema → migración futura
-    val connection: ConnectionConfig,
+    val connectionProfiles: List<ConnectionProfile> = emptyList(),
+    val activeConnectionProfileId: String = "",
+    /** Deprecado: solo para leer backups anteriores a los perfiles de conexión. */
+    val connection: ConnectionConfig? = null,
     val themeMode: ThemeMode,
     val accentSeed: Long,
     val tavilyApiKey: String,

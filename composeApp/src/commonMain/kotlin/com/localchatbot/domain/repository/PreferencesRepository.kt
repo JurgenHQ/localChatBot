@@ -4,6 +4,7 @@ import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AgentMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
@@ -15,6 +16,10 @@ interface PreferencesRepository {
     val preferences: Flow<AppPreferences>
     suspend fun current(): AppPreferences
     suspend fun updateConnection(config: ConnectionConfig)
+    /** Reemplaza la lista de perfiles de conexión (capada a 3). Reasigna el activo si desaparece. */
+    suspend fun setConnectionProfiles(profiles: List<ConnectionProfile>)
+    /** Cambia el perfil de conexión activo. No-op si [id] no existe en la lista. */
+    suspend fun setActiveConnectionProfile(id: String)
     suspend fun updateThemeMode(mode: ThemeMode)
     suspend fun updateAccent(seed: Long)
     suspend fun markOnboardingDone()

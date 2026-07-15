@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -88,6 +89,9 @@ fun SessionDrawer(
         projectsEnabled = state.projectsEnabled,
         query = state.query,
         connectionLabel = state.connectionLabel,
+        connectionProfiles = state.connectionProfiles,
+        activeConnectionProfileId = state.activeConnectionProfileId,
+        onSwitchProfile = viewModel::switchConnectionProfile,
         onQueryChange = viewModel::onQueryChange,
         onSelect = viewModel::selectSession,
         onDelete = viewModel::deleteSession,
@@ -124,6 +128,9 @@ fun SessionDrawerContent(
     ungrouped: List<ChatSession>,
     query: String,
     connectionLabel: String,
+    connectionProfiles: List<com.localchatbot.domain.model.ConnectionProfile> = emptyList(),
+    activeConnectionProfileId: String = "",
+    onSwitchProfile: (String) -> Unit = {},
     onQueryChange: (String) -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
@@ -185,22 +192,47 @@ fun SessionDrawerContent(
                 .padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AppLogo(size = 40.dp)
-                Spacer(Modifier.width(Spacing.md))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "LocalChatBot",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        connectionLabel,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            var profileMenuOpen by remember { mutableStateOf(false) }
+            val canSwitchProfile = connectionProfiles.size > 1
+            Box {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = if (canSwitchProfile) {
+                        Modifier.clickable { profileMenuOpen = true }
+                    } else Modifier
+                ) {
+                    AppLogo(size = 40.dp)
+                    Spacer(Modifier.width(Spacing.md))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "LocalChatBot",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            connectionLabel,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    StatusDot(color = Color(0xFF2EBD66))
                 }
-                StatusDot(color = Color(0xFF2EBD66))
+                if (canSwitchProfile) {
+                    DropdownMenu(expanded = profileMenuOpen, onDismissRequest = { profileMenuOpen = false }) {
+                        connectionProfiles.forEach { profile ->
+                            DropdownMenuItem(
+                                text = { Text(profile.name) },
+                                leadingIcon = if (profile.id == activeConnectionProfileId) {
+                                    { Icon(Icons.Default.Check, contentDescription = null) }
+                                } else null,
+                                onClick = {
+                                    profileMenuOpen = false
+                                    onSwitchProfile(profile.id)
+                                }
+                            )
+                        }
+                    }
+                }
             }
 
             AppTextField(
