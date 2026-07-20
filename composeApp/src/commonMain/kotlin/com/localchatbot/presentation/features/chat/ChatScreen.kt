@@ -1,5 +1,7 @@
 package com.localchatbot.presentation.features.chat
 
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,20 +12,28 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -280,6 +290,7 @@ fun ChatContent(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
+    val scrollScope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -289,8 +300,16 @@ fun ChatContent(
     val messages = state.activeSession?.messages
     // Con reverseLayout = true el índice 0 es siempre el fondo (mensaje más reciente).
     val messageCount = messages?.size ?: 0
+    // Solo auto-scrollear si el usuario ya estaba pegado al fondo (o si el mensaje
+    // nuevo es suyo — acaba de enviar). Si subió a leer mientras el modelo escribe,
+    // no arrastrarlo hacia abajo con cada mensaje nuevo de la ronda de tools.
+    val nearBottom by remember {
+        derivedStateOf { listState.firstVisibleItemIndex <= 1 }
+    }
     LaunchedEffect(messageCount) {
-        if (messageCount > 0) listState.animateScrollToItem(0)
+        if (messageCount == 0) return@LaunchedEffect
+        val lastIsUser = messages?.lastOrNull()?.role == Role.User
+        if (lastIsUser || nearBottom) listState.animateScrollToItem(0)
     }
 
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
@@ -374,25 +393,43 @@ fun ChatContent(
                 modifier = Modifier.weight(1f).then(dismissKeyboardModifier)
             )
         } else {
-            ChatMessageList(
-                session = active,
-                listState = listState,
-                sending = state.sending,
-                toolActivity = state.toolActivity,
-                highlightQuery = if (searchOpen) searchQuery.takeIf { it.isNotBlank() } else null,
-                currentMatchAbsIndex = matchIndices.getOrNull(currentMatchIndex) ?: -1,
-                onResendMessage = onResendMessage,
-                onEditMessage = onEditMessage,
-                onRegenerate = onRegenerate,
-                speakingMessageId = speakingMessageId,
-                onSpeakMessage = onSpeakMessage,
-                onStopSpeak = onStopSpeak,
-                onSaveImage = onSaveImage,
-                onTapMessage = { keyboard?.hide() },
-                onOpenFileInEditor = onOpenFileInEditor,
-                onRevertTurn = onRevertTurn,
-                modifier = Modifier.weight(1f).fillMaxWidth().then(dismissKeyboardModifier)
-            )
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                ChatMessageList(
+                    session = active,
+                    listState = listState,
+                    sending = state.sending,
+                    toolActivity = state.toolActivity,
+                    highlightQuery = if (searchOpen) searchQuery.takeIf { it.isNotBlank() } else null,
+                    currentMatchAbsIndex = matchIndices.getOrNull(currentMatchIndex) ?: -1,
+                    onResendMessage = onResendMessage,
+                    onEditMessage = onEditMessage,
+                    onRegenerate = onRegenerate,
+                    speakingMessageId = speakingMessageId,
+                    onSpeakMessage = onSpeakMessage,
+                    onStopSpeak = onStopSpeak,
+                    onSaveImage = onSaveImage,
+                    onTapMessage = { keyboard?.hide() },
+                    onOpenFileInEditor = onOpenFileInEditor,
+                    onRevertTurn = onRevertTurn,
+                    modifier = Modifier.fillMaxSize().then(dismissKeyboardModifier)
+                )
+                // Botón flotante para volver al fondo cuando el usuario subió a leer.
+                val showJumpToBottom by remember {
+                    derivedStateOf { listState.firstVisibleItemIndex > 0 }
+                }
+                // Llamada calificada: dentro de un Box anidado en Column, la
+                // resolución implícita elige la extensión de ColumnScope y falla.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showJumpToBottom,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = Spacing.md)
+                ) {
+                    ScrollToBottomButton(
+                        onClick = { scrollScope.launch { listState.animateScrollToItem(0) } }
+                    )
+                }
+            }
         }
 
         // Indicador de progreso del agente (N tool calls + log) en una barra fija sobre el
@@ -454,6 +491,26 @@ fun ChatContent(
             } else null
         )
         Spacer(Modifier.height(Spacing.xs))
+    }
+}
+
+@Composable
+private fun ScrollToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 4.dp,
+        modifier = modifier.size(40.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = "Ir al final",
+                tint = MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
 

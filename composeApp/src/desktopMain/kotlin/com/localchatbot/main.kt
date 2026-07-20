@@ -1,20 +1,33 @@
 package com.localchatbot
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.localchatbot.core.platform.applyWindowsRoundedCorners
+import com.localchatbot.core.theme.AppTheme
 import com.localchatbot.di.AppContainer
+import com.localchatbot.domain.model.AppPreferences
+import com.localchatbot.presentation.components.DesktopTitleBar
+import com.localchatbot.presentation.components.WindowResizeHandles
 import kotlinx.coroutines.runBlocking
 import java.awt.Color as AwtColor
 import java.awt.Dimension
 import java.awt.Toolkit
 
 private val isMacOs: Boolean = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+private val isWindows: Boolean = System.getProperty("os.name").orEmpty().lowercase().contains("win")
 
 fun main() {
     if (isMacOs) {
@@ -60,11 +73,18 @@ fun main() {
         Window(
             onCloseRequest = ::exitApplication,
             state = windowState,
-            // Título vacío en macOS para que no aparezca texto detrás de los
-            // traffic lights.
-            title = if (isMacOs) "" else "LocalChatBot",
+            // Windows: ventana sin bordes, dibujamos nuestra propia barra de título más
+            // abajo (la nativa choca con el tema oscuro y trae el icono de Java por
+            // defecto, y no hay forma confiable de recolorearla desde fuera).
+            undecorated = isWindows,
+            // Título vacío: en macOS para que no aparezca texto detrás de los traffic
+            // lights; en Windows porque lo dibuja DesktopTitleBar.
+            title = if (isMacOs || isWindows) "" else "LocalChatBot",
         ) {
             window.minimumSize = Dimension(380, 600)
+            if (isWindows) {
+                LaunchedEffect(Unit) { applyWindowsRoundedCorners(window) }
+            }
             if (isMacOs) {
                 LaunchedEffect(Unit) {
                     // El rootPane es lo que macOS lee para decidir si extiende
@@ -76,10 +96,42 @@ fun main() {
                     window.background = AwtColor(0x0F, 0x0F, 0x10)
                 }
             }
-            App(
-                container = container,
-                topInset = if (isMacOs) 28.dp else 0.dp
-            )
+            if (isWindows) {
+                // Mismo AppTheme que App() para que la barra siga el tema
+                // claro/oscuro elegido en Settings en vez de quedar forzada a oscuro.
+                val prefs by container.preferencesRepository.preferences.collectAsState(
+                    initial = AppPreferences.Default
+                )
+                AppTheme(themeMode = prefs.themeMode, accentSeed = prefs.accentSeed) {
+                    Box(Modifier.fillMaxSize()) {
+                        Column(Modifier.fillMaxSize()) {
+                            DesktopTitleBar(
+                                windowState = windowState,
+                                title = "LocalChatBot",
+                                onMinimize = { windowState.isMinimized = true },
+                                onToggleMaximize = {
+                                    windowState.placement =
+                                        if (windowState.placement == WindowPlacement.Maximized) {
+                                            WindowPlacement.Floating
+                                        } else {
+                                            WindowPlacement.Maximized
+                                        }
+                                },
+                                onClose = ::exitApplication,
+                            )
+                            Box(Modifier.weight(1f)) {
+                                App(container = container, topInset = 0.dp)
+                            }
+                        }
+                        WindowResizeHandles(window = window, windowState = windowState)
+                    }
+                }
+            } else {
+                App(
+                    container = container,
+                    topInset = if (isMacOs) 28.dp else 0.dp
+                )
+            }
         }
     }
 }

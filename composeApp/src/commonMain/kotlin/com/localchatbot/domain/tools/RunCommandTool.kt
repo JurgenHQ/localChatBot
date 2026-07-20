@@ -42,6 +42,9 @@ class RunCommandTool(
                 "Supports pipes, redirects, env vars, chained commands (`;` / `&&`). " +
                 "Captures stdout, stderr, exitCode. Output truncated at ~50 KB each. " +
                 "Default timeout 30 s, max 600 s. " +
+                "IMPORTANT: quote any path containing spaces (the workspace path may have one) — " +
+                "an unquoted path with spaces splits into multiple tokens and the command fails. " +
+                "Prefer the `working_dir` parameter over `cd \"<path>\"` inside `command`. " +
                 "For long-running processes (dev servers, watchers, etc.) set `background=true`: " +
                 "the process starts in background, the tool waits up to `startup_check_seconds` " +
                 "(default 5) to capture initial output (port, errors), then returns with " +

@@ -924,7 +924,10 @@ class SendMessageUseCase(
 
         val sb = StringBuilder()
         sb.append("<workspace>\n")
-        sb.append("cwd: ").append(ws).append("\n")
+        // Citado siempre (no solo si contiene espacios): así el modelo copia el path
+        // ya listo para usar en un `cd`/argumento de shell sin tener que decidir si
+        // hace falta comillas — evita que un path con espacios se parta en tokens.
+        sb.append("cwd: \"").append(ws).append("\"\n")
         if (!git.isNullOrBlank()) sb.append("\ngit status:\n").append(git).append("\n")
         if (!tree.isNullOrBlank()) sb.append("\nfiles (root):\n").append(tree).append("\n")
         sb.append("</workspace>")
@@ -1148,6 +1151,12 @@ class SendMessageUseCase(
                 "The app shows a confirmation dialog for fs/shell tools automatically, so just " +
                     "call the tool — don't ask for permission in text."
             }
+            val officeDocsLine = if (skillsIndex.contains("office_docs")) {
+                "• Create, read, or edit Word/Excel files (.docx/.xlsx) → you already have this " +
+                    "capability via the `office_docs` skill listed below — call `use_skill` with " +
+                    "skill_id=\"office_docs\" first to load the exact steps. Never tell the user you " +
+                    "can't produce Office files.\n"
+            } else ""
             return planBlock + "You are a capable coding agent with function tools. Prefer acting with your " +
                 "tools over asking the user to do something a tool can do — the tools listed are " +
                 "available to you right now.\n\n" +
@@ -1177,7 +1186,12 @@ class SendMessageUseCase(
                 "• Delete a file or folder → `delete_file`. Create a folder → `create_directory`.\n" +
                 "• Run a command, build, test, install deps, start a server, run a script, or any " +
                 "git/terminal operation → `run_command`. For servers/watchers/long-running " +
-                "processes set `background=true`.\n" +
+                "processes set `background=true`. If the workspace or any path you reference " +
+                "contains spaces, ALWAYS wrap it in double quotes in the shell command — an " +
+                "unquoted path with spaces gets split into multiple tokens and the command fails " +
+                "(e.g. `cd \"C:\\Users\\me\\My Project\"`, not `cd C:\\Users\\me\\My Project`). " +
+                "Prefer relative paths (resolved against the workspace) over `cd`-ing into an " +
+                "absolute path when possible — pass `working_dir` instead.\n" +
                 "• News, recent events, prices, current facts, software versions, or anything that " +
                 "may have changed since training → `search_web`.\n" +
                 "• A diagram / flowchart / mind map / sequence/class/ER diagram → `render_diagram` " +
@@ -1187,6 +1201,7 @@ class SendMessageUseCase(
                 "• Persist a generated image to disk (so the user doesn't have to download it " +
                 "manually) → `save_image` with a relative path right after generating it. Do this " +
                 "whenever the user wants to keep or reuse the image.\n" +
+                officeDocsLine +
                 "• You need a decision from the user, are missing information no tool can get, or want " +
                 "to offer choices → `ask_user` (see CRITICAL RULE above).\n\n" +
                 "Working agreement:\n" +

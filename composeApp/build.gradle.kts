@@ -96,6 +96,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.pdfbox)
             implementation(libs.sqldelight.sqlite.driver)
+            implementation(libs.jna.platform)
         }
     }
 }
@@ -147,7 +148,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "LocalChatBot"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.3"
             description = "Chat con un modelo LLM local en tu red"
             vendor = "LocalChatBot"
             // jlink solo incluye módulos detectados por análisis estático (jdeps); el driver

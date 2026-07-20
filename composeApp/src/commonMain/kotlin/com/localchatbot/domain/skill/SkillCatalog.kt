@@ -89,15 +89,21 @@ Rules:
 - Excel (.xlsx): the `openpyxl` library.
 
 ## First-time setup
-Before your first document operation in a session, make sure the libraries are available. Run:
-`python3 -c "import docx, openpyxl"`
-If that fails, install them (user scope, no admin needed):
-`python3 -m pip install --user python-docx openpyxl`
-If `python3` itself is missing, stop and tell the user to install Python 3 — do not try to work around it.
+Do this ONCE per session, before your first document operation.
+
+1. Find a working Python 3 interpreter — the command name varies per OS. Try IN ORDER until one prints `Python 3.x`: `python3 --version`, `python --version`, `py -3 --version` (Windows). Call the winner PY and use it for every command below.
+   - Windows trap: the Microsoft Store ships fake `python`/`python3` stubs that print "Python was not found" or open the Store. That output = NOT a working interpreter; move on to the next candidate.
+   - If none works, stop and tell the user to install Python 3 (Windows: `winget install Python.Python.3.12` or python.org; do NOT install it yourself).
+2. Check the libraries: `PY -c "import docx, openpyxl"`. If it succeeds, setup is done.
+3. If the import fails, install: `PY -m pip install --user python-docx openpyxl` (give the command a generous timeout, e.g. 120s — the first install downloads packages).
+   - Error "No module named pip" → run `PY -m ensurepip --upgrade` first, then retry the install.
+   - Error "externally-managed-environment" (PEP 668, common on modern Linux/macOS) → retry with `PY -m pip install --user --break-system-packages python-docx openpyxl`.
+   - NEVER use `sudo` or install system-wide.
+4. Verify with step 2 again. If the import STILL fails, stop and report the exact pip/import error to the user — do not keep retrying blindly.
 
 ## How to work
 - Operate on files inside the configured workspace. Use relative paths; never write outside the workspace unless the user explicitly asks.
-- For anything beyond a one-liner, WRITE a small Python script to a file in the workspace (e.g. `._office_task.py`) using create_file, run it with `python3 ._office_task.py`, then delete it. This avoids shell-quoting problems. Use `python3 -c "..."` only for trivial reads.
+- For anything beyond a one-liner, WRITE a small Python script to a file in the workspace (e.g. `._office_task.py`) using create_file, run it with `PY ._office_task.py` (the interpreter found in setup), then delete it. This avoids shell-quoting problems. Use `PY -c "..."` only for trivial reads.
 - After creating or editing a file, verify it exists and report the path to the user.
 - For READS, extract the text/data and summarize it for the user; do not dump the entire raw file unless asked.
 
@@ -118,7 +124,7 @@ If `python3` itself is missing, stop and tell the user to install Python 3 — d
 
 ## Rules
 - Keep scripts minimal and focused on the requested task.
-- If a library import fails mid-task, install it and retry once; if it still fails, report the exact error to the user.
+- If a library import fails mid-task, re-run the First-time setup install steps (including the pip/PEP 668 fallbacks) and retry once; if it still fails, report the exact error to the user.
 - Legacy binary `.doc` (not `.docx`) is not supported — ask the user to convert it to `.docx` first."""
         )
     )

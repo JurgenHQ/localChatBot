@@ -104,15 +104,19 @@ private suspend fun chooseFile(): File? {
     // Los diálogos AWT/Swing deben crearse en el EDT.
     SwingUtilities.invokeLater {
         val isMac = System.getProperty("os.name").lowercase().contains("mac")
-        val result = if (isMac) {
-            // FileDialog nativo de macOS: mismo selector que usa el picker de
-            // workspace (DirectoryPicker), para que la experiencia sea consistente.
+        val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+        val result = if (isMac || isWindows) {
+            // FileDialog es un peer nativo en ambos SO: en Windows delega al diálogo
+            // común de Explorer real (el mismo "Abrir" de cualquier app Win32), a
+            // diferencia de JFileChooser que siempre se dibuja con el look Java/Metal.
+            // Sin filtro de extensiones (AWT FileDialog no soporta una lista desplegable
+            // de filtros con descripción, solo un patrón crudo poco fiable entre JDKs).
             val dialog = FileDialog(null as Frame?, "Seleccionar archivo", FileDialog.LOAD)
             dialog.isMultipleMode = false
             dialog.isVisible = true
             if (dialog.file != null) File(dialog.directory, dialog.file) else null
         } else {
-            // En Windows/Linux el workspace también usa JFileChooser → consistente.
+            // Linux: sin peer nativo unificado, se mantiene JFileChooser con filtro.
             val chooser = JFileChooser().apply {
                 dialogTitle = "Seleccionar archivo"
                 isMultiSelectionEnabled = false
