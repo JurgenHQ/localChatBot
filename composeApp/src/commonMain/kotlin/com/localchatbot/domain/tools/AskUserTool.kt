@@ -1,5 +1,6 @@
 package com.localchatbot.domain.tools
 
+import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.PendingUserPrompt
 import com.localchatbot.core.state.PendingUserPromptStore
@@ -29,7 +30,8 @@ import kotlinx.serialization.json.put
 class AskUserTool(
     private val activeSessionStore: ActiveSessionStore,
     private val promptStore: PendingUserPromptStore,
-    private val prefs: PreferencesRepository
+    private val prefs: PreferencesRepository,
+    private val notifier: SystemNotifier
 ) : Tool {
 
     override val name: String = TOOL_NAME
@@ -81,10 +83,12 @@ class AskUserTool(
         val recommended = obj["recommended"]?.jsonPrimitive?.contentOrNull
             ?.trim()?.takeIf { it.isNotEmpty() }
 
+        val currentPrefs = prefs.current()
+
         // En modo YOLO (manos libres) no interrumpimos: respondemos automáticamente
         // para que el modelo siga trabajando. Con opciones, elegimos la recomendada
         // (o la primera); sin opciones, le indicamos que continúe con su criterio.
-        if (prefs.current().fsYoloMode) {
+        if (currentPrefs.fsYoloMode) {
             val answer = if (options.isNotEmpty()) {
                 recommended?.let { rec -> options.firstOrNull { it.equals(rec, ignoreCase = true) } ?: rec }
                     ?: options.first()
@@ -103,6 +107,12 @@ class AskUserTool(
                 allowFreeText = true
             )
         )
+        // Aviso nativo: el modelo espera una respuesta del usuario. Se emite solo si el
+        // usuario tiene las notificaciones activadas (misma preferencia que el aviso de
+        // "respuesta lista"). En desktop es el toast; en móvil es no-op.
+        if (currentPrefs.desktopNotificationsEnabled) {
+            notifier.notify(NOTIFICATION_TITLE, question)
+        }
         return """{"status":"awaiting_user_response"}"""
     }
 
@@ -113,6 +123,9 @@ class AskUserTool(
 
     companion object {
         const val TOOL_NAME = "ask_user"
+
+        /** Título del toast cuando el modelo pide una decisión al usuario. */
+        private const val NOTIFICATION_TITLE = "Se necesita tu revisión"
 
         private const val AUTO_CONTINUE_ANSWER =
             "Modo automático (YOLO) activo: el usuario no responderá ahora. Toma la mejor " +

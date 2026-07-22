@@ -210,8 +210,12 @@ class AppContainer {
      */
     val toolConfirmationController = ToolConfirmationController(preferencesRepository)
 
+    /** Notificaciones nativas + rebote del dock (real solo en desktop). */
+    val systemNotifier = SystemNotifier()
+
     val todoTool = TodoTool(activeSessionStore)
-    private val askUserTool = AskUserTool(activeSessionStore, pendingUserPromptStore, preferencesRepository)
+    private val askUserTool =
+        AskUserTool(activeSessionStore, pendingUserPromptStore, preferencesRepository, systemNotifier)
     val useSkillTool = UseSkillTool(
         installedSkillsProvider = { preferencesRepository.current().installedSkills },
         skillLookup = { id ->
@@ -328,9 +332,6 @@ class AppContainer {
      * Programador de tareas automatizadas. Solo se arranca en desktop (necesita la
      * app abierta y las tools locales/MCP); en móvil se construye pero no corre.
      */
-    /** Notificaciones nativas + rebote del dock (real solo en desktop). */
-    val systemNotifier = SystemNotifier()
-
     val automationScheduler = AutomationScheduler(
         prefs = preferencesRepository,
         chats = chatRepository,
