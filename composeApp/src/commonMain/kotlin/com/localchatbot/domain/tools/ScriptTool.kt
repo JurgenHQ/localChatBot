@@ -76,8 +76,7 @@ class ScriptTool(
             }
         }
 
-        val prefs = preferences.current()
-        val workspaceDir = prefs.fsWorkspaceDir
+        val workspaceDir = FsToolUtil.effectiveWorkspace(preferences)
             ?: return FsToolUtil.errorPayload(json, "Sin workspace configurado para ejecutar scripts")
 
         val approved = confirm.requestApproval(

@@ -90,7 +90,7 @@ class SearchFilesTool(
         val pattern = args["pattern"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
             ?: return FsToolUtil.errorPayload(json, "Argumento 'pattern' faltante")
 
-        val workspace = preferences.current().fsWorkspaceDir
+        val workspace = FsToolUtil.effectiveWorkspace(preferences)
         val path = args["path"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
             ?: workspace
             ?: return FsToolUtil.errorPayload(json, "Sin workspace configurado y sin 'path'")

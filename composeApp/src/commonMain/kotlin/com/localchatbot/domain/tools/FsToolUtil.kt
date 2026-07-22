@@ -33,8 +33,12 @@ internal object FsToolUtil {
      */
     var workspaceStore: ActiveWorkspaceStore? = null
 
-    /** Workspace efectivo actual: el del proyecto de la sesión activa, o el global como fallback. */
-    private suspend fun effectiveWorkspace(prefs: PreferencesRepository): String? =
+    /**
+     * Workspace efectivo actual: el del proyecto de la sesión activa, o el global como fallback.
+     * Toda tool que necesite el workspace DEBE usar esto (no `prefs.fsWorkspaceDir` directo), o
+     * ignoraría el workspace del proyecto en chats asignados a uno.
+     */
+    suspend fun effectiveWorkspace(prefs: PreferencesRepository): String? =
         workspaceStore?.current() ?: prefs.current().fsWorkspaceDir
 
     suspend fun isAvailable(prefs: PreferencesRepository): Boolean =

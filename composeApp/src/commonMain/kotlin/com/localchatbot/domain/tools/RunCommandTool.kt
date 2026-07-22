@@ -86,9 +86,8 @@ class RunCommandTool(
         val command = args["command"]?.jsonPrimitive?.content
             ?: return FsToolUtil.errorPayload(json, "Argumento 'command' faltante")
 
-        val current = preferences.current()
         val workingDirInput = args["working_dir"]?.jsonPrimitive?.content
-        val workspace = current.fsWorkspaceDir
+        val workspace = FsToolUtil.effectiveWorkspace(preferences)
             ?: return FsToolUtil.errorPayload(json, "Sin workspace configurado")
 
         val resolvedDir = if (workingDirInput.isNullOrBlank()) {
