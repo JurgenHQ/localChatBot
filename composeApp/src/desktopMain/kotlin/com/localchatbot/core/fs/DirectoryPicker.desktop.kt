@@ -51,35 +51,49 @@ private class DesktopDirectoryPicker(
     }
 
     /**
-     * Abre el picker de carpetas nativo de Windows shelleando a PowerShell con el
-     * "truco" de System.Windows.Forms.OpenFileDialog en modo carpeta (ValidateNames/
-     * CheckFileExists en false): es el mismo diálogo Explorer moderno, no el viejo
-     * FolderBrowserDialog en árbol. El script va en -EncodedCommand (Base64 UTF-16LE)
-     * para no depender de escapar comillas al pasarlo por ProcessBuilder.
+     * Abre el picker de carpetas nativo de Windows shelleando a PowerShell con
+     * System.Windows.Forms.FolderBrowserDialog. Se probó antes con el "truco" de
+     * OpenFileDialog en modo carpeta (ValidateNames/CheckFileExists en false), pero
+     * ese diálogo es un selector de ARCHIVOS: un click normal sobre la carpeta
+     * deseada y "Abrir" simplemente navega dentro de ella en vez de seleccionarla,
+     * así que para el usuario "no pasaba nada" al elegir la carpeta. FolderBrowserDialog
+     * está pensado para carpetas: un click la resalta, y OK la confirma sin ambigüedad.
+     * El script va en -EncodedCommand (Base64 UTF-16LE) para no depender de escapar
+     * comillas al pasarlo por ProcessBuilder.
+     *
+     * La ruta se marca con el sentinel [PATH_SENTINEL] y se extrae por ese prefijo, NO
+     * tomando "la última línea": PowerShell puede emitir ruido CLIXML del stream de
+     * progreso ("Preparando módulos para el primer uso") al cargar WinForms, que con
+     * redirectErrorStream cae en stdout y quedaría DESPUÉS de la ruta — tomar la última
+     * línea agarraba ese XML en vez del path y todo parecía "cancelado". Se silencia el
+     * progreso con ${'$'}ProgressPreference y se deja stderr aparte por si acaso.
+     *
      * Devuelve null si PowerShell no está disponible o algo falla al lanzarlo (el
      * caller cae a [chooseDirectoryFallback] en ese caso); un Result no-null con
      * payload null significa "el usuario canceló", que NO debe disparar el fallback.
      */
     private fun chooseDirectoryWindowsNative(): Result<File?>? = try {
         val script = """
+            ${'$'}ProgressPreference = 'SilentlyContinue'
             Add-Type -AssemblyName System.Windows.Forms
-            ${'$'}d = New-Object System.Windows.Forms.OpenFileDialog
-            ${'$'}d.ValidateNames = ${'$'}false
-            ${'$'}d.CheckFileExists = ${'$'}false
-            ${'$'}d.CheckPathExists = ${'$'}true
-            ${'$'}d.FileName = "Selecciona esta carpeta"
-            ${'$'}d.Title = "Elegir workspace"
+            ${'$'}d = New-Object System.Windows.Forms.FolderBrowserDialog
+            ${'$'}d.Description = "Elegir workspace"
+            ${'$'}d.ShowNewFolderButton = ${'$'}true
             if (${'$'}d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                Write-Output ([System.IO.Path]::GetDirectoryName(${'$'}d.FileName))
+                Write-Output "$PATH_SENTINEL${'$'}(${'$'}d.SelectedPath)"
             }
         """.trimIndent()
         val encoded = Base64.getEncoder().encodeToString(script.toByteArray(Charsets.UTF_16LE))
         val proc = ProcessBuilder(
             "powershell", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", encoded
-        ).redirectErrorStream(true).start()
-        val output = proc.inputStream.bufferedReader().readText().trim()
+        ).start()
+        val output = proc.inputStream.bufferedReader().readText()
         proc.waitFor()
-        val dir = output.lines().lastOrNull { it.isNotBlank() }
+        val dir = output.lineSequence()
+            .firstOrNull { it.startsWith(PATH_SENTINEL) }
+            ?.removePrefix(PATH_SENTINEL)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
             ?.let { File(it) }
             ?.takeIf { it.isDirectory }
         Result.success(dir)
@@ -110,5 +124,11 @@ private class DesktopDirectoryPicker(
             deferred.complete(result)
         }
         return deferred.await()
+    }
+
+    private companion object {
+        // Prefijo con el que el script de PowerShell marca la ruta elegida, para
+        // extraerla sin confundirla con ruido CLIXML u otras líneas de stdout.
+        const val PATH_SENTINEL = "LCB_PATH::"
     }
 }
