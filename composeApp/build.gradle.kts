@@ -148,7 +148,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "LocalChatBot"
-            packageVersion = "1.0.4"
+            packageVersion = "1.0.6"
             description = "Chat con un modelo LLM local en tu red"
             vendor = "LocalChatBot"
             // jlink solo incluye módulos detectados por análisis estático (jdeps); el driver

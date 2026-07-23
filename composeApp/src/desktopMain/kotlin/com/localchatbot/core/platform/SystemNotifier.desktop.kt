@@ -33,6 +33,20 @@ import java.util.concurrent.TimeUnit
  * arrancar (ver [ensureWindowsRegistration]); el shell lo indexa antes de que llegue la
  * primera notificación (que ocurre al terminar un turno de chat, segundos después).
  *
+ * **No notificar si la app ya tiene el foco** ([isAppForeground]): el Centro de
+ * Notificaciones de macOS suprime el banner cuando la app está en primer plano (lo hace
+ * el propio SO); el toast WinRT no lo hace solo, así que lo comprobamos antes de
+ * disparar para no interrumpir a alguien que ya está mirando la app.
+ *
+ * (Se intentó dos veces que el clic en el toast de Windows trajera la app al frente,
+ * igual que el listener del [TrayIcon] en macOS. La segunda reveló el motivo real:
+ * **Windows PowerShell 5.1 rechaza categóricamente `Register-ObjectEvent` sobre un
+ * objeto WinRT** — "no se puede suscribir a eventos de Windows RT" — así que el
+ * proceso que debía quedarse escuchando el clic nunca llegaba a mostrar el toast. No
+ * es arreglable ajustando timeouts; requeriría un enganche de delegado WinRT crudo
+ * (`add_Activated`, no probado y frágil en PS 5.1), `pwsh` (no garantizado instalado)
+ * o un componente COM nativo (fuera de alcance en una app JVM pura). Se revirtió.)
+ *
  * Si la bandeja del sistema no está disponible (algunos entornos Linux), se cae al
  * método por proceso: `osascript` (macOS) / `notify-send` (Linux) / PowerShell.
  */
@@ -64,6 +78,10 @@ actual class SystemNotifier actual constructor() {
     actual fun notify(title: String, body: String) {
         requestAttention()
         if (isWindows) {
+            // El toast WinRT no se suprime solo cuando la app tiene el foco (a diferencia
+            // de macOS, donde el Centro de Notificaciones lo hace de forma nativa): lo
+            // replicamos aquí para no interrumpir a alguien que ya está mirando la app.
+            if (isAppForeground()) return
             // El TrayIcon no es fiable en Windows 10/11: usamos toast nativo WinRT y,
             // si el proceso falla, caemos al globo clásico. En un hilo daemon porque
             // notify es fire-and-forget y esperamos al proceso para poder hacer fallback.
@@ -75,6 +93,11 @@ actual class SystemNotifier actual constructor() {
             if (!showViaTray(title, body)) showViaShell(title, body)
         }
     }
+
+    /** True si alguna ventana de la app tiene el foco (para no notificar si ya la ven). */
+    private fun isAppForeground(): Boolean = runCatching {
+        Frame.getFrames().any { it.isDisplayable && it.isActive }
+    }.getOrDefault(false)
 
     /** Rebote del dock (macOS) / parpadeo de la barra de tareas (Windows). Best-effort. */
     private fun requestAttention() {
