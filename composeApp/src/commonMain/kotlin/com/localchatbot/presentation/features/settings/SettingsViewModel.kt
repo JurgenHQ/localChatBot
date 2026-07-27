@@ -34,6 +34,7 @@ sealed interface SettingsEditor {
     data object TavilyApiKey : SettingsEditor
     data object SystemPrompt : SettingsEditor
     data object ImageServiceUrl : SettingsEditor
+    data object EmbeddingsModel : SettingsEditor
     data object Temperature : SettingsEditor
     data object TopP : SettingsEditor
     data object MaxTokens : SettingsEditor

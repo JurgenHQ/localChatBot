@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -50,7 +51,8 @@ import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.presentation.components.atoms.ChatInputField
 import com.localchatbot.presentation.components.atoms.IconSquareButton
 import com.localchatbot.presentation.components.atoms.SendIconButton
-import com.localchatbot.presentation.components.molecules.SkillSuggestionPopup
+import com.localchatbot.presentation.components.molecules.SlashSuggestionPopup
+import com.localchatbot.presentation.features.chat.SlashCommand
 
 @Composable
 fun ChatComposer(
@@ -73,6 +75,9 @@ fun ChatComposer(
     pendingSkill: SkillDefinition? = null,
     installedSkills: List<SkillDefinition> = emptyList(),
     onSelectSkill: (SkillDefinition) -> Unit = {},
+    /** Comandos `/` ofrecibles en el estado actual (ver [SlashCommand.availableFor]). */
+    slashCommands: List<SlashCommand> = emptyList(),
+    onSelectCommand: (SlashCommand) -> Unit = {},
     onClearSkill: () -> Unit = {},
     /** Pregunta pendiente del modelo (tool `ask_user`); null si no hay. */
     pendingPrompt: com.localchatbot.core.state.PendingUserPrompt? = null,
@@ -90,16 +95,24 @@ fun ChatComposer(
         onSend()
     }
 
-    val showSkillPopup = value.startsWith("/") && installedSkills.isNotEmpty()
+    // Con solo "/" se abre aunque no haya skills instaladas: los comandos siempre están.
+    val showSlashPopup = value.startsWith("/") &&
+        (installedSkills.isNotEmpty() || slashCommands.isNotEmpty())
     // Solo el primer token tras "/" filtra el popup; el resto es el argumento.
-    val skillQuery = if (value.startsWith("/")) value.drop(1).substringBefore(' ') else ""
+    val slashQuery = if (value.startsWith("/")) value.drop(1).substringBefore(' ') else ""
 
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
-        if (showSkillPopup) {
-            SkillSuggestionPopup(
-                query = skillQuery,
+        if (showSlashPopup) {
+            SlashSuggestionPopup(
+                query = slashQuery,
+                commands = slashCommands,
                 skills = installedSkills,
-                onSelect = { skill ->
+                onSelectCommand = { cmd ->
+                    // El comando se ejecuta y el composer queda limpio: no es un mensaje.
+                    onValueChange("")
+                    onSelectCommand(cmd)
+                },
+                onSelectSkill = { skill ->
                     onSelectSkill(skill)
                     // El texto tras el primer espacio queda como mensaje del usuario.
                     val remainder = value.drop(1).substringAfter(' ', "").trim()
@@ -143,7 +156,11 @@ fun ChatComposer(
             AttachMenuButton(
                 onAttachImage = onAttach,
                 onAttachTextFile = onAttachTextFile,
-                onTemplates = onTemplates
+                onTemplates = onTemplates,
+                // Durante un turno solo se puede encolar texto: adjuntar quedaría a la
+                // espera minutos y habría que decidir cómo fusionar varias imágenes en un
+                // único mensaje. Se puede ampliar más adelante si hace falta.
+                enabled = !sending
             )
             val hasContentNow = value.isNotBlank() || attachedImageBytes != null || attachedTextFiles.isNotEmpty()
             ChatInputField(
@@ -151,13 +168,26 @@ fun ChatComposer(
                 onValueChange = onValueChange,
                 modifier = Modifier.weight(1f),
                 onSubmit = if (PlatformCapabilities.isDesktop) {
-                    { if (hasContentNow && !sending) dismissAndSend() }
+                    // Con un turno en curso Enter encola (send() lo resuelve), así que ya
+                    // no se descarta la pulsación como antes.
+                    { if (hasContentNow) dismissAndSend() }
                 } else null,
                 onPasteImage = onPasteImage
             )
             val hasContent = value.isNotBlank() || attachedImageBytes != null || attachedTextFiles.isNotEmpty()
             when {
-                sending -> StopIconButton(onClick = onStop)
+                // Con un turno en curso el Stop se queda, y si hay texto aparece además el
+                // botón de encolar: el mensaje no se pierde, se manda al terminar.
+                sending -> {
+                    StopIconButton(onClick = onStop)
+                    if (value.isNotBlank()) {
+                        IconSquareButton(
+                            icon = Icons.Outlined.Schedule,
+                            contentDescription = "Encolar mensaje",
+                            onClick = dismissAndSend
+                        )
+                    }
+                }
                 hasContent -> SendIconButton(enabled = true, onClick = dismissAndSend)
                 voiceSupported -> IconSquareButton(icon = Icons.Outlined.Mic, onClick = onVoice)
                 else -> SendIconButton(enabled = false, onClick = {})
@@ -178,11 +208,16 @@ fun ChatComposer(
 private fun AttachMenuButton(
     onAttachImage: () -> Unit,
     onAttachTextFile: (() -> Unit)?,
-    onTemplates: (() -> Unit)?
+    onTemplates: (() -> Unit)?,
+    enabled: Boolean = true
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconSquareButton(icon = Icons.Default.Add, onClick = { expanded = true })
+        IconSquareButton(
+            icon = Icons.Default.Add,
+            enabled = enabled,
+            onClick = { expanded = true }
+        )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
                 text = { Text("Adjuntar imagen") },

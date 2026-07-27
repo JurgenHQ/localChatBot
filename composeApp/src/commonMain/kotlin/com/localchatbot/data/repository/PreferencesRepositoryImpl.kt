@@ -14,6 +14,8 @@ import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.russhwolf.settings.Settings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +38,8 @@ class PreferencesRepositoryImpl(
     private val mcpSerializer = ListSerializer(McpServerConfig.serializer())
     private val scheduledTasksSerializer = ListSerializer(ScheduledTask.serializer())
     private val sessionAgentModesSerializer = MapSerializer(String.serializer(), String.serializer())
+    private val compactBoundariesSerializer =
+        MapSerializer(String.serializer(), com.localchatbot.domain.model.CompactBoundary.serializer())
     private val connectionProfilesSerializer = ListSerializer(ConnectionProfile.serializer())
 
     private val _state = MutableStateFlow(load())
@@ -106,6 +110,11 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(imageServiceUrl = value)
     }
 
+    override suspend fun updateEmbeddingsModel(value: String) {
+        settings.putString(KEY_EMBEDDINGS_MODEL, value)
+        _state.value = _state.value.copy(embeddingsModel = value)
+    }
+
     override suspend fun updateFsWorkspaceDir(value: String?) {
         if (value.isNullOrBlank()) {
             settings.remove(KEY_FS_WORKSPACE)
@@ -147,6 +156,22 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(sessionAgentModes = emptyMap())
     }
 
+    override suspend fun updateSessionCompactBoundary(
+        sessionId: String,
+        boundary: com.localchatbot.domain.model.CompactBoundary?
+    ) {
+        val next = if (boundary == null) {
+            _state.value.sessionCompactBoundaries - sessionId
+        } else {
+            _state.value.sessionCompactBoundaries + (sessionId to boundary)
+        }
+        settings.putString(
+            KEY_SESSION_COMPACT_BOUNDARIES,
+            templatesJson.encodeToString(compactBoundariesSerializer, next)
+        )
+        _state.value = _state.value.copy(sessionCompactBoundaries = next)
+    }
+
     private fun persistSessionAgentModes(modes: Map<String, com.localchatbot.domain.model.AgentMode>) {
         settings.putString(
             KEY_SESSION_AGENT_MODES,
@@ -159,9 +184,14 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(installedSkills = skills)
     }
 
+    /**
+     * El `withContext` no es decorativo: estos dos métodos recorren el disco (una carpeta
+     * con su SKILL.md por skill) y los llama un `viewModelScope.launch`, que en Desktop
+     * corre en el EDT — sin el salto, guardar o refrescar skills bloqueaba la UI.
+     */
     override suspend fun setCustomSkills(skills: List<SkillDefinition>) {
         if (skillFileStore.isAvailable) {
-            skillFileStore.saveAll(skills)
+            withContext(Dispatchers.Default) { skillFileStore.saveAll(skills) }
         } else {
             settings.putString(KEY_CUSTOM_SKILLS, templatesJson.encodeToString(customSkillsSerializer, skills))
         }
@@ -170,7 +200,7 @@ class PreferencesRepositoryImpl(
 
     override suspend fun refreshCustomSkills() {
         if (!skillFileStore.isAvailable) return
-        val skills = skillFileStore.loadAll()
+        val skills = withContext(Dispatchers.Default) { skillFileStore.loadAll() }
         _state.value = _state.value.copy(customSkills = skills)
     }
 
@@ -194,6 +224,7 @@ class PreferencesRepositoryImpl(
             defaultSystemPrompt = _state.value.defaultSystemPrompt,
             promptTemplates = _state.value.promptTemplates,
             imageServiceUrl = _state.value.imageServiceUrl,
+            embeddingsModel = _state.value.embeddingsModel,
             fsWorkspaceDir = _state.value.fsWorkspaceDir,
             fsYoloMode = _state.value.fsYoloMode,
             fsAllowOutsideWorkspace = _state.value.fsAllowOutsideWorkspace,
@@ -221,6 +252,7 @@ class PreferencesRepositoryImpl(
             updateDefaultSystemPrompt(export.defaultSystemPrompt)
             setPromptTemplates(export.promptTemplates)
             updateImageServiceUrl(export.imageServiceUrl)
+            updateEmbeddingsModel(export.embeddingsModel)
             updateFsWorkspaceDir(export.fsWorkspaceDir)
             updateFsYoloMode(export.fsYoloMode)
             updateFsAllowOutsideWorkspace(export.fsAllowOutsideWorkspace)
@@ -264,9 +296,9 @@ class PreferencesRepositoryImpl(
             KEY_CONN_MODE, KEY_IP, KEY_PORT, KEY_MODEL, KEY_DIRECT_URL, KEY_HTTPS, KEY_API_KEY,
             KEY_CONNECTION_PROFILES, KEY_ACTIVE_CONNECTION_PROFILE,
             KEY_THEME, KEY_ACCENT, KEY_ONBOARDED,
-            KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL,
+            KEY_TAVILY, KEY_SYSTEM_PROMPT, KEY_TEMPLATES, KEY_IMAGE_URL, KEY_EMBEDDINGS_MODEL,
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
-            KEY_SESSION_AGENT_MODES,
+            KEY_SESSION_AGENT_MODES, KEY_SESSION_COMPACT_BOUNDARIES,
             KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
             KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
             KEY_DESKTOP_NOTIFICATIONS, KEY_GEN_PARAMS
@@ -292,6 +324,7 @@ class PreferencesRepositoryImpl(
                 templatesJson.decodeFromString(templatesSerializer, raw)
             }.getOrDefault(emptyList()),
             imageServiceUrl = settings.getString(KEY_IMAGE_URL, default.imageServiceUrl),
+            embeddingsModel = settings.getString(KEY_EMBEDDINGS_MODEL, default.embeddingsModel),
             fsWorkspaceDir = settings.getStringOrNull(KEY_FS_WORKSPACE),
             fsYoloMode = settings.getBoolean(KEY_FS_YOLO, default.fsYoloMode),
             fsAllowOutsideWorkspace = settings.getBoolean(KEY_FS_ALLOW_OUTSIDE, default.fsAllowOutsideWorkspace),
@@ -307,6 +340,10 @@ class PreferencesRepositoryImpl(
                     .mapNotNull { (id, name) ->
                         runCatching { id to com.localchatbot.domain.model.AgentMode.valueOf(name) }.getOrNull()
                     }.toMap()
+            }.getOrDefault(emptyMap()),
+            sessionCompactBoundaries = runCatching {
+                val raw = settings.getStringOrNull(KEY_SESSION_COMPACT_BOUNDARIES) ?: return@runCatching emptyMap()
+                templatesJson.decodeFromString(compactBoundariesSerializer, raw)
             }.getOrDefault(emptyMap()),
             installedSkills = runCatching {
                 val raw = settings.getStringOrNull(KEY_INSTALLED_SKILLS) ?: return@runCatching emptyList()
@@ -438,12 +475,14 @@ class PreferencesRepositoryImpl(
         const val KEY_SYSTEM_PROMPT = "default_system_prompt"
         const val KEY_TEMPLATES = "prompt_templates"
         const val KEY_IMAGE_URL = "image_service_url"
+        const val KEY_EMBEDDINGS_MODEL = "embeddings_model"
         const val KEY_FS_WORKSPACE = "fs_workspace_dir"
         const val KEY_FS_YOLO = "fs_yolo_mode"
         const val KEY_FS_ALLOW_OUTSIDE = "fs_allow_outside_workspace"
         const val KEY_FS_PREVIEW_EDITS = "fs_preview_edits"
         const val KEY_AGENT_MODE = "agent_mode"
         const val KEY_SESSION_AGENT_MODES = "session_agent_modes"
+        const val KEY_SESSION_COMPACT_BOUNDARIES = "session_compact_boundaries"
         const val KEY_INSTALLED_SKILLS = "installed_skills"
         const val KEY_CUSTOM_SKILLS = "custom_skills"
         const val KEY_MCP_SERVERS = "mcp_servers"

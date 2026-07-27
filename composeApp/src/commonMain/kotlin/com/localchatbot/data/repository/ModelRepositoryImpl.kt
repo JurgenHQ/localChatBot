@@ -298,6 +298,25 @@ class ModelRepositoryImpl(
             ?.trim()?.takeIf { it.isNotBlank() }
     }
 
+    override suspend fun generateDocument(
+        baseUrl: String,
+        model: String,
+        systemPrompt: String,
+        userPrompt: String
+    ): String? {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", systemPrompt),
+                OpenAiMessage.text("user", userPrompt)
+            ),
+            temperature = 0.3
+        )
+        return api.chatCompletion(baseUrl, request).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?.trim()?.takeIf { it.isNotBlank() }
+    }
+
     private fun ChatMessage.toDto(): OpenAiMessage {
         val roleString = when (role) {
             Role.User -> "user"

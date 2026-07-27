@@ -20,20 +20,58 @@ CREATE TABLE message (
     reasoning TEXT,
     metrics TEXT AS TokenMetrics,
     checkpoint_id TEXT,
+    -- Modelo real que generó el mensaje. NULL en los anteriores a la migración 1.sqm (y en
+    -- los que no genera el modelo: usuario, tool); quien lo lea cae a `session.model`.
+    --
+    -- OJO al orden: `ALTER TABLE ... ADD COLUMN` añade la columna al FINAL, así que esta
+    -- tiene que quedar como última columna para que el esquema resultante de aplicar las
+    -- migraciones coincida con este CREATE (es lo que comprueba verifyMigrations).
+    model TEXT,
     FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE
 );
 
 CREATE INDEX message_session_id_idx ON message(session_id);
 
-selectAllMessages:
-SELECT * FROM message ORDER BY session_id, sort_order ASC;
+-- Índice compuesto: sirve tanto a selectMessagesBySession (recorre el índice ya ordenado,
+-- sin sort) como a la subconsulta del preview en selectAllSessionSummaries (seek al final
+-- del índice en vez de escanear los mensajes de la sesión). Sin él, listar las sesiones
+-- volvería a costar O(historial entero), que es justo lo que se quería quitar.
+--
+-- OJO: esto solo lo aplica Schema.create(), o sea las bases NUEVAS. Las existentes lo
+-- reciben del CREATE INDEX IF NOT EXISTS defensivo de DatabaseDriverFactory, que se
+-- conserva: el índice es anterior al versionado, así que una base adoptada como v1 puede
+-- perfectamente no tenerlo. Ver la nota en CLAUDE.md.
+CREATE INDEX IF NOT EXISTS message_session_sort_idx ON message(session_id, sort_order);
+
+-- Índice de texto completo para la búsqueda global (ver la migración 2.sqm, que lo explica
+-- en detalle y lo backfillea en las bases existentes). De contenido externo: no duplica el
+-- texto, lo lee de `message`, y por eso la sincronización depende de los tres triggers.
+CREATE VIRTUAL TABLE message_fts USING fts5(
+    content,
+    content=message,
+    content_rowid=rowid,
+    tokenize="unicode61 remove_diacritics 1"
+);
+
+CREATE TRIGGER message_fts_after_insert AFTER INSERT ON message BEGIN
+    INSERT INTO message_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER message_fts_after_delete AFTER DELETE ON message BEGIN
+    INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+END;
+
+CREATE TRIGGER message_fts_after_update AFTER UPDATE OF content ON message BEGIN
+    INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+    INSERT INTO message_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
 
 selectMessagesBySession:
 SELECT * FROM message WHERE session_id = :sessionId ORDER BY sort_order ASC;
 
 insertMessage:
-INSERT INTO message(id, session_id, role, content, timestamp_epoch_ms, sort_order, attachments, tool_calls, tool_call_id, tool_name, sources, reasoning, metrics, checkpoint_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO message(id, session_id, role, content, timestamp_epoch_ms, sort_order, attachments, tool_calls, tool_call_id, tool_name, sources, reasoning, metrics, checkpoint_id, model)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 updateMessageContent:
 UPDATE message SET content = :content WHERE id = :id;
@@ -53,6 +91,11 @@ UPDATE message SET checkpoint_id = :checkpointId WHERE id = :id;
 updateMessageMetrics:
 UPDATE message SET metrics = :metrics WHERE id = :id;
 
+-- Se escribe junto a las métricas al cerrar el turno: hasta entonces no se sabe qué modelo
+-- respondió de verdad (el servidor puede devolver uno distinto al configurado).
+updateMessageModel:
+UPDATE message SET model = :model WHERE id = :id;
+
 deleteMessagesFromSortOrder:
 DELETE FROM message WHERE session_id = :sessionId AND sort_order >= :sortOrder;
 
@@ -61,3 +104,33 @@ SELECT sort_order FROM message WHERE id = :id;
 
 maxSortOrderForSession:
 SELECT MAX(sort_order) FROM message WHERE session_id = :sessionId;
+
+-- Búsqueda global en todo el historial (roadmap 3.1).
+--
+-- El JOIN contra `session` no es decorativo aunque 2.sqm borre los huérfanos: si alguna vez
+-- vuelven a aparecer (basta con que una conexión no active foreign_keys), la búsqueda no debe
+-- ofrecer mensajes de conversaciones que no se pueden abrir.
+--
+-- Los mensajes `Tool` se excluyen porque son JSON de cientos de líneas: coparían los
+-- resultados con ruido que nadie escribió. Va como parámetro, no como literal 'Tool', porque
+-- la columna está adaptada a Role (mismo motivo que en selectAllSessionSummaries).
+--
+-- `snippet` delimita lo que coincidió con char(2)/char(3) —caracteres de control que no
+-- aparecen en texto de chat— para que la UI pueda resaltarlo sin volver a implementar la
+-- tokenización de FTS5 (que ignora acentos y no coincide con la query literal).
+-- `bm25` ordena por relevancia: devuelve valores negativos, más negativo = mejor, así que
+-- ascendente es el orden correcto.
+searchMessages:
+SELECT
+    m.id,
+    m.session_id,
+    s.title,
+    m.role,
+    m.timestamp_epoch_ms,
+    snippet(message_fts, 0, char(2), char(3), '…', 12) AS fragment
+FROM message_fts
+JOIN message m ON m.rowid = message_fts.rowid
+JOIN session s ON s.id = m.session_id
+WHERE message_fts MATCH :query AND m.role != :excludedRole
+ORDER BY bm25(message_fts)
+LIMIT :limit;

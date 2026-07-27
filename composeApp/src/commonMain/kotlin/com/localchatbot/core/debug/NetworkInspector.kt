@@ -49,7 +49,8 @@ data class NetworkTransaction(
 ) {
     enum class Kind {
         ChatCompletion, ChatStream, ListModels, Ping, ImageGen, DiagramRender, WebSearch, McpCall,
-        TextImageGen, Cartoon, AnimateVideo, CartoonVideo, ModelLoad, ModelUnload
+        TextImageGen, Cartoon, AnimateVideo, CartoonVideo, ModelLoad, ModelUnload, WebFetch,
+        Embeddings
     }
 
     val isError: Boolean get() = error != null || (responseStatus != null && responseStatus >= 400)

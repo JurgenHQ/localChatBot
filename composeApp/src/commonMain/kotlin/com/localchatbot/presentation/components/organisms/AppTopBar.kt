@@ -13,12 +13,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -37,6 +44,12 @@ fun ChatTopBar(
     onSubtitleClick: (() -> Unit)? = null,
     onSearchClick: (() -> Unit)? = null,
     onEditorClick: (() -> Unit)? = null,
+    /**
+     * Acciones del menú "⋮". Van acá y no como iconos sueltos porque la barra ya tiene
+     * cuatro y en pantallas angostas no entra una quinta; además son acciones de
+     * conversación (exportar, compactar), no de navegación.
+     */
+    menuItems: List<TopBarMenuItem> = emptyList(),
     showMenuButton: Boolean = true
 ) {
     Row(
@@ -90,5 +103,34 @@ fun ChatTopBar(
         Box(modifier = Modifier.size(44.dp).clickable(onClick = onNewClick), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Add, contentDescription = "Nuevo", tint = MaterialTheme.colorScheme.onBackground)
         }
+        if (menuItems.isNotEmpty()) {
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                Box(
+                    modifier = Modifier.size(44.dp).clickable { expanded = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Más acciones",
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    menuItems.forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(item.label) },
+                            onClick = {
+                                expanded = false
+                                item.onClick()
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
+
+/** Acción del menú "⋮" del [ChatTopBar]. */
+data class TopBarMenuItem(val label: String, val onClick: () -> Unit)

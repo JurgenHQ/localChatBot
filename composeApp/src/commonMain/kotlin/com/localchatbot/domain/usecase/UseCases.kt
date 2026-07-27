@@ -24,15 +24,18 @@ import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.data.mcp.McpToolProvider
+import com.localchatbot.domain.tools.AskUserTool
 import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.tools.truncateToolOutput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onEach
 import kotlinx.datetime.Clock
@@ -101,6 +104,8 @@ class SendMessageUseCase(
      * la UI. Real solo en desktop.
      */
     private val checkpointStore: com.localchatbot.core.storage.CheckpointStore? = null,
+    /** Hooks post-tool (`~/.localchatbot/hooks.json`). Null = sin hooks. */
+    private val hooksStore: com.localchatbot.core.hooks.HooksStore? = null,
     /**
      * Workspace efectivo de la sesión activa (carpeta del proyecto o el global). Se usa para
      * resolver rutas del checkpoint y construir el bloque `<workspace>`. Si es null se cae al
@@ -193,6 +198,12 @@ class SendMessageUseCase(
             var pendingNudge: String? = null
             // Reintentos para reconciliar todos pendientes al cerrar el turno.
             var todoNudges = 0
+            // Reintentos para reconvertir una pregunta escrita en prosa en una
+            // llamada real a `ask_user` (ver ASK_USER_NUDGE).
+            var askUserNudges = 0
+            // True en cuanto el modelo llama `ask_user` en este turno: si ya preguntó
+            // formalmente, no volvemos a empujarle aunque el texto lleve interrogantes.
+            var askUserCalled = false
             var lastAssistantId: String? = null
             // Checkpoint del turno: true tras marcar el primer mensaje assistant
             // que mutó archivos (evita re-tagear y re-prunear en cada tool call).
@@ -211,6 +222,10 @@ class SendMessageUseCase(
             var lastContextTokens: Int? = null
             var hasMetrics = false
             var anyEstimated = false
+            // Modelo que reportó el servidor; se persiste en el mensaje final junto a las
+            // métricas para que un cambio de modelo posterior no reescriba a qué modelo
+            // pertenecían estos tokens (`session.model` sí se pisa).
+            var actualModel: String? = null
 
             while (iter < MAX_TOOL_ITERATIONS) {
                 val currentMessages = chats.getSession(sessionId)?.messages
@@ -221,6 +236,53 @@ class SendMessageUseCase(
                 val reasoningBuffer = StringBuilder()
                 var finishReason: String? = null
                 var finalToolCalls: List<ToolCall> = emptyList()
+
+                // Persistencia THROTTLEADA del streaming: como mucho una escritura cada
+                // STREAM_PERSIST_INTERVAL_MS, con flush garantizado al cerrar el intento.
+                //
+                // Cada UPDATE invalida la tabla y SQLDelight reejecuta las consultas que
+                // dependen de ella. Eso hoy cuesta lo que ocupa la sesión ACTIVA
+                // (selectMessagesBySession) más un seek por sesión para el preview del
+                // drawer; antes releía TODOS los mensajes de TODAS las sesiones y
+                // reconstruía el grafo de dominio entero, así que a 60 tokens/s era
+                // O(historial completo) 60 veces por segundo. El throttle sigue mereciendo
+                // la pena de todas formas: reduce las escrituras a disco y los repintados.
+                var contentDirty = false
+                var reasoningDirty = false
+                var lastPersistMs = 0L
+
+                /**
+                 * Vuelca a la BD lo acumulado en los buffers. En [NonCancellable] porque
+                 * también corre en el `finally` del intento: si el usuario pulsa stop,
+                 * queremos conservar el texto generado hasta ese momento, no perder el
+                 * último tramo sin persistir.
+                 */
+                suspend fun flushStreamBuffers() {
+                    val id = assistantId ?: return
+                    if (!contentDirty && !reasoningDirty) return
+                    withContext(NonCancellable) {
+                        if (contentDirty) {
+                            chats.updateMessageContent(sessionId, id, buffer.toString())
+                            contentDirty = false
+                        }
+                        if (reasoningDirty) {
+                            chats.updateMessageReasoning(sessionId, id, reasoningBuffer.toString())
+                            reasoningDirty = false
+                        }
+                    }
+                }
+
+                /**
+                 * Vuelca si ya pasó el intervalo desde la última escritura. El primer
+                 * delta siempre escribe (lastPersistMs = 0), así que el texto aparece
+                 * al instante y sólo se agrupa el resto de la ráfaga.
+                 */
+                suspend fun maybePersist() {
+                    val now = Clock.System.now().toEpochMilliseconds()
+                    if (now - lastPersistMs < STREAM_PERSIST_INTERVAL_MS) return
+                    lastPersistMs = now
+                    flushStreamBuffers()
+                }
 
                 // Crea (lazy) el mensaje assistant la primera vez que llega algo
                 // streaming — sea content normal o reasoning. Sin esto, modelos que
@@ -245,7 +307,8 @@ class SendMessageUseCase(
 
                 val (messagesForApi, discarded) = buildMessagesForApi(
                     currentMessages, tools != null, systemPromptOverride, pendingNudge,
-                    workspaceContext, contextSummary, memoryContext
+                    workspaceContext, contextSummary, memoryContext,
+                    compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId
                 )
                 pendingNudge = null
 
@@ -320,18 +383,20 @@ class SendMessageUseCase(
                         when (event) {
                             is StreamEvent.ContentDelta -> {
                                 buffer.append(event.text)
-                                val id = ensureAssistantMessage()
-                                chats.updateMessageContent(sessionId, id, buffer.toString())
+                                ensureAssistantMessage()
+                                contentDirty = true
+                                maybePersist()
                             }
                             is StreamEvent.ReasoningDelta -> {
                                 reasoningBuffer.append(event.text)
-                                val id = ensureAssistantMessage()
-                                chats.updateMessageReasoning(sessionId, id, reasoningBuffer.toString())
+                                ensureAssistantMessage()
+                                reasoningDirty = true
+                                maybePersist()
                             }
                             is StreamEvent.Finish -> {
                                 finishReason = event.reason
                                 finalToolCalls = event.toolCalls
-                                event.actualModel?.let { chats.updateModel(sessionId, it) }
+                                event.actualModel?.let { actualModel = it; chats.updateModel(sessionId, it) }
                                 // Acumula métricas de tokens a lo largo de las rondas
                                 // (con tools, cada ronda reenvía el contexto creciente).
                                 event.inputTokens?.let {
@@ -351,6 +416,10 @@ class SendMessageUseCase(
                   } catch (e: CancellationException) {
                     throw e
                   } catch (e: Throwable) {
+                    // El rollback de abajo borra el mensaje, así que aquí no hay nada
+                    // que volcar: basta con descartar lo pendiente.
+                    contentDirty = false
+                    reasoningDirty = false
                     // ¿La app pasó por background durante este intento? En móvil el
                     // SO suspende el proceso (iOS mata además el socket) — no es un
                     // fallo del servidor, así que no consume presupuesto de retries:
@@ -386,6 +455,11 @@ class SendMessageUseCase(
                         streamAttempt++
                     }
                     delay(STREAM_RETRY_DELAY_MS)
+                  } finally {
+                    // Cierre del intento (fin normal, stop del usuario o error): lo que
+                    // quede en los buffers baja a la BD. Sin esto el throttle se comería
+                    // el último tramo de texto.
+                    flushStreamBuffers()
                   }
                 }
 
@@ -494,12 +568,27 @@ class SendMessageUseCase(
                                 }
                             }
                         }
+                        // Comandos de shell, tools MCP y scripts de skill no declaran qué
+                        // van a tocar, así que el snapshot por archivo no sirve: se guarda
+                        // el estado del workspace vía git antes del primero del turno.
+                        if (tool != null && ckStore != null && isOpaqueMutatingTool(call.function.name)) {
+                            runCatching {
+                                val ws = activeWorkspaceStore?.current() ?: prefs.current().fsWorkspaceDir
+                                if (ws != null && ckStore.snapshotWorkspaceGit(sessionId, userMsg.id, ws)) {
+                                    if (!checkpointTagged) {
+                                        checkpointTagged = true
+                                        chats.updateMessageCheckpoint(sessionId, toolCallMsgId, userMsg.id)
+                                        ckStore.pruneSession(sessionId)
+                                    }
+                                }
+                            }
+                        }
                         val rawResult = if (tool == null) {
                             """{"error":"Tool desconocida: ${call.function.name}"}"""
                         } else {
                             executeWithRetry(tool, call.function.arguments)
                         }
-                        return call to truncateToolOutput(rawResult)
+                        return call to truncateToolOutput(runHooksFor(call.function.name, rawResult))
                     }
 
                     val results: List<Pair<ToolCall, String>> = if (needsSequential) {
@@ -510,6 +599,7 @@ class SendMessageUseCase(
 
                     results.forEach { (call, resultText) ->
                         lastToolResultJson = resultText
+                        if (call.function.name == AskUserTool.TOOL_NAME) askUserCalled = true
                         val content = enrichFileToolContent(
                             call.function.name,
                             call.function.arguments,
@@ -554,6 +644,26 @@ class SendMessageUseCase(
                 // preguntar algo al usuario, el prompt le instruye a llamar `ask_user`
                 // (que termina el turno explícitamente) en vez de narrar la pregunta.
 
+                // Refuerzo determinista de esa regla: los modelos locales la ignoran a
+                // menudo (sobre todo con "hazme una ronda de preguntas"), escriben las
+                // preguntas en prosa y el turno muere sin panel de respuesta. Si el texto
+                // final es una pregunta al usuario y no hubo `ask_user`, reenganchamos una
+                // vez con una instrucción efímera para que la re-emita como tool call.
+                // NO se borra el texto ya escrito: si la detección se equivoca el coste es
+                // una ronda extra, no perder contenido. Igual que el `recovery` de
+                // edit_file, inyectar la instrucción es más fiable que sólo prompt.
+                if (tools != null &&
+                    !askUserCalled &&
+                    askUserNudges < MAX_ASK_USER_NUDGES &&
+                    toolRegistry.find(AskUserTool.TOOL_NAME) != null &&
+                    looksLikeQuestionToUser(buffer.toString())
+                ) {
+                    askUserNudges++
+                    pendingNudge = ASK_USER_NUDGE
+                    iter++
+                    continue
+                }
+
                 // Reconciliación: el modelo terminó pero dejó tareas pendientes en
                 // esta sesión. Lo reenganchamos una vez (tope MAX_TODO_NUDGES) para
                 // que las complete o las limpie en vez de dejarlas colgadas.
@@ -595,7 +705,8 @@ class SendMessageUseCase(
                         estimated = anyEstimated,
                         contextTokens = lastContextTokens,
                         reasoningMs = sumReasoningMs.takeIf { it > 0 }
-                    )
+                    ),
+                    actualModel
                 )
             }
 
@@ -706,7 +817,14 @@ class SendMessageUseCase(
         ephemeralNudge: String? = null,
         workspaceContext: String? = null,
         contextSummary: String? = null,
-        memoryContext: String? = null
+        memoryContext: String? = null,
+        /**
+         * Corte de la compactación manual (`/compact`): id del último mensaje que el
+         * usuario decidió representar por [contextSummary]. Ese mensaje y todos los
+         * anteriores no se envían al modelo — pero **siguen visibles en el chat**, que es
+         * la diferencia con truncar la conversación.
+         */
+        compactedThroughId: String? = null
     ): Pair<List<ChatMessage>, List<ChatMessage>> {
         val cfg = prefs.current()
         val userSystem = cfg.defaultSystemPrompt.trim()
@@ -729,10 +847,25 @@ class SendMessageUseCase(
             .filterNot { it.isNullOrBlank() }.joinToString("\n\n")
 
         // Strip leading system message before windowing — it's re-injected below.
-        val history = if (currentMessages.firstOrNull()?.role == Role.System) {
+        val fullHistory = if (currentMessages.firstOrNull()?.role == Role.System) {
             currentMessages.drop(1)
         } else {
             currentMessages
+        }
+
+        // Compactación manual: descartar todo hasta el corte inclusive. Si el id ya no
+        // existe (el usuario reenvió un mensaje anterior y truncó la sesión) el corte se
+        // ignora y se usa el historial completo — degradar a "no compactado" es seguro,
+        // enviar de menos no lo sería.
+        val boundaryIdx = compactedThroughId?.let { id -> fullHistory.indexOfFirst { it.id == id } } ?: -1
+        val compacted = boundaryIdx >= 0
+        val history = if (compacted) {
+            // dropWhile Tool: si el corte cae entre un assistant que anunció tools y sus
+            // resultados, la ventana arrancaría con `role=tool` huérfanos y el servidor
+            // rechaza la request.
+            fullHistory.drop(boundaryIdx + 1).dropWhile { it.role == Role.Tool }
+        } else {
+            fullHistory
         }
 
         // Ventana por presupuesto de tokens estimados (~4 chars/token), no por
@@ -764,7 +897,10 @@ class SendMessageUseCase(
             discarded = emptyList()
             windowed = history
         }
-        val truncated = discarded.isNotEmpty()
+        // También cuando hubo compactación manual: ahí no hay `discarded` (los mensajes se
+        // sacaron antes de la ventana), pero el resumen igual tiene que inyectarse o el
+        // modelo perdería el hilo de golpe.
+        val truncated = discarded.isNotEmpty() || compacted
 
         // Compactación: si hay resumen previo (generado por el modelo), lo inyectamos
         // como system message — da al modelo contexto real del historial descartado.
@@ -837,25 +973,6 @@ class SendMessageUseCase(
         }.trim()
         return msg.copy(content = expanded)
     }
-
-    /** Construye un transcript legible para el modelo a partir de los mensajes descartados. */
-    private fun buildSummaryTranscript(previousSummary: String?, discarded: List<ChatMessage>): String =
-        buildString {
-            if (!previousSummary.isNullOrBlank()) {
-                append("Resumen del contexto anterior:\n")
-                append(previousSummary)
-                append("\n\n")
-            }
-            append("Historial a resumir:\n")
-            for (msg in discarded) {
-                when (msg.role) {
-                    Role.User -> append("Usuario: ${msg.content.take(600)}\n")
-                    Role.Assistant -> if (msg.content.isNotBlank()) append("Asistente: ${msg.content.take(600)}\n")
-                    Role.Tool -> append("[Tool ${msg.toolName ?: "?"}: ${msg.content.take(200)}]\n")
-                    Role.System -> {}
-                }
-            }
-        }
 
     /**
      * Construye el bloque `<workspace>` que se inyecta en el system prompt: cwd,
@@ -952,6 +1069,52 @@ class SendMessageUseCase(
         return sb.toString().takeIf { it.isNotBlank() }
     }
 
+    /**
+     * Ejecuta los hooks que apliquen a [toolName] y devuelve el resultado de la tool con su
+     * salida añadida.
+     *
+     * Se añade al **resultado de la tool** en vez de mandarse aparte para que el modelo lo
+     * vea en la misma ronda: si el formateador reescribió el archivo que acaba de editar, o
+     * el compilador falló, tiene que enterarse antes de seguir construyendo encima.
+     *
+     * Nada de esto puede tumbar el turno: si un hook peta, se ignora.
+     */
+    private suspend fun runHooksFor(toolName: String, toolResult: String): String {
+        val store = hooksStore ?: return toolResult
+        val agent = filesystemAgent ?: return toolResult
+        if (!store.isAvailable) return toolResult
+        val hooks = runCatching { store.load() }.getOrDefault(emptyList())
+            .filter { it.matches(toolName) }
+        if (hooks.isEmpty()) return toolResult
+
+        val workspace = activeWorkspaceStore?.current()
+            ?: prefs.current().fsWorkspaceDir
+            ?: return toolResult
+
+        val notes = StringBuilder()
+        hooks.forEach { hook ->
+            runCatching {
+                val res = agent.runCommand(hook.command, workspace, hook.timeoutSeconds, background = false)
+                val payload = (res as? FsResult.Ok)?.payload
+                val exit = payload?.get("exitCode")?.jsonPrimitive?.content?.toIntOrNull()
+                val out = listOfNotNull(
+                    payload?.get("stdout")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                    payload?.get("stderr")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                ).joinToString("\n").trim()
+                val failed = res is FsResult.Err || (exit != null && exit != 0)
+                // onlyOnFailureOutput evita gastar contexto con el "todo bien" de cada
+                // formateador; cuando falla, su salida es justo lo que hay que ver.
+                if (failed || !hook.onlyOnFailureOutput) {
+                    if (notes.isNotEmpty()) notes.append("\n")
+                    notes.append("[hook] ").append(hook.name.ifBlank { hook.command })
+                    notes.append(if (failed) " — FALLÓ" else " — ok")
+                    if (out.isNotEmpty()) notes.append("\n").append(out.take(HOOK_OUTPUT_CAP))
+                }
+            }
+        }
+        return if (notes.isEmpty()) toolResult else toolResult + "\n\n" + notes
+    }
+
     private suspend fun executeWithRetry(tool: com.localchatbot.domain.tools.Tool, argumentsJson: String): String {
         var lastError: Throwable? = null
         for (attempt in 1..RETRY_MAX_ATTEMPTS) {
@@ -1022,6 +1185,18 @@ class SendMessageUseCase(
          */
         const val MAX_TOOL_ITERATIONS = 200
 
+        /** Recorte de la salida de un hook: un build verboso no puede comerse el contexto. */
+        private const val HOOK_OUTPUT_CAP = 2_000
+
+        /**
+         * Tools que mutan el workspace sin decir qué tocan: no hay `path` en sus argumentos,
+         * así que su checkpoint tiene que ser del workspace entero (vía git).
+         */
+        fun isOpaqueMutatingTool(name: String): Boolean =
+            name == com.localchatbot.domain.tools.RunCommandTool.TOOL_NAME ||
+                name.startsWith("mcp_") ||
+                name.startsWith("sk_")
+
         /**
          * Tools cuyo efecto sobre archivos se snapshotea para el checkpoint del
          * turno. `run_command`, MCP y scripts de skills quedan fuera (no hay
@@ -1059,6 +1234,49 @@ class SendMessageUseCase(
                 "`manage_todos` operation=complete con cada id. Si las abandonaste, llama " +
                 "operation=clear. Si no, continúa el trabajo. No termines el turno dejando " +
                 "tareas pendientes.\nPendientes:\n"
+
+        /**
+         * Tope de reenganches para convertir una pregunta escrita en prosa en una
+         * llamada real a `ask_user`. Uno basta: si tras el aviso explícito el modelo
+         * insiste en prosa, no vamos a ganarle a base de rondas.
+         */
+        private const val MAX_ASK_USER_NUDGES = 1
+
+        private const val ASK_USER_NUDGE =
+            "Tu mensaje anterior termina preguntándole algo al usuario, pero el texto en " +
+                "prosa NO le abre ningún campo de respuesta: el turno se cerraría sin que " +
+                "pueda contestar. Llama AHORA a la tool `ask_user` con esa pregunta. Si " +
+                "tenías varias preguntas (cuestionario, ronda de preguntas), haz SOLO la " +
+                "primera: cuando el usuario responda, repites `ask_user` con la siguiente. " +
+                "Pasa `options` cuando las respuestas razonables sean un conjunto acotado. " +
+                "No repitas la explicación que ya escribiste."
+
+        /**
+         * ¿El texto con el que el modelo cierra el turno es una pregunta dirigida al
+         * usuario? Deliberadamente conservador para no disparar con interrogantes
+         * retóricas dentro de una explicación:
+         * - la última línea con contenido termina en `?`, o
+         * - hay 2+ líneas que terminan en `?` (cuestionario / ronda de preguntas).
+         *
+         * Ojo: esto NO responde por el usuario (aquella heurística vieja que se
+         * auto-contestaba en YOLO); sólo decide si merece la pena pedirle al modelo
+         * que reformule la pregunta como tool call.
+         */
+        internal fun looksLikeQuestionToUser(text: String): Boolean {
+            val lines = text.lines().map { it.trim().trimEnd('*', '_', '`', '"', '\'', ')', ']') }
+                .filter { it.isNotEmpty() }
+            if (lines.isEmpty()) return false
+            if (lines.last().endsWith("?")) return true
+            return lines.count { it.endsWith("?") } >= 2
+        }
+
+        /**
+         * Cada cuánto baja a SQLite el texto que va llegando por streaming. Un UPDATE
+         * por delta hacía que el flujo `sessions` releyese la BD entera decenas de veces
+         * por segundo (ver flushStreamBuffers). 120 ms mantiene el texto fluido a la
+         * vista (~8 refrescos/s) recortando el trabajo casi un orden de magnitud.
+         */
+        private const val STREAM_PERSIST_INTERVAL_MS = 120L
 
         /** Default conservador cuando el servidor no expone el context length. */
         private const val DEFAULT_CONTEXT_TOKENS = 8192
@@ -1168,6 +1386,11 @@ class SendMessageUseCase(
                 "Only `ask_user` actually pauses and waits for a reply. " +
                 "Use `options` for multiple choices and always set `recommended` to your best default " +
                 "so the hands-off (YOLO) mode can auto-select and keep working.\n" +
+                "This applies to EVERY question, including when the user explicitly asks you to " +
+                "interview them (\"hazme una ronda de preguntas\", \"pregúntame como un " +
+                "cuestionario\", requirement gathering, quizzes). Do NOT dump the list of questions " +
+                "as text: call `ask_user` with the FIRST question, wait for the answer, then call " +
+                "`ask_user` again with the next one. One question per call.\n" +
                 "=====================================================\n\n" +
                 "If a `<workspace>` block is present in this prompt, it already gives you the cwd, " +
                 "the file tree, git status, and any project rules — use it instead of re-listing " +
@@ -1178,6 +1401,9 @@ class SendMessageUseCase(
                 "• Find text, symbols, usages or definitions across the project → `search_files` " +
                 "(regex; returns `path:line:` hits you can open with `read_file` + offset). Prefer " +
                 "it over `run_command` with grep/find.\n" +
+                "• Find code when you DON'T know what it's called (\"where is rate limiting " +
+                "handled?\") → `search_code_semantic`, which searches by meaning. If you know the " +
+                "literal string or symbol, `search_files` is exact and much cheaper — use that.\n" +
                 "• Create a NEW file → `create_file`.\n" +
                 "• Change part of an EXISTING file → `read_file` first, then `edit_file` with exact " +
                 "old/new strings. A targeted `edit_file` beats rewriting the whole file.\n" +
@@ -1192,6 +1418,12 @@ class SendMessageUseCase(
                 "(e.g. `cd \"C:\\Users\\me\\My Project\"`, not `cd C:\\Users\\me\\My Project`). " +
                 "Prefer relative paths (resolved against the workspace) over `cd`-ing into an " +
                 "absolute path when possible — pass `working_dir` instead.\n" +
+                "• A self-contained subtask that would flood this conversation with intermediate " +
+                "output you won't need afterwards (exploring an unfamiliar area, reading many files " +
+                "to answer one question) → `spawn_agent`. It runs in a separate agent with a fresh " +
+                "context and returns only its final answer, so `task` must be self-contained: it " +
+                "sees nothing of this conversation. Not for a single file read — it costs a whole " +
+                "extra model run.\n" +
                 "• News, recent events, prices, current facts, software versions, or anything that " +
                 "may have changed since training → `search_web`.\n" +
                 "• A diagram / flowchart / mind map / sequence/class/ER diagram → `render_diagram` " +
@@ -1251,7 +1483,8 @@ class SendMessageUseCase(
                 "information, clarification — you MUST call the `ask_user` tool. NEVER write a " +
                 "question as plain text: it does NOT pause your turn, so the user won't answer " +
                 "and you'll be stuck. Use `options` for choices and set `recommended` to your " +
-                "best default.\n" +
+                "best default. If the user asks you to interview them or run a questionnaire, " +
+                "call `ask_user` with ONE question at a time instead of listing them as text.\n" +
                 "=====================================================\n\n" +
                 "When to reach for each tool:\n" +
                 "• News, recent events, prices, current facts, or anything that may have changed " +
@@ -1274,6 +1507,29 @@ class SendMessageUseCase(
                 (if (skillsIndex.isNotBlank()) "\n\n$skillsIndex" else "")
     }
 }
+
+/**
+ * Transcript legible para que el modelo resuma un tramo de historial. Lo usan el resumen
+ * rodante automático (`SendMessageUseCase`, con los mensajes que la ventana descartó) y la
+ * compactación manual ([CompactContextUseCase], con el tramo que el usuario eligió).
+ */
+internal fun buildSummaryTranscript(previousSummary: String?, discarded: List<ChatMessage>): String =
+    buildString {
+        if (!previousSummary.isNullOrBlank()) {
+            append("Resumen del contexto anterior:\n")
+            append(previousSummary)
+            append("\n\n")
+        }
+        append("Historial a resumir:\n")
+        for (msg in discarded) {
+            when (msg.role) {
+                Role.User -> append("Usuario: ${msg.content.take(600)}\n")
+                Role.Assistant -> if (msg.content.isNotBlank()) append("Asistente: ${msg.content.take(600)}\n")
+                Role.Tool -> append("[Tool ${msg.toolName ?: "?"}: ${msg.content.take(200)}]\n")
+                Role.System -> {}
+            }
+        }
+    }
 
 class CheckConnectionUseCase(private val model: ModelRepository) {
     suspend operator fun invoke(baseUrl: String): Result<Long> = model.ping(baseUrl)

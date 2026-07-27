@@ -18,12 +18,15 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -73,11 +76,25 @@ private class DesktopRemoteAccessServer(
     /** Job del stream activo, para poder cancelarlo desde el remoto. */
     private var activeStreamJob: Job? = null
 
+    /**
+     * Sesión activa con sus mensajes, emparejada con su id. Igual que en `ChatViewModel`:
+     * se resuelve por id en vez de buscarla en una lista con todo el historial (para no
+     * releer todas las sesiones en cada delta), y va emparejada con el id para que al
+     * cambiar de conversación el remoto no muestre un instante el id nuevo con los mensajes
+     * de la anterior.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val activeSessionFlow = deps.activeSessionStore.activeSessionId.flatMapLatest { id ->
+        if (id == null) flowOf(null to null)
+        else deps.chats.sessionWithMessages(id).map { session -> id to session }
+    }
+
     /** Snapshot del estado completo en JSON, recalculado en cada cambio de cualquier fuente. */
     private val snapshotFlow = combine(
-        combine(deps.chats.sessions, deps.activeSessionStore.activeSessionId, deps.confirm.pending) { a, b, c -> Triple(a, b, c) },
+        combine(deps.chats.sessionSummaries, activeSessionFlow, deps.confirm.pending) { a, b, c -> Triple(a, b, c) },
         combine(deps.promptStore.prompts, deps.streamingStateStore.streaming, deps.prefs.preferences) { a, b, c -> Triple(a, b, c) }
-    ) { (sessions, activeId, pending), (prompts, streaming, prefs) ->
+    ) { (sessions, activePair, pending), (prompts, streaming, prefs) ->
+        val (activeId, active) = activePair
         buildJsonObject {
             put("type", "state")
             put("activeSessionId", activeId ?: "")
@@ -92,7 +109,6 @@ private class DesktopRemoteAccessServer(
                     })
                 }
             })
-            val active = sessions.firstOrNull { it.id == activeId }
             put("messages", buildJsonArray {
                 active?.messages
                     ?.filter { m ->
@@ -176,10 +192,10 @@ private class DesktopRemoteAccessServer(
                         return@get
                     }
                     val msgId = call.request.queryParameters["msg"]
-                    val dataUrl = msgId?.let { id ->
-                        deps.chats.sessions.first()
-                            .firstNotNullOfOrNull { s -> s.messages.firstOrNull { it.id == id }?.imageDataUrl }
-                    }
+                    // Las imágenes viven solo en el overlay en memoria del repositorio
+                    // (nunca se persisten), así que se resuelven por id de mensaje sin
+                    // recorrer sesión alguna.
+                    val dataUrl = msgId?.let { deps.chats.messageImageDataUrl(it) }
                     val decoded = dataUrl?.let { decodeDataUrl(it) }
                     if (decoded == null) {
                         call.respondText("not found", status = HttpStatusCode.NotFound)

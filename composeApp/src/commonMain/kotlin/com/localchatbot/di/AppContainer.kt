@@ -19,9 +19,12 @@ import com.localchatbot.core.remote.createRemoteAccessServer
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
+import com.localchatbot.core.state.QueuedMessageStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.storage.SettingsFactory
 import com.localchatbot.core.storage.CheckpointStore
+import com.localchatbot.core.hooks.HooksStore
+import com.localchatbot.core.hooks.createHooksStore
 import com.localchatbot.core.storage.MemoryStore
 import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.storage.ToolDocsStore
@@ -39,6 +42,12 @@ import com.localchatbot.data.remote.ImageGenApi
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.TavilyApi
+import com.localchatbot.data.remote.WebFetchApi
+import com.localchatbot.data.remote.EmbeddingsApi
+import com.localchatbot.core.index.SemanticIndexStore
+import com.localchatbot.core.index.WorkspaceIndexer
+import com.localchatbot.core.index.createSemanticIndexStore
+import com.localchatbot.domain.tools.SearchCodeSemanticTool
 import com.localchatbot.data.remote.VideoGenApi
 import com.localchatbot.data.repository.ChatRepositoryImpl
 import com.localchatbot.data.repository.ModelRepositoryImpl
@@ -75,9 +84,17 @@ import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.tools.ScriptToolFactory
 import com.localchatbot.domain.tools.UseSkillTool
+import com.localchatbot.domain.tools.FetchUrlTool
+import com.localchatbot.domain.tools.GitCommitTool
+import com.localchatbot.domain.tools.GitDiffTool
+import com.localchatbot.domain.tools.GitLogTool
+import com.localchatbot.domain.tools.GitStatusTool
+import com.localchatbot.domain.tools.SpawnAgentTool
 import com.localchatbot.domain.tools.WebSearchTool
 import com.localchatbot.data.mcp.McpToolProvider
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
+import com.localchatbot.domain.usecase.CompactContextUseCase
+import com.localchatbot.domain.usecase.InitProjectUseCase
 import com.localchatbot.domain.usecase.CreateSessionUseCase
 import com.localchatbot.domain.usecase.ListModelsUseCase
 import com.localchatbot.domain.usecase.SendMessageUseCase
@@ -123,6 +140,11 @@ class AppContainer {
     private val diagramRenderApi = DiagramRenderApi(httpClient, json, networkInspector)
     private val videoGenApi = VideoGenApi(httpClient, json, networkInspector)
     private val tavilyApi = TavilyApi(httpClient, json, networkInspector)
+    private val webFetchApi = WebFetchApi(httpClient, networkInspector)
+    private val embeddingsApi = EmbeddingsApi(
+        httpClient, json, networkInspector,
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+    )
 
     /**
      * Scope a nivel de aplicación. Las operaciones que deben sobrevivir a la
@@ -141,6 +163,7 @@ class AppContainer {
     val skillFileStore: SkillFileStore = createSkillFileStore()
     val toolDocsStore: ToolDocsStore = createToolDocsStore()
     val memoryStore: MemoryStore = createMemoryStore()
+    val hooksStore: HooksStore = createHooksStore()
     val checkpointStore: CheckpointStore = CheckpointStore()
     val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
     val projectRepository: ProjectRepository = ProjectRepositoryImpl(settings, json)
@@ -167,10 +190,16 @@ class AppContainer {
      * La escribe [AskUserTool] y la observa [com.localchatbot.presentation.features.chat.ChatScreen].
      */
     val pendingUserPromptStore = PendingUserPromptStore()
+
+    /** Mensajes escritos mientras el modelo trabajaba, pendientes de enviarse fusionados. */
+    val queuedMessageStore = QueuedMessageStore()
     val backgroundExecutor: BackgroundExecutor = createBackgroundExecutor()
     val appLifecycle: AppLifecycle = createAppLifecycle()
 
     private val webSearchTool = WebSearchTool(tavilyApi, preferencesRepository, json)
+    /** Leer una URL concreta. Sin API key: complementa a webSearchTool, que solo busca. */
+    private val fetchUrlTool = FetchUrlTool(webFetchApi, json)
+
     private val imageGenerationTool = ImageGenerationTool(imageGenApi, preferencesRepository, json)
     private val diagramRenderTool = DiagramRenderTool(diagramRenderApi, preferencesRepository, json)
     private val generateTextImageTool = GenerateTextImageTool(imageGenApi, preferencesRepository, json)
@@ -204,14 +233,20 @@ class AppContainer {
      */
     val filesystemAgent: FilesystemAgent = FilesystemAgent()
 
-    /**
-     * Coordina las solicitudes de aprobación humana entre las tools (capa
-     * datos/dominio) y la UI. Se observa desde [com.localchatbot.presentation.features.chat.ChatScreen].
-     */
-    val toolConfirmationController = ToolConfirmationController(preferencesRepository)
-
     /** Notificaciones nativas + rebote del dock (real solo en desktop). */
     val systemNotifier = SystemNotifier()
+
+    /**
+     * Coordina las solicitudes de aprobación humana entre las tools (capa
+     * datos/dominio) y la UI. El diálogo se renderiza en
+     * [com.localchatbot.presentation.navigation.MainScaffold] (fuera del `when` de
+     * pestañas, para que no dependa de estar en Chat). Recibe el notifier para
+     * avisar por el SO cuando una tool queda esperando aprobación.
+     *
+     * Declarado DESPUÉS de [systemNotifier]: en Kotlin las propiedades se
+     * inicializan en orden y al revés llegaría null.
+     */
+    val toolConfirmationController = ToolConfirmationController(preferencesRepository, systemNotifier)
 
     val todoTool = TodoTool(activeSessionStore)
     private val askUserTool =
@@ -231,7 +266,28 @@ class AppContainer {
     private val readFileTool = ReadFileTool(filesystemAgent, preferencesRepository, json)
     private val listDirectoryTool = ListDirectoryTool(filesystemAgent, preferencesRepository, json)
     private val searchFilesTool = SearchFilesTool(filesystemAgent, preferencesRepository, json)
+
+    /**
+     * Índice de embeddings del workspace (archivo en `~/.localchatbot/semantic-index/`, no
+     * SQLite: no hay migraciones de esquema que funcionen — ver `SemanticIndex`).
+     */
+    val semanticIndexStore: SemanticIndexStore = createSemanticIndexStore()
+    val workspaceIndexer = WorkspaceIndexer(
+        store = semanticIndexStore,
+        embeddings = embeddingsApi,
+        prefs = preferencesRepository,
+        models = modelRepository,
+        json = json
+    )
+    private val searchCodeSemanticTool = SearchCodeSemanticTool(workspaceIndexer, preferencesRepository, json)
     private val runCommandTool = RunCommandTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    // Tools de git: las de lectura sin confirmación y disponibles en modo Plan; solo el
+    // commit, que escribe, pide aprobación y exige Build.
+    private val gitStatusTool = GitStatusTool(filesystemAgent, preferencesRepository, json)
+    private val gitDiffTool = GitDiffTool(filesystemAgent, preferencesRepository, json)
+    private val gitLogTool = GitLogTool(filesystemAgent, preferencesRepository, json)
+    private val gitCommitTool =
+        GitCommitTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
     private val saveImageTool = SaveImageTool(
         agent = filesystemAgent,
         confirm = toolConfirmationController,
@@ -256,6 +312,26 @@ class AppContainer {
         }
     )
 
+    /**
+     * Declarado acá arriba (y no junto a los demás use cases) porque [spawnAgentTool] lo
+     * necesita por constructor y las propiedades se inicializan en orden de declaración.
+     */
+    val createSession = CreateSessionUseCase(chatRepository, preferencesRepository)
+
+    /**
+     * Sub-agentes. La dependencia con [sendMessage] es circular (el use case necesita el
+     * registry que contiene esta tool), así que se rompe con un provider perezoso: la
+     * lambda no evalúa `sendMessage` hasta la primera ejecución de la tool, cuando ya está
+     * construido.
+     */
+    private val spawnAgentTool = SpawnAgentTool(
+        chats = chatRepository,
+        projects = projectRepository,
+        createSession = createSession,
+        sendMessageProvider = { sendMessage },
+        json = json
+    )
+
     private val readToolDocsTool = ReadToolDocsTool(toolDocsStore, json)
     private val readMemoryTool = ReadMemoryTool(memoryStore, json)
     private val saveMemoryTool = SaveMemoryTool(memoryStore, toolConfirmationController, json)
@@ -269,6 +345,7 @@ class AppContainer {
             readMemoryTool,
             saveMemoryTool,
             webSearchTool,
+            fetchUrlTool,
             imageGenerationTool,
             diagramRenderTool,
             generateTextImageTool,
@@ -285,7 +362,13 @@ class AppContainer {
             readFileTool,
             listDirectoryTool,
             searchFilesTool,
-            runCommandTool
+            searchCodeSemanticTool,
+            runCommandTool,
+            gitStatusTool,
+            gitDiffTool,
+            gitLogTool,
+            gitCommitTool,
+            spawnAgentTool
         )
     )
 
@@ -305,8 +388,9 @@ class AppContainer {
         inspector = networkInspector
     )
 
-    val createSession = CreateSessionUseCase(chatRepository, preferencesRepository)
-    val sendMessage = SendMessageUseCase(
+    // Tipo explícito: el provider perezoso de spawnAgentTool referencia esta propiedad, y sin
+    // la anotación el inferidor entra en recursión (`Type checking has run into a recursive problem`).
+    val sendMessage: SendMessageUseCase = SendMessageUseCase(
         chats = chatRepository,
         model = modelRepository,
         prefs = preferencesRepository,
@@ -323,7 +407,21 @@ class AppContainer {
         activeSessionStore = activeSessionStore,
         appLifecycle = appLifecycle,
         checkpointStore = checkpointStore,
+        hooksStore = hooksStore,
         activeWorkspaceStore = activeWorkspaceStore
+    )
+    /** Compactación manual del contexto (`/compact`). */
+    val compactContext = CompactContextUseCase(
+        chats = chatRepository,
+        model = modelRepository,
+        prefs = preferencesRepository
+    )
+    /** Generación de AGENTS.md (`/init`). */
+    val initProject = InitProjectUseCase(
+        filesystemAgent = filesystemAgent,
+        activeWorkspaceStore = activeWorkspaceStore,
+        model = modelRepository,
+        prefs = preferencesRepository
     )
     val checkConnection = CheckConnectionUseCase(modelRepository)
     val listModels = ListModelsUseCase(modelRepository)

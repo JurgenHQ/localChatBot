@@ -28,6 +28,8 @@ data class SettingsEditorUiState(
             SettingsEditor.Port,
             SettingsEditor.SystemPrompt,
             SettingsEditor.ImageServiceUrl,
+            // Vacío es válido: significa "autodetectar el modelo de embeddings".
+            SettingsEditor.EmbeddingsModel,
             SettingsEditor.Temperature,
             SettingsEditor.TopP,
             SettingsEditor.MaxTokens,
@@ -61,6 +63,7 @@ class SettingsEditorViewModel(
                         SettingsEditor.TavilyApiKey -> prefs.tavilyApiKey
                         SettingsEditor.SystemPrompt -> prefs.defaultSystemPrompt
                         SettingsEditor.ImageServiceUrl -> prefs.imageServiceUrl
+                        SettingsEditor.EmbeddingsModel -> prefs.embeddingsModel
                         SettingsEditor.Temperature -> p.temperature?.toString() ?: ""
                         SettingsEditor.TopP -> p.topP?.toString() ?: ""
                         SettingsEditor.MaxTokens -> p.maxTokens?.toString() ?: ""
@@ -121,6 +124,7 @@ class SettingsEditorViewModel(
                 SettingsEditor.TavilyApiKey -> preferences.updateTavilyApiKey(s.textDraft.trim())
                 SettingsEditor.SystemPrompt -> preferences.updateDefaultSystemPrompt(s.textDraft.trim())
                 SettingsEditor.ImageServiceUrl -> preferences.updateImageServiceUrl(s.textDraft.trim())
+                SettingsEditor.EmbeddingsModel -> preferences.updateEmbeddingsModel(s.textDraft.trim())
                 SettingsEditor.Temperature,
                 SettingsEditor.TopP,
                 SettingsEditor.MaxTokens,

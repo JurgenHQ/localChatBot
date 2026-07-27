@@ -150,7 +150,10 @@ fun MessageBubble(
     onRevertTurn: ((String) -> Unit)? = null
 ) {
     when (message.role) {
-        Role.User -> UserBubble(message, modifier, onResend, onEdit, onSaveImage, onTap, highlightQuery, isCurrentMatch)
+        // En un mensaje del usuario, `onCopy` copia el TURNO entero (su mensaje + la
+        // respuesta), no solo el texto de la burbuja: es lo que se quiere al copiar
+        // "esto que pasó acá". En el assistant sigue copiando ese mensaje.
+        Role.User -> UserBubble(message, modifier, onResend, onEdit, onCopy, onSaveImage, onTap, highlightQuery, isCurrentMatch)
         Role.Assistant, Role.System -> {
             // Si el assistant no tiene contenido visible ni sources ni reasoning, es un mensaje
             // intermedio de tool_calls (necesario en el historial para el modelo,
@@ -189,13 +192,15 @@ private fun UserBubble(
     modifier: Modifier = Modifier,
     onResend: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
+    /** Copia el turno completo (este mensaje + la respuesta) como Markdown. */
+    onCopyTurn: (() -> Unit)? = null,
     onSaveImage: ((ByteArray) -> Unit)? = null,
     onTap: () -> Unit = {},
     highlightQuery: String? = null,
     isCurrentMatch: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val actionable = onResend != null || onEdit != null
+    val actionable = onResend != null || onEdit != null || onCopyTurn != null
 
     Row(
         modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.lg),
@@ -265,6 +270,9 @@ private fun UserBubble(
                 ) {
                     if (onEdit != null) {
                         BubbleActionIcon(Icons.Default.Edit, "Editar", onEdit)
+                    }
+                    if (onCopyTurn != null) {
+                        BubbleActionIcon(Icons.Default.ContentCopy, "Copiar turno", onCopyTurn)
                     }
                     if (onResend != null) {
                         BubbleActionIcon(Icons.AutoMirrored.Filled.Send, "Reenviar", onResend)

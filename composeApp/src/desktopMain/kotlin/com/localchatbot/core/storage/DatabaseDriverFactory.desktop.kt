@@ -2,6 +2,7 @@ package com.localchatbot.core.storage
 
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import com.localchatbot.core.storage.db.migrateOrCreate
 import com.localchatbot.data.local.db.LocalChatBotDatabase
 import java.io.File
 import java.time.Instant
@@ -15,11 +16,14 @@ actual object DatabaseDriverFactory {
         val isNew = !dbFile.exists()
         if (!isNew) backupDailyIfStale(dbFile)
         val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}")
-        if (isNew) {
-            LocalChatBotDatabase.Schema.create(driver)
-        }
-        driver.execute(null, "PRAGMA foreign_keys=ON;", 0)
         driver.execute(null, "PRAGMA journal_mode=WAL;", 0)
+        // Antes de activar las FK: SQLite recomienda migrar con `foreign_keys` desactivado
+        // (que es el estado por defecto de la conexión), porque una migración que reconstruya
+        // una tabla dispararía las cascadas al vaciar la original.
+        // Se encarga también de `ensureMessageSortIndex` en las bases preexistentes: tiene
+        // que aplicarse *antes* de estampar la versión, no después.
+        migrateOrCreate(driver, LocalChatBotDatabase.Schema, dbFile, isNew)
+        driver.execute(null, "PRAGMA foreign_keys=ON;", 0)
         return driver
     }
 

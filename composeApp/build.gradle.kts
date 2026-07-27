@@ -136,6 +136,11 @@ sqldelight {
     databases {
         create("LocalChatBotDatabase") {
             packageName.set("com.localchatbot.data.local.db")
+            // Snapshots `.db` del esquema por versión. Son lo que hace que verifyMigrations
+            // sirva de algo: sin ellos la tarea falla por falta de base contra la que aplicar
+            // los `.sqm`. Se commitean; `1.db` es el esquema tal como quedó en las bases de
+            // los usuarios antes de que existiera el versionado.
+            schemaOutputDirectory.set(file("src/commonMain/sqldelight/databases"))
             verifyMigrations.set(true)
         }
     }

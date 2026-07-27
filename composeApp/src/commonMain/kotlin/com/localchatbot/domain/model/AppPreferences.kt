@@ -3,6 +3,21 @@ package com.localchatbot.domain.model
 import com.localchatbot.core.theme.ThemeMode
 import kotlinx.serialization.Serializable
 
+/**
+ * Corte de la compactación manual de una sesión.
+ *
+ * [appliedAtEpochMs] no es decorativo: la barra de contexto se apoya en el `contextTokens`
+ * que mide el servidor, y sin saber **cuándo** se compactó no hay forma de distinguir una
+ * medición vieja (que todavía incluía los mensajes ya descartados) de una posterior al
+ * corte. Sin eso la barra se quedaba clavada en el número de antes.
+ */
+@Serializable
+data class CompactBoundary(
+    /** Último mensaje representado por el resumen. */
+    val messageId: String,
+    val appliedAtEpochMs: Long
+)
+
 @Serializable
 data class PromptTemplate(
     val id: String,
@@ -31,6 +46,12 @@ data class AppPreferences(
      * Si está vacío, se deriva como `http://<connection.ip>:8080` automáticamente.
      */
     val imageServiceUrl: String = "",
+    /**
+     * Modelo de embeddings para el índice semántico del workspace (`search_code_semantic`),
+     * servido por el mismo endpoint que el chat vía `/v1/embeddings`. Si está vacío, la tool
+     * lo autodetecta de la lista de modelos (el primero cuyo id contenga "embed").
+     */
+    val embeddingsModel: String = "",
     /**
      * Workspace para las tools de filesystem/shell. Solo se considera disponible
      * cuando está configurado un directorio absoluto. Se usa también como
@@ -67,6 +88,16 @@ data class AppPreferences(
      * inocuas (nunca se consultan).
      */
     val sessionAgentModes: Map<String, AgentMode> = emptyMap(),
+    /**
+     * `sessionId → corte de compactación manual` (`/compact`). Todo lo anterior al mensaje
+     * del corte — él incluido — deja de enviarse al modelo y queda representado por
+     * `ChatSession.contextSummary`; los mensajes siguen visibles en la UI.
+     *
+     * Vive en preferencias y no en la base porque **no hay migraciones de esquema que
+     * funcionen** (ver CLAUDE.md → Persistence): una columna nueva en `session` llegaría
+     * solo a bases nuevas, en silencio. Mismo patrón que [sessionAgentModes].
+     */
+    val sessionCompactBoundaries: Map<String, CompactBoundary> = emptyMap(),
     val installedSkills: List<InstalledSkill> = emptyList(),
     val customSkills: List<SkillDefinition> = emptyList(),
     val mcpServers: List<McpServerConfig> = emptyList(),
@@ -133,6 +164,7 @@ data class AppPreferences(
             defaultSystemPrompt = "",
             promptTemplates = emptyList(),
             imageServiceUrl = "",
+            embeddingsModel = "",
             fsWorkspaceDir = null,
             fsYoloMode = false,
             fsAllowOutsideWorkspace = false,

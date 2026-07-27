@@ -1,0 +1,52 @@
+-- Migración 2 → 3: búsqueda global en el historial (roadmap 3.1).
+
+-- 1. Limpieza previa de mensajes huérfanos.
+--
+-- `message` declara ON DELETE CASCADE, pero `PRAGMA foreign_keys` es por conexión y las
+-- versiones antiguas no lo activaban, así que borrar una conversación dejaba sus mensajes
+-- atrás. En bases reales eso llega a ser el 94% de la tabla. Se limpian ANTES de construir
+-- el índice: indexarlos haría el índice desproporcionado y llenaría los resultados de
+-- coincidencias en conversaciones que ya no existen y no se pueden abrir.
+--
+-- No es solo higiene del índice: son filas inalcanzables desde cualquier consulta de la app,
+-- porque todas parten de una sesión.
+DELETE FROM message WHERE session_id NOT IN (SELECT id FROM session);
+
+-- 2. Índice de texto completo.
+--
+-- `content=message` lo hace de contenido externo: FTS5 no duplica el texto, lo lee de
+-- `message` cuando hace falta (importante, el historial es la parte pesada de la base).
+-- A cambio, la sincronización depende por completo de los triggers de abajo.
+--
+-- `remove_diacritics 1` hace que "sesion" encuentre "sesión". La opción 2 es más completa
+-- pero pide SQLite 3.27+, y aquí el mínimo lo marca el SQLite del sistema en Android.
+CREATE VIRTUAL TABLE message_fts USING fts5(
+    content,
+    content=message,
+    content_rowid=rowid,
+    tokenize="unicode61 remove_diacritics 1"
+);
+
+-- 3. Triggers de sincronización.
+--
+-- En una tabla de contenido externo, borrar y actualizar NO se hacen con DELETE/UPDATE sobre
+-- la tabla FTS: se le manda el comando 'delete' junto con el valor ANTERIOR de la columna,
+-- porque FTS5 necesita saber qué tokens desindexar y ya no puede leerlos de `message`.
+CREATE TRIGGER message_fts_after_insert AFTER INSERT ON message BEGIN
+    INSERT INTO message_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER message_fts_after_delete AFTER DELETE ON message BEGIN
+    INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+END;
+
+-- Solo OF content: el streaming reescribe el contenido del mensaje muchas veces por turno,
+-- pero tocar `metrics` o `checkpoint_id` no cambia nada de lo indexado.
+CREATE TRIGGER message_fts_after_update AFTER UPDATE OF content ON message BEGIN
+    INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+    INSERT INTO message_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+-- 4. Backfill del historial que ya existía. Va al final, después de la limpieza, para que
+-- el índice arranque conteniendo exactamente los mensajes alcanzables.
+INSERT INTO message_fts(rowid, content) SELECT rowid, content FROM message;

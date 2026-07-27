@@ -5,12 +5,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.localchatbot.AppContextHolder
+import com.localchatbot.core.storage.db.ensureMessageSortIndex
 import com.localchatbot.data.local.db.LocalChatBotDatabase
 
 actual object DatabaseDriverFactory {
     actual fun create(): SqlDriver {
         val ctx: Context = AppContextHolder.context
-        return AndroidSqliteDriver(
+        val driver = AndroidSqliteDriver(
             schema = LocalChatBotDatabase.Schema,
             context = ctx,
             name = "localchatbot.db",
@@ -20,5 +21,7 @@ actual object DatabaseDriverFactory {
                 }
             }
         )
+        ensureMessageSortIndex(driver)
+        return driver
     }
 }

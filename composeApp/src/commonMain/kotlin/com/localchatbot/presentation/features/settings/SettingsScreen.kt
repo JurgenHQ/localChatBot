@@ -446,6 +446,26 @@ fun SettingsContent(
         )
 
         if (PlatformCapabilities.isDesktop) {
+            SectionLabel("Búsqueda semántica (opcional)")
+            SectionCard {
+                SettingsRow(
+                    title = "Modelo de embeddings",
+                    onClick = { onOpenEditor(SettingsEditor.EmbeddingsModel) },
+                    trailing = {
+                        MonoValue(preferences.embeddingsModel.ifBlank { "Autodetectar" }, maxChars = 22)
+                    }
+                )
+            }
+            Text(
+                "Lo usa la tool search_code_semantic para indexar el workspace vía /v1/embeddings. " +
+                    "Vacío = se usa el primer modelo del servidor cuyo nombre contenga \"embed\". " +
+                    "Ojo: en LM Studio el modelo de embeddings ocupa memoria junto al de chat.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (PlatformCapabilities.isDesktop) {
             val remote = preferences
             SectionLabel("Acceso remoto")
             SectionCard {

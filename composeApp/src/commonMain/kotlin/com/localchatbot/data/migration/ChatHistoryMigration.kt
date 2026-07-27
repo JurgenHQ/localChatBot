@@ -63,7 +63,10 @@ class ChatHistoryMigration(
                             sources = message.sources,
                             reasoning = message.reasoning,
                             metrics = message.metrics,
-                            checkpoint_id = message.checkpointId
+                            checkpoint_id = message.checkpointId,
+                            // El formato legacy nunca guardó el modelo por mensaje: queda
+                            // null y quien lo lea cae a `session.model`.
+                            model = null
                         )
                     }
                 }

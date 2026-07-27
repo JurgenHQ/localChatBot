@@ -76,12 +76,13 @@ actual class SystemNotifier actual constructor() {
     }
 
     actual fun notify(title: String, body: String) {
+        // Si la app ya tiene el foco, el usuario está viendo el diálogo/la respuesta: ni
+        // aviso ni rebote. El check va ANTES de [requestAttention] a propósito — en macOS
+        // el Centro de Notificaciones suprime el banner por su cuenta, pero el bote del
+        // dock no, y saltaba con la ventana en primer plano.
+        if (isAppForeground()) return
         requestAttention()
         if (isWindows) {
-            // El toast WinRT no se suprime solo cuando la app tiene el foco (a diferencia
-            // de macOS, donde el Centro de Notificaciones lo hace de forma nativa): lo
-            // replicamos aquí para no interrumpir a alguien que ya está mirando la app.
-            if (isAppForeground()) return
             // El TrayIcon no es fiable en Windows 10/11: usamos toast nativo WinRT y,
             // si el proceso falla, caemos al globo clásico. En un hilo daemon porque
             // notify es fire-and-forget y esperamos al proceso para poder hacer fallback.
@@ -173,19 +174,20 @@ actual class SystemNotifier actual constructor() {
         synchronized(winLock) {
             if (winRegisterTried) return
             winRegisterTried = true
-            runCatching {
+            val result = runCatching {
                 val home = System.getProperty("user.home") ?: return
                 val dir = File(home, ".localchatbot").apply { mkdirs() }
 
                 val startMenu = System.getenv("APPDATA")?.let {
                     File(it, "Microsoft\\Windows\\Start Menu\\Programs")
-                } ?: return
+                } ?: run { logWinToast("APPDATA no definido, se aborta el registro"); return }
                 val link = File(startMenu, "$APP_NAME.lnk")
                 if (link.exists()) return // ya registrado en un arranque anterior
 
-                val ico = extractResource("AppIcon.ico", File(dir, "app-icon.ico")) ?: return
+                val ico = extractResource("AppIcon.ico", File(dir, "app-icon.ico"))
+                    ?: run { logWinToast("No se pudo extraer AppIcon.ico, se aborta el registro"); return }
                 val script = extractResource("win-toast-register.ps1", File(dir, "win-toast-register.ps1"))
-                    ?: return
+                    ?: run { logWinToast("No se pudo extraer win-toast-register.ps1, se aborta el registro"); return }
 
                 val proc = ProcessBuilder(
                     "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -195,9 +197,14 @@ actual class SystemNotifier actual constructor() {
                     "-Target", currentExecutable(),
                     "-IconPath", ico,
                 ).redirectErrorStream(true).start()
-                proc.inputStream.close()
-                proc.waitFor(15, TimeUnit.SECONDS)
+                val output = proc.inputStream.bufferedReader().readText()
+                val finished = proc.waitFor(15, TimeUnit.SECONDS)
+                val exit = if (finished) proc.exitValue() else null
+                logWinToast(
+                    "Registro AUMID: finished=$finished exit=$exit target=${currentExecutable()} output=${output.trim()}",
+                )
             }
+            result.exceptionOrNull()?.let { logWinToast("Excepción registrando AUMID: ${it.stackTraceToString()}") }
         }
     }
 
@@ -255,13 +262,30 @@ actual class SystemNotifier actual constructor() {
             "powershell", "-NoProfile", "-NonInteractive", "-Command",
             buildToastScript(title, body),
         ).redirectErrorStream(true).start()
-        proc.inputStream.close()
+        val output = proc.inputStream.bufferedReader().readText()
         if (!proc.waitFor(10, TimeUnit.SECONDS)) {
             proc.destroy()
+            logWinToast("Toast: timeout esperando PowerShell, output parcial=${output.trim()}")
             return false
         }
-        proc.exitValue() == 0
-    }.getOrDefault(false)
+        val exit = proc.exitValue()
+        if (exit != 0) logWinToast("Toast: PowerShell terminó con exit=$exit output=${output.trim()}")
+        exit == 0
+    }.onFailure { logWinToast("Excepción mostrando toast: ${it.stackTraceToString()}") }.getOrDefault(false)
+
+    /**
+     * Log en disco (`~/.localchatbot/win-toast.log`) para diagnosticar por qué el toast no
+     * aparece en una PC concreta: el proceso de PowerShell corre en un hilo daemon
+     * fire-and-forget, así que sin esto un fallo (antivirus bloqueando el `Add-Type
+     * -Language CSharp` del registro, política de ejecución, falta de csc.exe, etc.) es
+     * indistinguible de "no había nada que notificar". Best-effort, nunca debe romper el
+     * flujo de notificación.
+     */
+    private fun logWinToast(message: String) = runCatching {
+        val home = System.getProperty("user.home") ?: return@runCatching
+        val log = File(File(home, ".localchatbot").apply { mkdirs() }, "win-toast.log")
+        log.appendText("[${java.time.LocalDateTime.now()}] $message\n")
+    }
 
     /**
      * Script PowerShell que muestra el toast bajo el AUMID de la app. Usa **solo comillas

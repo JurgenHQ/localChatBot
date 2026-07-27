@@ -1,5 +1,6 @@
 package com.localchatbot.core.confirm
 
+import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.domain.repository.PreferencesRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,9 +40,16 @@ class AutoApproveConfirmations : AbstractCoroutineContextElement(Key) {
  * Excepción: con [force] true el diálogo se muestra siempre, incluso en YOLO
  * (usado por run_command cuando el comando matchea la denylist de patrones
  * destructivos).
+ *
+ * Cada vez que una solicitud pasa a estar pendiente se emite una notificación
+ * nativa ([SystemNotifier], no-op en móvil): es el único punto del turno en el
+ * que el agente queda bloqueado esperando al usuario, así que si está en otra
+ * ventana necesita enterarse. El propio notifier omite el aviso cuando la app
+ * ya tiene el foco.
  */
 class ToolConfirmationController(
-    private val prefs: PreferencesRepository
+    private val prefs: PreferencesRepository,
+    private val notifier: SystemNotifier = SystemNotifier()
 ) {
 
     private val _pending = MutableStateFlow<PendingConfirmation?>(null)
@@ -70,6 +78,7 @@ class ToolConfirmationController(
                 response = deferred
             )
             _pending.update { confirmation }
+            notifyPending(confirmation)
             try {
                 deferred.await()
             } finally {
@@ -88,7 +97,37 @@ class ToolConfirmationController(
         }
     }
 
+    /**
+     * Aviso nativo de que hay una aprobación esperando. El cuerpo lleva el detalle
+     * (path o comando) recortado, para poder decidir sin volver a la app. Nunca
+     * rompe el flujo de confirmación: es fire-and-forget y va envuelto en runCatching.
+     */
+    private suspend fun notifyPending(confirmation: PendingConfirmation) {
+        if (!prefs.current().desktopNotificationsEnabled) return
+        val body = confirmation.detail
+            ?.takeIf { it.isNotBlank() }
+            ?.let { detail ->
+                val oneLine = detail.replace('\n', ' ').trim()
+                val short = if (oneLine.length > DETAIL_MAX_CHARS) {
+                    oneLine.take(DETAIL_MAX_CHARS).trimEnd() + "…"
+                } else {
+                    oneLine
+                }
+                "${confirmation.title}: $short"
+            }
+            ?: confirmation.title
+        runCatching { notifier.notify(NOTIFICATION_TITLE, body) }
+    }
+
     private fun nextId(): String = "conf-${++counter}"
+
+    private companion object {
+        /** Título del aviso cuando una tool queda bloqueada esperando aprobación. */
+        const val NOTIFICATION_TITLE = "Se necesita tu aprobación"
+
+        /** Recorte del detalle (paths y comandos pueden ser larguísimos). */
+        const val DETAIL_MAX_CHARS = 120
+    }
 }
 
 data class PendingConfirmation(

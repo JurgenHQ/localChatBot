@@ -41,8 +41,34 @@ actual class CheckpointStore {
         val partial: Boolean = false
     )
 
+    /**
+     * Estado git del workspace antes del primer comando de shell del turno. [ref] es el
+     * commit al que hay que volver: el de `git stash create` si había cambios locales, o el
+     * HEAD si el árbol estaba limpio.
+     */
     @Serializable
-    private data class Manifest(val entries: List<ManifestEntry> = emptyList())
+    private data class GitSnapshot(val workspaceDir: String, val ref: String)
+
+    /** [gitSnapshot] tiene default: los manifests escritos antes de existir siguen leyéndose. */
+    @Serializable
+    private data class Manifest(
+        val entries: List<ManifestEntry> = emptyList(),
+        val gitSnapshot: GitSnapshot? = null
+    )
+
+    /** Corre git en [dir] y devuelve stdout recortado, o null si falla o no hay git. */
+    private fun git(dir: File, vararg args: String): String? = runCatching {
+        val proc = ProcessBuilder(listOf("git") + args)
+            .directory(dir)
+            .redirectErrorStream(false)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText()
+        if (!proc.waitFor(GIT_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+            proc.destroyForcibly()
+            return null
+        }
+        if (proc.exitValue() != 0) null else out.trim()
+    }.getOrNull()
 
     private fun turnDir(sessionId: String, turnId: String): File =
         File(File(baseDir, sanitize(sessionId)), sanitize(turnId))
@@ -139,14 +165,55 @@ actual class CheckpointStore {
         return complete
     }
 
+    actual suspend fun snapshotWorkspaceGit(
+        sessionId: String,
+        turnId: String,
+        workspaceDir: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            runCatching {
+                val dir = turnDir(sessionId, turnId)
+                // Idempotente por turno: lo que vale es el estado ANTES del primer comando.
+                if (readManifest(dir).gitSnapshot != null) return@withLock true
+
+                val ws = File(workspaceDir)
+                if (!ws.isDirectory) return@withLock false
+                if (git(ws, "rev-parse", "--is-inside-work-tree") != "true") return@withLock false
+
+                // `git stash create` construye el commit del estado actual SIN tocar el
+                // working tree ni la pila de stashes: justo lo que hace falta para poder
+                // volver luego. Devuelve vacío si no hay nada que guardar (árbol limpio),
+                // y en ese caso el punto de retorno correcto es HEAD.
+                val stash = git(ws, "stash", "create")?.takeIf { it.isNotBlank() }
+                val ref = stash ?: git(ws, "rev-parse", "HEAD")?.takeIf { it.isNotBlank() }
+                    ?: return@withLock false
+
+                val manifest = readManifest(dir)
+                writeManifest(dir, manifest.copy(gitSnapshot = GitSnapshot(ws.absolutePath, ref)))
+                true
+            }.getOrDefault(false)
+        }
+    }
+
     actual suspend fun hasCheckpoint(sessionId: String, turnId: String): Boolean =
         withContext(Dispatchers.IO) {
-            readManifest(turnDir(sessionId, turnId)).entries.isNotEmpty()
+            readManifest(turnDir(sessionId, turnId)).let {
+                it.entries.isNotEmpty() || it.gitSnapshot != null
+            }
         }
 
     actual suspend fun checkpointSummary(sessionId: String, turnId: String): List<String> =
         withContext(Dispatchers.IO) {
-            readManifest(turnDir(sessionId, turnId)).entries.map { it.absPath }
+            readManifest(turnDir(sessionId, turnId)).let { m ->
+                // Para el snapshot de git se pregunta a git qué cambió desde el punto de
+                // retorno: así el diálogo enseña archivos concretos y no un "algo cambió".
+                val fromGit = m.gitSnapshot?.let { snap ->
+                    git(File(snap.workspaceDir), "diff", "--name-only", snap.ref)
+                        ?.lines()?.filter { it.isNotBlank() }
+                        ?.map { "${snap.workspaceDir}/$it" }
+                }.orEmpty()
+                (m.entries.map { it.absPath } + fromGit).distinct()
+            }
         }
 
     actual suspend fun revert(sessionId: String, turnId: String): CheckpointRevertResult =
@@ -154,7 +221,7 @@ actual class CheckpointStore {
             mutex.withLock {
                 val dir = turnDir(sessionId, turnId)
                 val manifest = readManifest(dir)
-                if (manifest.entries.isEmpty()) {
+                if (manifest.entries.isEmpty() && manifest.gitSnapshot == null) {
                     return@withLock CheckpointRevertResult(
                         restored = emptyList(),
                         errors = listOf("No hay checkpoint para este turno")
@@ -163,6 +230,22 @@ actual class CheckpointStore {
 
                 val restored = mutableListOf<String>()
                 val errors = mutableListOf<String>()
+
+                // Git PRIMERO, y las entradas de archivo después: las fs tools guardan el
+                // contenido byte a byte, así que su restauración es exacta y debe ser la que
+                // gane si un mismo archivo aparece por las dos vías.
+                manifest.gitSnapshot?.let { snap ->
+                    val ws = File(snap.workspaceDir)
+                    val changed = git(ws, "diff", "--name-only", snap.ref)
+                        ?.lines()?.filter { it.isNotBlank() }.orEmpty()
+                    if (changed.isEmpty()) {
+                        // Nada que deshacer por esta vía; no es un error.
+                    } else if (git(ws, "checkout", snap.ref, "--", ".") == null) {
+                        errors.add("No se pudieron restaurar los archivos tocados por comandos de shell (git checkout falló)")
+                    } else {
+                        restored.addAll(changed.map { "${snap.workspaceDir}/$it" })
+                    }
+                }
 
                 // Orden inverso: deshace las mutaciones en el orden contrario al
                 // que ocurrieron dentro del turno.
@@ -230,6 +313,8 @@ actual class CheckpointStore {
         }
 
     private companion object {
+        /** Un git colgado no puede bloquear el turno del agente. */
+        const val GIT_TIMEOUT_SECONDS = 15L
         const val MANIFEST = "manifest.json"
         const val BLOBS = "blobs"
 

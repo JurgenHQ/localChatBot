@@ -16,6 +16,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.localchatbot.core.platform.applyWindowsRoundedCorners
+import com.localchatbot.core.storage.SettingsFactory
 import com.localchatbot.core.theme.AppTheme
 import com.localchatbot.di.AppContainer
 import com.localchatbot.domain.model.AppPreferences
@@ -61,9 +62,12 @@ fun main() {
             AppContainer().also { c ->
                 // La persistencia de sesiones escribe con throttle de 250ms;
                 // sin este hook, las últimas mutaciones se pierden al cerrar.
+                // Las preferencias también se escriben en diferido (hilo daemon,
+                // ver SettingsFactory.scheduleWrite), así que hay que vaciarlas aquí.
                 Runtime.getRuntime().addShutdownHook(
                     Thread {
                         c.chatRepository.flushPendingWrites()
+                        SettingsFactory.flushPendingWrites()
                         c.remoteAccessServer.stop()
                         runBlocking { c.mcpToolProvider.closeAll() }
                     }

@@ -6,12 +6,53 @@ import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.ModelCatalog
 import com.localchatbot.domain.model.PersistedToolCall
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.model.WebSource
+import com.localchatbot.domain.search.MessageSearchResult
 import kotlinx.coroutines.flow.Flow
 
 interface ChatRepository {
-    val sessions: Flow<List<ChatSession>>
+    /**
+     * Metadatos de todas las sesiones, **sin mensajes**, ordenados igual que antes
+     * (fijadas primero, luego por fecha de actualización). Es lo que consumen el drawer y
+     * el listado del acceso remoto, que no leen ni un campo de mensaje.
+     *
+     * Sustituye al antiguo `sessions: Flow<List<ChatSession>>`, que reconstruía el
+     * historial completo de todas las sesiones en cada escritura — incluido cada flush de
+     * delta de streaming (cada 120 ms), con coste O(historial entero). Quien necesite los
+     * mensajes de **una** sesión usa [sessionWithMessages]; quien necesite una sesión
+     * suelta y puntual, [getSession].
+     */
+    val sessionSummaries: Flow<List<SessionSummary>>
+
+    /**
+     * Sesión completa (metadatos + mensajes + media transitoria) de [sessionId], reactiva.
+     * Emite null si la sesión no existe o deja de existir.
+     *
+     * Solo se colecta para la sesión **activa**, así que durante el streaming se
+     * deserializan únicamente los mensajes que están en pantalla.
+     */
+    fun sessionWithMessages(sessionId: String): Flow<ChatSession?>
+
+    /**
+     * Data URL de la imagen de un mensaje, o null. Se lee del overlay en memoria: las
+     * imágenes/vídeos nunca se persisten (ver [com.localchatbot.domain.model.ChatMessage]),
+     * así que no hace falta tocar SQLite para resolverlas.
+     */
+    fun messageImageDataUrl(messageId: String): String?
+
+    /**
+     * Busca [query] en el contenido de **todos** los mensajes, vía el índice FTS5
+     * `message_fts`. Devuelve los resultados ordenados por relevancia (bm25), como mucho
+     * [limit].
+     *
+     * Es one-shot y no un `Flow`: la búsqueda la dispara el usuario al escribir, y
+     * reemitirla en cada escritura de streaming solo gastaría trabajo en resultados que
+     * nadie está mirando.
+     */
+    suspend fun searchMessages(query: String, limit: Int = 50): List<MessageSearchResult>
+
     suspend fun createSession(model: String): ChatSession
     suspend fun deleteSession(id: String)
     suspend fun getSession(id: String): ChatSession?
@@ -23,13 +64,30 @@ interface ChatRepository {
     suspend fun updateMessageVideo(sessionId: String, messageId: String, videoDataUrl: String)
     suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String)
     suspend fun updateMessageCheckpoint(sessionId: String, messageId: String, checkpointId: String)
-    suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics)
+    /**
+     * Cierra el turno escribiendo métricas y modelo juntos: [model] es el que reportó el
+     * servidor (puede no ser el configurado) y no se conoce hasta este momento, igual que
+     * las métricas. Van en la misma llamada para no gastar dos transacciones en lo mismo.
+     * Null en [model] deja la columna como está.
+     */
+    suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics, model: String?)
     suspend fun updateTitle(sessionId: String, title: String)
     suspend fun updateModel(sessionId: String, model: String)
     suspend fun setPinned(sessionId: String, pinned: Boolean)
     suspend fun updateContextSummary(sessionId: String, summary: String)
     /** Elimina el mensaje indicado y todos los posteriores en esa sesión. */
     suspend fun deleteMessagesFrom(sessionId: String, messageId: String)
+
+    /**
+     * Crea una copia completa de la sesión (mensajes incluidos) como sesión nueva, para
+     * conservar una rama antes de truncar el historial. La copia no queda fijada y sus
+     * mensajes reciben ids nuevos; el `checkpointId` NO se copia, porque los checkpoints
+     * están indexados por sesión de origen y el chip de revertir apuntaría a un turno que
+     * en la copia no existe.
+     *
+     * Devuelve la sesión creada, o null si la de origen ya no existe.
+     */
+    suspend fun forkSession(sessionId: String): ChatSession?
     suspend fun clearAll()
 
     /**
@@ -107,5 +165,17 @@ interface ModelRepository {
         baseUrl: String,
         model: String,
         transcript: String
+    ): String?
+
+    /**
+     * Completion no interactiva de propósito general con system prompt e input libres
+     * (a diferencia de [summarize]/[generateTitle], que tienen su prompt fijo). La usa
+     * `InitProjectUseCase` para redactar AGENTS.md a partir del contexto del workspace.
+     */
+    suspend fun generateDocument(
+        baseUrl: String,
+        model: String,
+        systemPrompt: String,
+        userPrompt: String
     ): String?
 }

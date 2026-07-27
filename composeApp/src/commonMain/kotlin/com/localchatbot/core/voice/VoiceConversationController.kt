@@ -157,8 +157,8 @@ class VoiceConversationController(
     }
 
     private suspend fun lastAssistantText(sessionId: String): String? {
-        val session = chatRepository.sessions.firstOrNull()?.firstOrNull { it.id == sessionId }
-            ?: return null
+        // Lectura puntual por id: no hace falta un flow ni el resto del historial.
+        val session = chatRepository.getSession(sessionId) ?: return null
         return session.messages.lastOrNull { it.role == Role.Assistant }?.content
     }
 

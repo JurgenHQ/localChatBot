@@ -6,6 +6,8 @@ package com.localchatbot.core.storage
 actual class CheckpointStore {
     actual suspend fun snapshotBeforeMutation(sessionId: String, turnId: String, absPath: String, toolName: String) = Unit
 
+    actual suspend fun snapshotWorkspaceGit(sessionId: String, turnId: String, workspaceDir: String): Boolean = false
+
     actual suspend fun hasCheckpoint(sessionId: String, turnId: String): Boolean = false
 
     actual suspend fun checkpointSummary(sessionId: String, turnId: String): List<String> = emptyList()

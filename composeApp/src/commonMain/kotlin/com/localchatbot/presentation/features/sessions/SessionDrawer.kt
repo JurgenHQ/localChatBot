@@ -24,10 +24,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.DateRange
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -53,8 +56,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import com.localchatbot.domain.search.MIN_SEARCH_QUERY_LENGTH
+import com.localchatbot.domain.search.MessageSearchResult
+import com.localchatbot.domain.search.parseSnippet
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,8 +72,10 @@ import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
-import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.domain.repository.ProjectRepository.Companion.AUTOMATION_GROUP_ID
+import com.localchatbot.domain.repository.ProjectRepository.Companion.BRANCHES_GROUP_ID
+import com.localchatbot.domain.repository.ProjectRepository.Companion.SUBAGENTS_GROUP_ID
 import com.localchatbot.presentation.components.atoms.AppLogo
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.StatusDot
@@ -86,6 +97,8 @@ fun SessionDrawer(
         ungrouped = state.ungrouped,
         groups = state.groups,
         automationSessions = state.automationSessions,
+        branchSessions = state.branchSessions,
+        subAgentSessions = state.subAgentSessions,
         projectsEnabled = state.projectsEnabled,
         query = state.query,
         connectionLabel = state.connectionLabel,
@@ -105,6 +118,9 @@ fun SessionDrawer(
         },
         onRename = viewModel::renameSession,
         onTogglePin = viewModel::togglePinned,
+        messageResults = state.messageResults,
+        searchingMessages = state.searchingMessages,
+        onSelectSearchResult = viewModel::selectSearchResult,
         onMoveSession = viewModel::moveSessionToProject,
         onCreateProject = viewModel::createProject,
         onRenameProject = viewModel::renameProject,
@@ -125,7 +141,7 @@ fun SessionDrawer(
 
 @Composable
 fun SessionDrawerContent(
-    ungrouped: List<ChatSession>,
+    ungrouped: List<SessionSummary>,
     query: String,
     connectionLabel: String,
     connectionProfiles: List<com.localchatbot.domain.model.ConnectionProfile> = emptyList(),
@@ -137,7 +153,9 @@ fun SessionDrawerContent(
     onNew: () -> Unit,
     onDismiss: () -> Unit,
     groups: List<ProjectGroup> = emptyList(),
-    automationSessions: List<ChatSession> = emptyList(),
+    automationSessions: List<SessionSummary> = emptyList(),
+    branchSessions: List<SessionSummary> = emptyList(),
+    subAgentSessions: List<SessionSummary> = emptyList(),
     projectsEnabled: Boolean = false,
     onNewInProject: (String) -> Unit = {},
     onMoveSession: (String, String?) -> Unit = { _, _ -> },
@@ -149,18 +167,23 @@ fun SessionDrawerContent(
     onOpenTasks: (() -> Unit)? = null,
     onRename: (String, String) -> Unit = { _, _ -> },
     onTogglePin: (String) -> Unit = {},
+    messageResults: List<MessageSearchResult> = emptyList(),
+    searchingMessages: Boolean = false,
+    onSelectSearchResult: (MessageSearchResult) -> Unit = {},
     showScrim: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     // Diálogos de proyecto (solo relevantes en Desktop).
     var showCreateProject by remember { mutableStateOf(false) }
-    var moveTarget by remember { mutableStateOf<ChatSession?>(null) }
-    // Sección "Tareas automatizadas": colapsada por defecto (se van acumulando).
+    var moveTarget by remember { mutableStateOf<SessionSummary?>(null) }
+    // Secciones reservadas: colapsadas por defecto (se van acumulando).
     var automationCollapsed by remember { mutableStateOf(true) }
+    var branchesCollapsed by remember { mutableStateOf(true) }
+    var subAgentsCollapsed by remember { mutableStateOf(true) }
 
     val hasProjects = groups.isNotEmpty()
     // Callback "mover a proyecto" solo si hay a dónde mover (algún proyecto existe).
-    val moveCallback: ((ChatSession) -> (() -> Unit)?) = { session ->
+    val moveCallback: ((SessionSummary) -> (() -> Unit)?) = { session ->
         if (projectsEnabled && hasProjects) ({ moveTarget = session }) else null
     }
 
@@ -298,7 +321,10 @@ fun SessionDrawerContent(
                     }
                 }
 
-                if ((hasProjects || automationSessions.isNotEmpty()) && ungrouped.isNotEmpty()) {
+                if ((hasProjects || automationSessions.isNotEmpty() || branchSessions.isNotEmpty() ||
+                        subAgentSessions.isNotEmpty()) &&
+                    ungrouped.isNotEmpty()
+                ) {
                     item(key = "ungrouped-header") {
                         SectionLabel(
                             text = "Sin proyecto",
@@ -328,7 +354,9 @@ fun SessionDrawerContent(
                 // ejecutarse. Solo aparece si hay alguna; colapsable, sin acciones de edición.
                 if (automationSessions.isNotEmpty()) {
                     item(key = "automation-header") {
-                        AutomationSectionHeader(
+                        ReservedSectionHeader(
+                            label = "Tareas automatizadas",
+                            icon = Icons.Outlined.DateRange,
                             count = automationSessions.size,
                             collapsed = automationCollapsed,
                             onToggle = { automationCollapsed = !automationCollapsed }
@@ -351,6 +379,84 @@ fun SessionDrawerContent(
                                 onMoveToProject = moveCallback(session)
                             )
                         }
+                    }
+                }
+
+                // Sección "Ramas anteriores": copias que se guardan al reenviar un mensaje
+                // antiguo, con la conversación tal como estaba antes de truncarla. Mismo
+                // trato que las automatizadas: solo aparece si hay alguna, y colapsada.
+                if (branchSessions.isNotEmpty()) {
+                    item(key = "branches-header") {
+                        ReservedSectionHeader(
+                            label = "Ramas anteriores",
+                            icon = Icons.Outlined.History,
+                            count = branchSessions.size,
+                            collapsed = branchesCollapsed,
+                            onToggle = { branchesCollapsed = !branchesCollapsed }
+                        )
+                    }
+                    if (!branchesCollapsed) {
+                        items(branchSessions, key = { it.id }) { session ->
+                            DraggableSession(
+                                session = session,
+                                dragEnabled = dragEnabled,
+                                dragging = drag?.sessionId == session.id,
+                                dragOffsetY = drag?.takeIf { it.sessionId == session.id }?.let { it.pointerY - it.startY } ?: 0f,
+                                onDragStart = { y -> drag = DragState(session.id, BRANCHES_GROUP_ID, y, y) },
+                                onDragMove = { y -> drag = drag?.copy(pointerY = y) },
+                                onDragEnd = endDrag,
+                                onClick = { onSelect(session.id) },
+                                onDelete = { onDelete(session.id) },
+                                onRename = { newTitle -> onRename(session.id, newTitle) },
+                                onTogglePin = { onTogglePin(session.id) },
+                                onMoveToProject = moveCallback(session)
+                            )
+                        }
+                    }
+                }
+
+                // Sección "Sub-agentes": las sesiones que abre `spawn_agent`. Se muestran a
+                // propósito — el hijo ejecuta tools reales sobre el workspace y solo devuelve
+                // su texto final al padre, así que esta es la única forma de auditar qué hizo.
+                if (subAgentSessions.isNotEmpty()) {
+                    item(key = "subagents-header") {
+                        ReservedSectionHeader(
+                            label = "Sub-agentes",
+                            icon = Icons.Outlined.Build,
+                            count = subAgentSessions.size,
+                            collapsed = subAgentsCollapsed,
+                            onToggle = { subAgentsCollapsed = !subAgentsCollapsed }
+                        )
+                    }
+                    if (!subAgentsCollapsed) {
+                        items(subAgentSessions, key = { it.id }) { session ->
+                            DraggableSession(
+                                session = session,
+                                dragEnabled = dragEnabled,
+                                dragging = drag?.sessionId == session.id,
+                                dragOffsetY = drag?.takeIf { it.sessionId == session.id }?.let { it.pointerY - it.startY } ?: 0f,
+                                onDragStart = { y -> drag = DragState(session.id, SUBAGENTS_GROUP_ID, y, y) },
+                                onDragMove = { y -> drag = drag?.copy(pointerY = y) },
+                                onDragEnd = endDrag,
+                                onClick = { onSelect(session.id) },
+                                onDelete = { onDelete(session.id) },
+                                onRename = { newTitle -> onRename(session.id, newTitle) },
+                                onTogglePin = { onTogglePin(session.id) },
+                                onMoveToProject = moveCallback(session)
+                            )
+                        }
+                    }
+                }
+
+                // Coincidencias dentro del CONTENIDO de los mensajes (índice FTS5). Van al
+                // final: lo de arriba coincide por título, que es más preciso y es lo que el
+                // usuario espera primero si sabe cómo se llama la conversación.
+                if (query.trim().length >= MIN_SEARCH_QUERY_LENGTH) {
+                    item(key = "messages-header") {
+                        MessageResultsHeader(count = messageResults.size, searching = searchingMessages)
+                    }
+                    items(messageResults, key = { "msg-${it.messageId}" }) { result ->
+                        MessageResultRow(result = result, onClick = { onSelectSearchResult(result) })
                     }
                 }
             }
@@ -473,7 +579,13 @@ private fun SectionLabel(
 
 /** Cabecera colapsable de la sección "Tareas automatizadas" (sin acciones de edición). */
 @Composable
-private fun AutomationSectionHeader(count: Int, collapsed: Boolean, onToggle: () -> Unit) {
+private fun ReservedSectionHeader(
+    label: String,
+    icon: ImageVector,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -490,17 +602,94 @@ private fun AutomationSectionHeader(count: Int, collapsed: Boolean, onToggle: ()
         )
         Spacer(Modifier.width(Spacing.xs))
         Icon(
-            Icons.Outlined.DateRange,
+            icon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(16.dp)
         )
         Spacer(Modifier.width(Spacing.xs))
         Text(
-            "Tareas automatizadas ($count)",
+            "$label ($count)",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onBackground,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Cabecera de la sección de coincidencias en el contenido. No es colapsable, a diferencia de
+ * las secciones reservadas: solo aparece mientras hay una búsqueda activa, así que esconderla
+ * no ahorra nada.
+ */
+@Composable
+private fun MessageResultsHeader(count: Int, searching: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm, bottom = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(Spacing.xs))
+        Text(
+            when {
+                searching -> "En los mensajes…"
+                count == 0 -> "En los mensajes (sin coincidencias)"
+                else -> "En los mensajes ($count)"
+            },
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Una coincidencia: de qué conversación viene, y el fragmento con lo que coincidió resaltado.
+ *
+ * El resaltado sale de los delimitadores que puso `snippet()` en SQL, no de buscar la query
+ * en el texto: FTS5 ignora acentos, así que "sesion" coincide con "sesión" y un `contains`
+ * literal no encontraría qué marcar.
+ */
+@Composable
+private fun MessageResultRow(result: MessageSearchResult, onClick: () -> Unit) {
+    val matchColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)
+    val annotated = remember(result.snippet, matchColor) {
+        buildAnnotatedString {
+            parseSnippet(result.snippet).forEach { segment ->
+                if (segment.isMatch) {
+                    withStyle(SpanStyle(background = matchColor)) { append(segment.text) }
+                } else {
+                    append(segment.text)
+                }
+            }
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.sm))
+            .clickable(onClick = onClick)
+            .padding(horizontal = Spacing.sm, vertical = Spacing.xs)
+    ) {
+        Text(
+            text = result.sessionTitle,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = annotated,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis
         )
     }
@@ -524,7 +713,7 @@ private data class DragState(
  */
 @Composable
 private fun DraggableSession(
-    session: ChatSession,
+    session: SessionSummary,
     dragEnabled: Boolean,
     dragging: Boolean,
     dragOffsetY: Float,

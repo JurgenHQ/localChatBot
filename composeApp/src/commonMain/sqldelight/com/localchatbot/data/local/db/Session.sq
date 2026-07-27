@@ -15,6 +15,40 @@ CREATE TABLE session (
 selectAllSessions:
 SELECT * FROM session ORDER BY pinned DESC, updated_at_epoch_ms DESC;
 
+-- Metadatos de todas las sesiones SIN sus mensajes, para el drawer y el listado remoto.
+-- Reemplaza al par selectAllSessions + selectAllMessages, que obligaba a leer y
+-- deserializar el historial entero en cada escritura (ver SessionSummary).
+--
+-- El preview es el último mensaje que no sea `Tool`; se resuelve con una subconsulta
+-- correlacionada apoyada en message_session_sort_idx (session_id, sort_order), así que
+-- por sesión es un seek al final del índice y no un escaneo de sus mensajes.
+--
+-- :excludedRole va como parámetro (y no como el literal 'Tool') porque la columna está
+-- adaptada a Role: así SQLDelight lo codifica con el mismo adapter con el que se escribió
+-- y no hay que duplicar aquí el nombre del enum.
+--
+-- El NULLIF NO es para convertir '' en NULL: es para forzar la nulabilidad. SQLDelight
+-- infiere el tipo de la subconsulta a partir de message.content, que es NOT NULL, y genera
+-- `last_message_preview: String` con un `cursor.getString(n)!!` — pero una subconsulta sin
+-- filas devuelve NULL, así que una sesión vacía (o solo con mensajes Tool) reventaba con
+-- NPE al abrir el drawer. Envolviendo en NULLIF el tipo generado pasa a `String?`.
+selectAllSessionSummaries:
+SELECT
+    s.id,
+    s.title,
+    s.model,
+    s.created_at_epoch_ms,
+    s.updated_at_epoch_ms,
+    s.pinned,
+    NULLIF((
+        SELECT m.content FROM message m
+        WHERE m.session_id = s.id AND m.role != :excludedRole
+        ORDER BY m.sort_order DESC
+        LIMIT 1
+    ), '') AS last_message_preview
+FROM session s
+ORDER BY s.pinned DESC, s.updated_at_epoch_ms DESC;
+
 selectSessionById:
 SELECT * FROM session WHERE id = :id;
 

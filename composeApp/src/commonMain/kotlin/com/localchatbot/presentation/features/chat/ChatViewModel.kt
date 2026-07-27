@@ -5,35 +5,50 @@ import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.background.BackgroundExecutor
 import com.localchatbot.core.image.ImageSaver
 import com.localchatbot.core.network.friendlyStreamErrorMessage
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.PendingUserPrompt
 import com.localchatbot.core.state.PendingUserPromptStore
+import com.localchatbot.core.state.QueuedMessage
+import com.localchatbot.core.state.QueuedMessageStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.storage.CheckpointStore
 import com.localchatbot.core.platform.SystemNotifier
+import com.localchatbot.core.platform.currentGitBranch
 import com.localchatbot.core.voice.TextToSpeech
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.Role
+import com.localchatbot.domain.export.ChatExport
+import com.localchatbot.core.fs.saveTextFile
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.repository.ProjectRepository
+import com.localchatbot.domain.usecase.CompactContextUseCase
 import com.localchatbot.domain.usecase.CreateSessionUseCase
+import com.localchatbot.domain.usecase.InitProjectUseCase
 import com.localchatbot.domain.usecase.SendMessageUseCase
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -63,6 +78,8 @@ data class ChatUiState(
     val fsPreviewEdits: Boolean = false,
     /** Si true, el agente está en modo Plan (solo lectura, sin tools de escritura). */
     val planMode: Boolean = false,
+    /** Rama git actual del workspace efectivo, o null si no es un repo git (o no hay workspace). */
+    val gitBranch: String? = null,
     /** Skill activa vía /skill en el composer. Persiste hasta que el usuario pulsa la X del badge. */
     val pendingSkill: SkillDefinition? = null,
     /** Skills instalados y habilitados disponibles para invocación explícita /skill. */
@@ -73,7 +90,17 @@ data class ChatUiState(
      * Si el modelo configurado está cargado en memoria. Null si el backend no expone
      * esa información (backend OpenAI plano) — en ese caso no mostramos aviso de descarga.
      */
-    val modelLoaded: Boolean? = null
+    val modelLoaded: Boolean? = null,
+    /**
+     * Mensajes escritos durante el turno en curso, aún sin enviar. Se mandarán fusionados
+     * en uno solo al terminar; hasta entonces se pueden quitar uno a uno.
+     */
+    val queuedMessages: List<QueuedMessage> = emptyList(),
+    /**
+     * True si esta sesión tiene un corte de compactación manual activo: parte del historial
+     * visible ya no se le manda al modelo, lo representa `contextSummary`.
+     */
+    val contextCompacted: Boolean = false
 ) {
     val hasAttachment: Boolean get() = attachedImageBytes != null || attachedTextFiles.isNotEmpty()
 }
@@ -85,6 +112,7 @@ class ChatViewModel(
     private val activeSessionStore: ActiveSessionStore,
     private val streamingStateStore: StreamingStateStore,
     private val pendingUserPromptStore: PendingUserPromptStore,
+    private val queuedMessageStore: QueuedMessageStore,
     private val applicationScope: CoroutineScope,
     private val backgroundExecutor: BackgroundExecutor,
     private val createSessionUseCase: CreateSessionUseCase,
@@ -93,12 +121,26 @@ class ChatViewModel(
     private val imageSaver: ImageSaver,
     private val textToSpeech: TextToSpeech,
     private val systemNotifier: SystemNotifier,
-    private val checkpointStore: CheckpointStore? = null
+    private val checkpointStore: CheckpointStore? = null,
+    /** Compactación manual del contexto (`/compact`). Null = la acción no se ofrece. */
+    private val compactContextUseCase: CompactContextUseCase? = null,
+    /** Generación de AGENTS.md (`/init`). Null = la acción no se ofrece. */
+    private val initProjectUseCase: InitProjectUseCase? = null
 ) : ViewModel() {
 
     // ID del mensaje que se está leyendo en voz alta (null = ninguno).
     private val _speakingMessageId = MutableStateFlow<String?>(null)
     val speakingMessageId: StateFlow<String?> = _speakingMessageId
+
+    /**
+     * Mensaje al que saltar, pedido por la búsqueda global del drawer. Se expone tal cual
+     * desde el store porque el scroll solo puede hacerlo la pantalla (es la que tiene el
+     * `LazyListState`), y hasta que los mensajes de la sesión elegida no están cargados no
+     * hay a qué índice desplazarse.
+     */
+    val pendingScrollMessageId: StateFlow<String?> = activeSessionStore.pendingScrollMessageId
+
+    fun consumePendingScroll() = activeSessionStore.consumePendingScroll()
 
     /**
      * Revert pendiente de confirmación: el usuario pulsó el chip "revertir este
@@ -108,6 +150,156 @@ class ChatViewModel(
 
     private val _pendingRevert = MutableStateFlow<PendingRevert?>(null)
     val pendingRevert: StateFlow<PendingRevert?> = _pendingRevert
+
+    /**
+     * Estado del diálogo de compactación manual (`/compact`). El resumen se muestra y se
+     * puede editar **antes** de aplicarse: mientras esto no es null no se tocó nada.
+     */
+    data class CompactState(
+        val generating: Boolean = false,
+        val summary: String = "",
+        val boundaryMessageId: String? = null,
+        val messageCount: Int = 0,
+        val estimatedTokensFreed: Int = 0,
+        val error: String? = null
+    )
+
+    private val _compactState = MutableStateFlow<CompactState?>(null)
+    val compactState: StateFlow<CompactState?> = _compactState
+
+    /**
+     * Abre el diálogo y pide el resumen al modelo. No persiste nada: eso lo hace
+     * [applyCompact] con el texto que quede en el editor.
+     */
+    fun requestCompact() {
+        val compact = compactContextUseCase ?: return
+        val activeId = activeSessionStore.activeSessionId.value ?: return
+        if (streamingStateStore.isStreaming(activeId)) {
+            _local.update { it.copy(errorMessage = "Esperá a que termine el turno para compactar") }
+            return
+        }
+        _compactState.value = CompactState(generating = true)
+        viewModelScope.launch {
+            compact.preview(activeId).fold(
+                onSuccess = { preview ->
+                    _compactState.value = CompactState(
+                        generating = false,
+                        summary = preview.summary,
+                        boundaryMessageId = preview.boundaryMessageId,
+                        messageCount = preview.messageCount,
+                        estimatedTokensFreed = preview.estimatedTokensFreed
+                    )
+                },
+                onFailure = { err ->
+                    _compactState.value = CompactState(
+                        generating = false,
+                        error = err.message ?: "No se pudo generar el resumen"
+                    )
+                }
+            )
+        }
+    }
+
+    fun onCompactSummaryChange(value: String) =
+        _compactState.update { it?.copy(summary = value) }
+
+    fun dismissCompact() {
+        _compactState.value = null
+    }
+
+    /** Aplica el resumen (posiblemente editado). Los mensajes NO se borran. */
+    fun applyCompact() {
+        val compact = compactContextUseCase ?: return
+        val state = _compactState.value ?: return
+        val boundary = state.boundaryMessageId ?: return
+        val activeId = activeSessionStore.activeSessionId.value ?: return
+        val summary = state.summary.trim()
+        if (summary.isEmpty()) return
+        _compactState.value = null
+        viewModelScope.launch {
+            compact.apply(activeId, summary, boundary).fold(
+                onSuccess = {
+                    _local.update {
+                        it.copy(
+                            errorMessage = "Contexto compactado: ${state.messageCount} mensajes " +
+                                "resumidos (siguen visibles en el chat)"
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    _local.update { it.copy(errorMessage = "No se pudo compactar: ${err.message}") }
+                }
+            )
+        }
+    }
+
+    /**
+     * Estado del diálogo de `/init`. El contenido propuesto se muestra y se puede editar
+     * **antes** de escribirse: mientras esto no es null, `AGENTS.md` no fue tocado.
+     */
+    data class InitProjectState(
+        val generating: Boolean = false,
+        val content: String = "",
+        val error: String? = null
+    )
+
+    private val _initProjectState = MutableStateFlow<InitProjectState?>(null)
+    val initProjectState: StateFlow<InitProjectState?> = _initProjectState
+
+    /** Abre el diálogo y pide el borrador de AGENTS.md al modelo. No escribe nada. */
+    fun requestInitProject() {
+        val init = initProjectUseCase ?: return
+        _initProjectState.value = InitProjectState(generating = true)
+        viewModelScope.launch {
+            init.preview().fold(
+                onSuccess = { content ->
+                    _initProjectState.value = InitProjectState(generating = false, content = content)
+                },
+                onFailure = { err ->
+                    _initProjectState.value = InitProjectState(
+                        generating = false,
+                        error = err.message ?: "No se pudo generar AGENTS.md"
+                    )
+                }
+            )
+        }
+    }
+
+    fun onInitProjectContentChange(value: String) =
+        _initProjectState.update { it?.copy(content = value) }
+
+    fun dismissInitProject() {
+        _initProjectState.value = null
+    }
+
+    /** Escribe AGENTS.md con el contenido (posiblemente editado) del diálogo. */
+    fun applyInitProject() {
+        val init = initProjectUseCase ?: return
+        val state = _initProjectState.value ?: return
+        val content = state.content.trim()
+        if (content.isEmpty()) return
+        _initProjectState.value = null
+        viewModelScope.launch {
+            init.apply(content).fold(
+                onSuccess = {
+                    _local.update { it.copy(errorMessage = "AGENTS.md creado en la raíz del workspace") }
+                },
+                onFailure = { err ->
+                    _local.update { it.copy(errorMessage = "No se pudo crear AGENTS.md: ${err.message}") }
+                }
+            )
+        }
+    }
+
+    /** Vuelve a mandar el historial completo al modelo. */
+    fun undoCompact() {
+        val compact = compactContextUseCase ?: return
+        val activeId = activeSessionStore.activeSessionId.value ?: return
+        viewModelScope.launch {
+            compact.undo(activeId)
+            _local.update { it.copy(errorMessage = "Compactación deshecha: se vuelve a enviar todo el historial") }
+        }
+    }
 
     /** Pide confirmación para revertir el turno [checkpointId] (muestra el diálogo). */
     fun requestRevert(checkpointId: String) {
@@ -202,23 +394,70 @@ class ChatViewModel(
     /** Si el modelo configurado está cargado en memoria (null = backend no lo expone). */
     private val _modelLoaded = MutableStateFlow<Boolean?>(null)
 
+    /** Rama git del workspace efectivo actual (null = no es repo git o no hay workspace). */
+    private val _gitBranch = MutableStateFlow<String?>(null)
+
+    /** Caché en memoria por workspace: evita relanzar `git` en cada recomposición del mismo dir. */
+    private val gitBranchCache = mutableMapOf<String, String?>()
+
+    /**
+     * Mismo cálculo de workspace efectivo que el `combine` de más abajo, aislado en su propio
+     * flow para poder reaccionar solo a *cambios* de directorio (`distinctUntilChanged`) sin
+     * relanzar `git` en cada emisión de `state` (streaming, tokens, etc. cambian mucho más seguido
+     * que el workspace).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val effectiveWorkspaceFlow: Flow<String?> = combine(
+        activeSessionStore.activeSessionId,
+        preferences.preferences,
+        projectRepository.state
+    ) { activeId, prefs, projectState ->
+        activeId
+            ?.let { projectState.assignments[it] }
+            ?.let { pid -> projectState.projects.firstOrNull { it.id == pid } }
+            ?.workspaceDir ?: prefs.fsWorkspaceDir
+    }.distinctUntilChanged()
+
+    /**
+     * Sesión activa con sus mensajes. Se resuelve por id con [flatMapLatest] en vez de
+     * buscarla dentro de una lista de todas las sesiones: así, mientras el modelo escribe,
+     * solo se leen y deserializan los mensajes de **esta** sesión (que es la que está en
+     * pantalla) y no el historial completo de todas.
+     *
+     * Emite el **par (id, sesión)** y no la sesión suelta: si el id se leyera aparte de
+     * `activeSessionStore`, al cambiar de conversación habría un intervalo —el que tarda la
+     * consulta— con el id nuevo y los mensajes de la anterior, y el chat parpadearía con la
+     * conversación equivocada. Emparejados, el cambio es atómico: hasta que la sesión nueva
+     * no está cargada se sigue viendo la anterior entera y coherente.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val activeSessionFlow: Flow<Pair<String?, ChatSession?>> =
+        activeSessionStore.activeSessionId.flatMapLatest { id ->
+            if (id == null) flowOf(null to null)
+            else chatRepository.sessionWithMessages(id).map { session -> id to session }
+        }
+
     val state: StateFlow<ChatUiState> = combine(
         combine(
-            chatRepository.sessions,
-            activeSessionStore.activeSessionId,
+            activeSessionFlow,
             preferences.preferences,
             projectRepository.state
-        ) { sessions, activeId, prefs, projectState -> SessionData(sessions, activeId, prefs, projectState) },
+        ) { (activeId, active), prefs, projectState -> SessionData(active, activeId, prefs, projectState) },
         combine(
             streamingStateStore.streaming,
             streamingStateStore.activity,
             streamingStateStore.toolCallLog
         ) { streaming, activity, logs -> Triple(streaming, activity, logs) },
         _local,
-        combine(_tokensMax, _modelLoaded) { tokensMax, modelLoaded -> tokensMax to modelLoaded }
+        combine(
+            _tokensMax,
+            _modelLoaded,
+            queuedMessageStore.queued,
+            _gitBranch
+        ) { tokensMax, modelLoaded, queued, gitBranch -> TokensState(tokensMax, modelLoaded, queued, gitBranch) }
     ) { sessionData, streamTriple, local, tokensState ->
-        val (tokensMax, modelLoaded) = tokensState
-        val (sessions, activeId, prefs, projectState) = sessionData
+        val (tokensMax, modelLoaded, queuedBySession, gitBranch) = tokensState
+        val (active, activeId, prefs, projectState) = sessionData
         val (streamingIds, activityMap, toolCallLogs) = streamTriple
         // Workspace y modo EFECTIVOS de la sesión activa (carpeta del proyecto o global;
         // override de modo por sesión o el global). Así los chips reflejan la sesión actual.
@@ -227,7 +466,6 @@ class ChatViewModel(
             ?.let { pid -> projectState.projects.firstOrNull { it.id == pid } }
             ?.workspaceDir ?: prefs.fsWorkspaceDir
         val effectiveAgentMode = activeId?.let { prefs.sessionAgentModes[it] } ?: prefs.agentMode
-        val active = sessions.firstOrNull { it.id == activeId }
         // Tokens de contexto, lo más realista posible:
         // - Si hay una respuesta del modelo con `contextTokens` reales (prompt_tokens de
         //   su última llamada), usamos ESE número como base — incluye system prompt,
@@ -237,7 +475,11 @@ class ChatViewModel(
         //   respondieron (típicamente un mensaje nuevo del usuario).
         // - Si todavía no hay métricas reales, estimamos TODO por longitud (incluyendo
         //   resultados de tools, que sí ocupan contexto). Las imágenes van out-of-band.
-        val tokensUsed = computeContextTokens(active?.messages.orEmpty())
+        val tokensUsed = computeContextTokens(
+            messages = active?.messages.orEmpty(),
+            boundary = activeId?.let { prefs.sessionCompactBoundaries[it] },
+            contextSummary = active?.contextSummary
+        )
         val allSkills = SkillCatalog.allFor(prefs.customSkills)
         val installedEnabled = prefs.installedSkills
             .filter { it.enabled }
@@ -259,10 +501,13 @@ class ChatViewModel(
             fsAllowOutsideWorkspace = prefs.fsAllowOutsideWorkspace,
             fsPreviewEdits = prefs.fsPreviewEdits,
             planMode = effectiveAgentMode == com.localchatbot.domain.model.AgentMode.Plan,
+            gitBranch = gitBranch,
             pendingSkill = local.pendingSkill,
             attachedTextFiles = local.attachedTextFiles,
             installedEnabledSkills = installedEnabled,
-            modelLoaded = modelLoaded
+            modelLoaded = modelLoaded,
+            queuedMessages = activeId?.let { queuedBySession[it] }.orEmpty(),
+            contextCompacted = activeId != null && prefs.sessionCompactBoundaries.containsKey(activeId)
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
 
@@ -272,20 +517,65 @@ class ChatViewModel(
      * como los contó el servidor) y le suma un estimado de los mensajes posteriores
      * aún sin responder. Si no hay métricas reales todavía, estima todo por longitud.
      */
-    private fun computeContextTokens(messages: List<ChatMessage>): Int {
+    private fun computeContextTokens(
+        messages: List<ChatMessage>,
+        boundary: com.localchatbot.domain.model.CompactBoundary?,
+        contextSummary: String?
+    ): Int {
         if (messages.isEmpty()) return 0
         fun estimate(msgs: List<ChatMessage>): Int = (msgs.sumOf { it.content.length } + 3) / 4
-        val lastRealIdx = messages.indexOfLast {
+
+        // Solo cuenta una medición del servidor POSTERIOR al corte: las anteriores incluían
+        // los mensajes que la compactación ya sacó del request, y usarlas dejaba la barra
+        // clavada en el número de antes de compactar.
+        val freshIdx = messages.indexOfLast {
+            it.role == Role.Assistant && it.metrics?.contextTokens != null &&
+                (boundary == null || it.timestampEpochMs >= boundary.appliedAtEpochMs)
+        }
+        if (freshIdx >= 0) {
+            return messages[freshIdx].metrics!!.contextTokens!! + estimate(messages.drop(freshIdx + 1))
+        }
+
+        // Recién compactado, todavía sin turno nuevo: se estima lo que SÍ se envía (resumen
+        // + mensajes posteriores al corte). Al overhead fijo — system prompt y definiciones
+        // de tools, que no salen de los mensajes — se lo deduce de la última medición real:
+        // es lo que el servidor contó de más respecto del historial que había entonces.
+        val boundaryIdx = boundary?.let { b -> messages.indexOfFirst { it.id == b.messageId } } ?: -1
+        val sent = if (boundaryIdx >= 0) messages.drop(boundaryIdx + 1) else messages
+        val summaryTokens = if (boundaryIdx >= 0) (contextSummary.orEmpty().length + 3) / 4 else 0
+        val staleIdx = messages.indexOfLast {
             it.role == Role.Assistant && it.metrics?.contextTokens != null
         }
-        return if (lastRealIdx >= 0) {
-            messages[lastRealIdx].metrics!!.contextTokens!! + estimate(messages.drop(lastRealIdx + 1))
+        val overhead = if (staleIdx >= 0) {
+            (messages[staleIdx].metrics!!.contextTokens!! - estimate(messages.take(staleIdx + 1)))
+                .coerceAtLeast(0)
         } else {
-            estimate(messages)
+            0
         }
+        return overhead + summaryTokens + estimate(sent)
     }
 
     init {
+        // Rama git del workspace efectivo, cacheada por directorio: solo relanza `git`
+        // cuando el workspace realmente cambia (gracias al distinctUntilChanged de arriba),
+        // no en cada emisión de `state` (streaming, tokens…).
+        viewModelScope.launch {
+            effectiveWorkspaceFlow.collect { workspace ->
+                if (workspace == null) {
+                    _gitBranch.value = null
+                    return@collect
+                }
+                val cached = gitBranchCache[workspace]
+                if (cached != null || gitBranchCache.containsKey(workspace)) {
+                    _gitBranch.value = cached
+                    return@collect
+                }
+                val branch = currentGitBranch(workspace)
+                gitBranchCache[workspace] = branch
+                _gitBranch.value = branch
+            }
+        }
+
         // Auto-seleccionar la primera sesión si no hay activa. Dispara SOLO cuando
         // cambia la lista de sesiones (no cuando cambia activeSessionId): si
         // recombináramos también con activeSessionId, un `set(newId)` recién hecho
@@ -293,7 +583,7 @@ class ChatViewModel(
         // que aún no incluye esa sesión (el flow de SQLDelight se re-emite async tras
         // el insert), la daríamos por inexistente y la pisaríamos con la anterior.
         viewModelScope.launch {
-            chatRepository.sessions.collect { list ->
+            chatRepository.sessionSummaries.collect { list ->
                 val active = activeSessionStore.activeSessionId.value
                 val valid = active != null && list.any { it.id == active }
                 if (!valid) {
@@ -318,17 +608,46 @@ class ChatViewModel(
                     a.first.model == b.first.model &&
                     a.second == b.second
                 }
-                .collect { (cfg, _) ->
-                    if (!cfg.isValid()) {
-                        _tokensMax.value = DEFAULT_CONTEXT_LENGTH
-                        _modelLoaded.value = null
-                        return@collect
-                    }
-                    val real = modelRepository.fetchContextLength(cfg.baseUrl(), cfg.model)
-                    _tokensMax.value = real ?: DEFAULT_CONTEXT_LENGTH
-                    _modelLoaded.value = modelRepository.isModelLoaded(cfg.baseUrl(), cfg.model)
-                }
+                .collect { refreshModelStatusNow() }
         }
+    }
+
+    /**
+     * Re-consulta el estado del modelo saltándose el `distinctUntilChanged` de arriba.
+     *
+     * Hace falta porque ese colector solo reacciona a **cambios** de (baseUrl, modelo
+     * configurado, modelo de la sesión), y cargar un modelo desde el selector no cambia
+     * ninguno de los tres cuando el modelo que cargás ya era el configurado — que es el
+     * caso típico: abrís la app con el modelo X configurado pero descargado (aviso "Sin
+     * modelo cargado"), lo cargás, y como `cfg.model` sigue siendo X no se vuelve a
+     * preguntar y el aviso se queda pegado para siempre.
+     */
+    fun refreshModelStatus() {
+        viewModelScope.launch { refreshModelStatusNow() }
+    }
+
+    private suspend fun refreshModelStatusNow() {
+        val cfg = preferences.current().connection
+        if (!cfg.isValid()) {
+            _tokensMax.value = DEFAULT_CONTEXT_LENGTH
+            _modelLoaded.value = null
+            return
+        }
+        val real = modelRepository.fetchContextLength(cfg.baseUrl(), cfg.model)
+        _tokensMax.value = real ?: DEFAULT_CONTEXT_LENGTH
+        _modelLoaded.value = modelRepository.isModelLoaded(cfg.baseUrl(), cfg.model)
+    }
+
+    /**
+     * Un turno que termina bien es la prueba definitiva de que el modelo está cargado: acaba
+     * de generar tokens. Prevalece sobre lo que dijera [ModelRepository.isModelLoaded], que
+     * puede equivocarse por dos vías — el servidor todavía reporta la instancia como no
+     * cargada justo tras un `loadModel`, o el id configurado no coincide literalmente con la
+     * clave que devuelve el servidor y la comparación da `false` aunque el chat funcione.
+     * Sin esto, el aviso seguía en pantalla mientras el modelo respondía.
+     */
+    private fun markModelLoadedOnSuccess(error: Throwable?) {
+        if (error == null) _modelLoaded.value = true
     }
 
     private companion object {
@@ -383,11 +702,28 @@ class ChatViewModel(
     fun send() {
         val current = _local.value
         val rawText = current.draft.trim()
+
+        // Comando del composer escrito a mano: se ejecuta en vez de enviarse al modelo.
+        // Misma ruta que elegirlo del popup (ver [runSlashCommand]).
+        SlashCommand.parse(rawText)?.let { cmd ->
+            _local.update { it.copy(draft = "", errorMessage = null) }
+            runSlashCommand(cmd)
+            return
+        }
+
         val image = current.attachedImageBytes
         val pendingSkill = current.pendingSkill
         val textFiles = current.attachedTextFiles
         val activeId = activeSessionStore.activeSessionId.value
-        if (activeId != null && streamingStateStore.isStreaming(activeId)) return
+        // Con un turno en curso el mensaje no se pierde: va a la cola y se enviará fusionado
+        // con el resto al terminar. Solo texto — durante el turno los botones de adjuntar
+        // están deshabilitados, así que aquí no hay imagen ni archivos que arrastrar.
+        if (activeId != null && streamingStateStore.isStreaming(activeId)) {
+            if (rawText.isEmpty()) return
+            queuedMessageStore.enqueue(activeId, rawText)
+            _local.update { it.copy(draft = "", errorMessage = null) }
+            return
+        }
         if (rawText.isEmpty() && image == null && textFiles.isEmpty()) return
 
         val dataUrl = image?.let { "data:image/jpeg;base64,${Base64.encode(it)}" }
@@ -421,18 +757,46 @@ class ChatViewModel(
             }
         }
 
+        startTurn(activeId, text, dataUrl, systemPromptOverride, attachments)
+    }
+
+    /**
+     * Lanza un turno. Extraído de [send] para que el envío normal y el vaciado de la cola
+     * ([drainQueueIfAny], [sendQueuedNow]) usen la misma ruta en vez de duplicar el
+     * lanzamiento del stream.
+     *
+     * @param allowCreateSession si la sesión indicada ya no existe, crear una nueva. True
+     *   cuando el usuario acaba de pulsar enviar; false al vaciar la cola, porque resucitar
+     *   una conversación borrada para volcarle mensajes viejos sería sorprendente.
+     */
+    private fun startTurn(
+        activeId: String?,
+        text: String,
+        dataUrl: String?,
+        systemPromptOverride: String?,
+        attachments: List<com.localchatbot.domain.model.MessageAttachment>,
+        allowCreateSession: Boolean = true
+    ) {
         // El stream se lanza en applicationScope: sobrevive a la destrucción de este VM.
         // Además pedimos al SO mantener el proceso vivo mientras dure el stream.
         streamJob = applicationScope.launch {
             // Si la sesión activa fue borrada mientras estábamos en ella, activeId apunta
             // a una sesión inexistente → crear una nueva en vez de fallar con
             // "session not found". Cubre también la carrera del auto-select tras borrar.
-            val sessionId = activeId?.takeIf { chatRepository.getSession(it) != null }
-                ?: createSessionUseCase().id.also(activeSessionStore::set)
+            val existing = activeId?.takeIf { chatRepository.getSession(it) != null }
+            val sessionId = existing
+                ?: if (allowCreateSession) {
+                    createSessionUseCase().id.also(activeSessionStore::set)
+                } else {
+                    // Cola de una sesión que ya no existe: se descarta sin más.
+                    activeId?.let(queuedMessageStore::clear)
+                    return@launch
+                }
             // Esta respuesta cierra cualquier pregunta `ask_user` pendiente de la sesión.
             pendingUserPromptStore.clear(sessionId)
             streamingStateStore.start(sessionId)
             backgroundExecutor.start("chat-stream-$sessionId")
+            var failure: Throwable? = null
             try {
                 val result = sendMessageUseCase(
                     sessionId,
@@ -441,15 +805,58 @@ class ChatViewModel(
                     systemPromptOverride,
                     attachments
                 )
-                result.exceptionOrNull()?.let { e ->
+                failure = result.exceptionOrNull()
+                failure?.let { e ->
                     _local.update { it.copy(errorMessage = friendlyStreamErrorMessage(e)) }
                 }
-                notifyChatFinished(sessionId, result.exceptionOrNull())
+                markModelLoadedOnSuccess(failure)
+                notifyChatFinished(sessionId, failure)
             } finally {
                 streamingStateStore.stop(sessionId)
                 backgroundExecutor.stop()
             }
+            // FUERA del finally a propósito: dentro, la sesión seguiría marcada como
+            // "streaming" y el mensaje fusionado se volvería a encolar a sí mismo, en bucle
+            // infinito. Aquí además la cancelación (botón Stop) ya no llega, que es
+            // justamente lo que queremos: frenar al modelo no debe disparar otro turno.
+            drainQueueIfAny(sessionId, failure)
         }
+    }
+
+    /**
+     * Envía la cola de [sessionId] fusionada en un solo mensaje, si procede.
+     *
+     * No se vacía sola cuando el turno falló (querés ver el error y decidir) ni cuando el
+     * modelo dejó una pregunta `ask_user` abierta: lo encolado se escribió *antes* de que la
+     * pregunta existiera, así que mandarlo como respuesta sería contestar otra cosa. En esos
+     * casos la cola se queda quieta y el contenedor ofrece "Enviar ahora".
+     */
+    private fun drainQueueIfAny(sessionId: String, error: Throwable?) {
+        if (error != null) return
+        if (pendingUserPromptStore.promptFor(sessionId) != null) return
+        sendQueuedNow(sessionId)
+    }
+
+    /** Vacía la cola de [sessionId] y la envía fusionada. No hace nada si está vacía. */
+    fun sendQueuedNow(sessionId: String? = activeSessionStore.activeSessionId.value) {
+        val id = sessionId ?: return
+        if (streamingStateStore.isStreaming(id)) return
+        val queued = queuedMessageStore.drain(id)
+        if (queued.isEmpty()) return
+        startTurn(
+            activeId = id,
+            text = queued.joinToString("\n\n") { it.text },
+            dataUrl = null,
+            systemPromptOverride = null,
+            attachments = emptyList(),
+            allowCreateSession = false
+        )
+    }
+
+    /** Quita un mensaje de la cola antes de que llegue a enviarse. */
+    fun removeQueued(messageId: String) {
+        val activeId = activeSessionStore.activeSessionId.value ?: return
+        queuedMessageStore.remove(activeId, messageId)
     }
 
     /**
@@ -482,6 +889,12 @@ class ChatViewModel(
     /**
      * Reenvía un mensaje del usuario ya existente: elimina ese mensaje y todo lo posterior
      * (respuestas potencialmente obsoletas) y vuelve a invocar el modelo con el mismo contenido.
+     *
+     * **Bifurcación:** si después de [messageId] hay más turnos del usuario, truncar tiraría
+     * una conversación entera, así que antes se guarda una copia completa como sesión aparte
+     * (sección "Ramas anteriores" del drawer) y el usuario sigue donde estaba. Cuando lo que
+     * se descarta es sólo la respuesta al último mensaje — el caso de "regenerar" — no se
+     * copia nada: es justo la respuesta que se está pidiendo reemplazar.
      */
     @OptIn(ExperimentalEncodingApi::class)
     fun resendMessage(messageId: String) {
@@ -495,8 +908,29 @@ class ChatViewModel(
         val text = msg.content
         val dataUrl = msg.imageDataUrl
         val attachments = msg.attachments
+        // ¿Se descarta algo más que la(s) respuesta(s) a este mismo mensaje?
+        val discardsLaterTurns = session.messages
+            .dropWhile { it.id != messageId }
+            .drop(1)
+            .any { it.role == com.localchatbot.domain.model.Role.User }
 
         streamJob = applicationScope.launch {
+            if (discardsLaterTurns) {
+                // Si la copia falla, NO truncamos: el sentido de bifurcar es no perder la
+                // conversación, así que ante la duda se queda todo como está y se avisa.
+                val branch = runCatching { chatRepository.forkSession(activeId) }.getOrNull()
+                if (branch == null) {
+                    _local.update {
+                        it.copy(errorMessage = "No se pudo guardar la rama anterior; no se reenvió nada")
+                    }
+                    return@launch
+                }
+                // Que no acabe en la sección de ramas es cosmético (aparecería como una
+                // conversación normal): no justifica abortar el reenvío.
+                runCatching {
+                    projectRepository.assignSession(branch.id, ProjectRepository.BRANCHES_GROUP_ID)
+                }
+            }
             chatRepository.deleteMessagesFrom(activeId, messageId)
             streamingStateStore.start(activeId)
             backgroundExecutor.start("chat-stream-$activeId")
@@ -510,6 +944,7 @@ class ChatViewModel(
                 result.exceptionOrNull()?.let { e ->
                     _local.update { it.copy(errorMessage = friendlyStreamErrorMessage(e)) }
                 }
+                markModelLoadedOnSuccess(result.exceptionOrNull())
                 notifyChatFinished(activeId, result.exceptionOrNull())
             } finally {
                 streamingStateStore.stop(activeId)
@@ -631,12 +1066,111 @@ class ChatViewModel(
 
     fun dismissError() = _local.update { it.copy(errorMessage = null) }
 
+    // --- Comandos del composer ---------------------------------------------------------
+
+    /**
+     * Texto que la UI debe copiar al portapapeles. El portapapeles solo se alcanza desde
+     * Compose (`LocalClipboardManager`), así que el VM lo pide y `ChatScreen` lo cumple y
+     * llama a [consumeClipboardRequest].
+     */
+    private val _clipboardRequest = MutableStateFlow<String?>(null)
+    val clipboardRequest: StateFlow<String?> = _clipboardRequest
+
+    fun consumeClipboardRequest() {
+        _clipboardRequest.value = null
+    }
+
+    /**
+     * Ejecuta un comando `/`. Punto único para las dos formas de invocarlo — elegirlo del
+     * popup o escribirlo y pulsar Enter — para que no puedan divergir.
+     */
+    fun runSlashCommand(command: SlashCommand) {
+        when (command) {
+            SlashCommand.Compact -> requestCompact()
+            SlashCommand.UndoCompact -> undoCompact()
+            SlashCommand.NewSession -> newSession()
+            SlashCommand.Init -> requestInitProject()
+            SlashCommand.Export -> {
+                val markdown = activeSessionMarkdown()
+                if (markdown == null) {
+                    _local.update { it.copy(errorMessage = "No hay conversación que exportar") }
+                } else {
+                    _clipboardRequest.value = markdown
+                }
+            }
+        }
+    }
+
+    /** Comandos ofrecibles ahora mismo, para el popup del composer. */
+    fun availableSlashCommands(): List<SlashCommand> {
+        val current = state.value
+        return SlashCommand.availableFor(
+            hasMessages = current.activeSession?.messages?.isNotEmpty() == true,
+            compacted = current.contextCompacted,
+            initAvailable = initProjectUseCase != null &&
+                PlatformCapabilities.isDesktop &&
+                current.fsWorkspaceDir != null
+        )
+    }
+
+    // --- Exportar conversación (3.2) ---------------------------------------------------
+
+    /** Markdown de la conversación activa, o null si no hay ninguna con mensajes. */
+    fun activeSessionMarkdown(): String? {
+        val session = state.value.activeSession?.takeIf { it.messages.isNotEmpty() } ?: return null
+        return ChatExport.sessionToMarkdown(session, exportedAt = formatNow())
+    }
+
+    /** Markdown de un turno suelto (mensaje de usuario + su respuesta), para copiar. */
+    fun turnMarkdown(messageId: String): String? {
+        val session = state.value.activeSession ?: return null
+        return ChatExport.turnToMarkdown(session.messages, messageId)
+    }
+
+    /**
+     * Guarda la conversación como `.md` mediante el diálogo nativo (solo desktop; en móvil
+     * [saveTextFile] devuelve null y la UI no ofrece la acción). El feedback va por el
+     * banner que ya se usa para errores.
+     */
+    fun exportActiveSessionToFile() {
+        val session = state.value.activeSession?.takeIf { it.messages.isNotEmpty() } ?: return
+        val markdown = ChatExport.sessionToMarkdown(session, exportedAt = formatNow())
+        viewModelScope.launch {
+            val path = saveTextFile(ChatExport.suggestedFileName(session.title), markdown)
+            _local.update {
+                it.copy(
+                    errorMessage = if (path != null) "Conversación guardada en $path"
+                    else "No se guardó la conversación"
+                )
+            }
+        }
+    }
+
+    /** Confirmación de que algo se copió, por el mismo banner que los errores. */
+    fun notifyCopied(what: String) = _local.update { it.copy(errorMessage = "$what copiado al portapapeles") }
+
+    /** `yyyy-MM-dd HH:mm` en la zona local. kotlinx-datetime no trae formateo de patrones. */
+    private fun formatNow(): String {
+        val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        fun pad(n: Int) = n.toString().padStart(2, '0')
+        return "${now.year}-${pad(now.monthNumber)}-${pad(now.dayOfMonth)} ${pad(now.hour)}:${pad(now.minute)}"
+    }
+
     /** Snapshot combinado de sesión activa + preferencias + proyectos para construir el estado. */
     private data class SessionData(
-        val sessions: List<ChatSession>,
+        /** Solo la sesión activa: el resto del historial no hace falta para pintar el chat. */
+        val active: ChatSession?,
         val activeId: String?,
         val prefs: com.localchatbot.domain.model.AppPreferences,
         val projectState: com.localchatbot.domain.model.ProjectState
+    )
+
+    /** Snapshot combinado de tokens/modelo cargado/cola/rama git para construir el estado. */
+    private data class TokensState(
+        val tokensMax: Int,
+        val modelLoaded: Boolean?,
+        val queuedBySession: Map<String, List<QueuedMessage>>,
+        val gitBranch: String?
     )
 
     private data class LocalState(

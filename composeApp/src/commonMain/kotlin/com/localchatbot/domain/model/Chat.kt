@@ -97,6 +97,12 @@ data class ChatMessage(
     /** Métricas de tokens/velocidad de la respuesta. Solo en role=Assistant final. */
     val metrics: TokenMetrics? = null,
     /**
+     * Modelo que generó este mensaje, tal como lo reportó el servidor. Null en los mensajes
+     * que no genera el modelo (usuario, tool) y en los anteriores a la migración `1.sqm`;
+     * en ambos casos quien lo necesite cae a [ChatSession.model].
+     */
+    val model: String? = null,
+    /**
      * Solo en el mensaje assistant que anunció tool_calls de mutación de archivos:
      * id del checkpoint del turno (= id del user message del turno). La UI muestra
      * el chip "revertir este turno" cuando no es null. Desktop only.
@@ -122,8 +128,35 @@ data class ChatSession(
      */
     val contextSummary: String? = null
 ) {
-    val lastMessagePreview: String?
-        get() = messages.lastOrNull { it.role != Role.Tool }?.content?.take(80)
-
     val updatedAt: Instant get() = Instant.fromEpochMilliseconds(updatedAtEpochMs)
+}
+
+/**
+ * Metadatos de una sesión **sin sus mensajes**, para las vistas que listan sesiones
+ * (el drawer, el listado del acceso remoto). Existe porque cargar `List<ChatSession>`
+ * completo obligaba a leer y deserializar *todo* el historial de *todas* las sesiones en
+ * cada escritura — incluido cada flush de delta de streaming, cada 120 ms.
+ *
+ * [lastMessagePreview] lo calcula SQLite con una subconsulta (último mensaje que no sea
+ * `Tool`, recortado a [PREVIEW_MAX_CHARS]) en vez de derivarse de la lista de mensajes en
+ * memoria, que es lo que ataba el drawer al historial completo.
+ *
+ * Para la sesión activa —la única cuyos mensajes se muestran— se usa
+ * [com.localchatbot.domain.repository.ChatRepository.sessionWithMessages].
+ */
+data class SessionSummary(
+    val id: String,
+    val title: String,
+    val model: String,
+    val createdAtEpochMs: Long,
+    val updatedAtEpochMs: Long,
+    val pinned: Boolean = false,
+    val lastMessagePreview: String? = null
+) {
+    val updatedAt: Instant get() = Instant.fromEpochMilliseconds(updatedAtEpochMs)
+
+    companion object {
+        /** Recorte del preview; debe coincidir con lo que hacía `ChatSession.lastMessagePreview`. */
+        const val PREVIEW_MAX_CHARS = 80
+    }
 }

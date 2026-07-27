@@ -37,5 +37,23 @@ interface ProjectRepository {
          * workspace cae al global igual que una sesión sin proyecto.
          */
         const val AUTOMATION_GROUP_ID = "__automated_tasks__"
+
+        /**
+         * Id de grupo reservado (tampoco es un [Project] real) para las copias que se
+         * guardan al reenviar un mensaje antiguo: la conversación tal como estaba antes
+         * de truncarla. Van a su propia sección plegable del drawer para no mezclarse
+         * con las conversaciones vivas. Mismo criterio de workspace que
+         * [AUTOMATION_GROUP_ID]: al no ser un proyecto, cae al workspace global.
+         */
+        const val BRANCHES_GROUP_ID = "__branches__"
+
+        /**
+         * Id de grupo reservado (tampoco es un [Project] real) para las sesiones que abre
+         * la tool `spawn_agent`. Son **visibles** a propósito: un sub-agente ejecuta tools
+         * reales sobre el workspace, y esconder lo que hizo sería justo lo contrario de lo
+         * que hace falta para poder auditarlo. Mismo criterio de workspace que
+         * [AUTOMATION_GROUP_ID].
+         */
+        const val SUBAGENTS_GROUP_ID = "__subagents__"
     }
 }

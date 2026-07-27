@@ -3,6 +3,7 @@ package com.localchatbot.domain.repository
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AgentMode
 import com.localchatbot.domain.model.AppPreferences
+import com.localchatbot.domain.model.CompactBoundary
 import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.GenerationParams
@@ -27,6 +28,7 @@ interface PreferencesRepository {
     suspend fun updateDefaultSystemPrompt(value: String)
     suspend fun setPromptTemplates(templates: List<PromptTemplate>)
     suspend fun updateImageServiceUrl(value: String)
+    suspend fun updateEmbeddingsModel(value: String)
     suspend fun updateFsWorkspaceDir(value: String?)
     suspend fun updateFsYoloMode(value: Boolean)
     suspend fun updateFsAllowOutsideWorkspace(value: Boolean)
@@ -34,6 +36,12 @@ interface PreferencesRepository {
     suspend fun updateAgentMode(value: AgentMode)
     /** Fija el modo del agente para una sesión concreta (override de [updateAgentMode]). */
     suspend fun updateSessionAgentMode(sessionId: String, value: AgentMode)
+
+    /**
+     * Fija (o quita, con [messageId] null) el punto de corte de compactación manual de una
+     * sesión. Ver [com.localchatbot.domain.model.AppPreferences.sessionCompactBoundaries].
+     */
+    suspend fun updateSessionCompactBoundary(sessionId: String, boundary: CompactBoundary?)
     /** Quita todos los overrides de modo por sesión (usado por clearAll). */
     suspend fun clearSessionAgentModes()
     suspend fun setInstalledSkills(skills: List<InstalledSkill>)

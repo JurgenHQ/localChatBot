@@ -6,6 +6,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -163,6 +165,15 @@ fun SettingsEditorSheetContent(
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
+                SettingsEditor.EmbeddingsModel -> TextEditorBody(
+                    title = "Modelo de embeddings",
+                    value = state.textDraft,
+                    placeholder = "vacío = autodetectar (el primero que contenga \"embed\")",
+                    keyboardType = KeyboardType.Text,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
                 SettingsEditor.Temperature -> TextEditorBody(
                     title = "Temperatura",
                     value = state.textDraft,
@@ -271,14 +282,19 @@ private fun ThemeEditorBody(current: ThemeMode, onSelect: (ThemeMode) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AccentEditorBody(onSelect: (Long) -> Unit) {
     val colors = listOf(
         0xFF2C5AFFL, 0xFF7C4DFFL, 0xFF2EBD66L,
-        0xFFE84A4AL, 0xFFFF8A00L, 0xFF0F1115L
+        0xFFE84A4AL, 0xFFFF8A00L, 0xFFEC4899L, 0xFF0F1115L
     )
     Text("Color de acento", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onBackground)
-    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+    // FlowRow y no Row: con siete muestras la fila se pasa del ancho en pantallas angostas.
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(Spacing.md)
+    ) {
         colors.forEach { c ->
             Box(
                 modifier = Modifier

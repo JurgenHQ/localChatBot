@@ -2,21 +2,28 @@ package com.localchatbot.data.repository
 
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
+import app.cash.sqldelight.coroutines.mapToOneOrNull
 import com.localchatbot.core.util.newId
 import com.localchatbot.data.local.db.LocalChatBotDatabase
 import com.localchatbot.data.local.db.Message as DbMessage
+import com.localchatbot.data.local.db.SelectAllSessionSummaries as DbSessionSummary
 import com.localchatbot.data.local.db.Session as DbSession
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.PersistedToolCall
+import com.localchatbot.domain.model.Role
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.domain.model.TokenMetrics
 import com.localchatbot.domain.model.WebSource
 import com.localchatbot.domain.repository.ChatRepository
+import com.localchatbot.domain.search.MessageSearchResult
+import com.localchatbot.domain.search.toFtsMatchQuery
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
@@ -41,18 +48,56 @@ class ChatRepositoryImpl(
      */
     private val mediaOverlay = MutableStateFlow<Map<String, Pair<String?, String?>>>(emptyMap())
 
-    override val sessions: Flow<List<ChatSession>> = combine(
-        db.sessionQueries.selectAllSessions().asFlow().mapToList(ioDispatcher),
-        db.messageQueries.selectAllMessages().asFlow().mapToList(ioDispatcher),
+    /**
+     * Metadatos sin mensajes. No se combina con [mediaOverlay] a propósito: el drawer no
+     * muestra imágenes, así que generar una imagen no tiene por qué re-emitir la lista.
+     *
+     * El preview del último mensaje lo resuelve SQLite dentro de la propia consulta (ver
+     * `selectAllSessionSummaries`), así que aquí no se toca la tabla `message`.
+     */
+    override val sessionSummaries: Flow<List<SessionSummary>> =
+        db.sessionQueries.selectAllSessionSummaries(Role.Tool).asFlow().mapToList(ioDispatcher)
+            .map { rows -> rows.map { it.toDomain() } }
+
+    /**
+     * Sesión completa. Las dos consultas son por `sessionId`, así que el coste va con el
+     * tamaño de **esa** sesión y no con el del historial entero — que era justo el problema
+     * del antiguo `sessions`, donde cada delta de streaming re-leía y deserializaba todos
+     * los mensajes de todas las sesiones.
+     */
+    override fun sessionWithMessages(sessionId: String): Flow<ChatSession?> = combine(
+        db.sessionQueries.selectSessionById(sessionId).asFlow().mapToOneOrNull(ioDispatcher),
+        db.messageQueries.selectMessagesBySession(sessionId).asFlow().mapToList(ioDispatcher),
         mediaOverlay
-    ) { dbSessions, dbMessages, overlay ->
-        val messagesBySession = dbMessages.groupBy { it.session_id }
-        dbSessions.map { s ->
-            val messages = messagesBySession[s.id].orEmpty().map { m ->
+    ) { dbSession, dbMessages, overlay ->
+        dbSession?.toDomain(
+            dbMessages.map { m ->
                 val (image, video) = overlay[m.id] ?: (null to null)
                 m.toDomain(image, video)
             }
-            s.toDomain(messages)
+        )
+    }
+
+    override fun messageImageDataUrl(messageId: String): String? = mediaOverlay.value[messageId]?.first
+
+    override suspend fun searchMessages(query: String, limit: Int): List<MessageSearchResult> {
+        val match = toFtsMatchQuery(query) ?: return emptyList()
+        return withContext(ioDispatcher) {
+            // Una expresión MATCH inválida hace que SQLite lance, no que devuelva cero filas.
+            // `toFtsMatchQuery` entrecomilla cada término justamente para que eso no pase, pero
+            // una búsqueda no puede tumbar la pantalla de sesiones: ante la duda, sin resultados.
+            runCatching {
+                db.messageQueries.searchMessages(match, Role.Tool, limit.toLong()).executeAsList().map { row ->
+                    MessageSearchResult(
+                        messageId = row.id,
+                        sessionId = row.session_id,
+                        sessionTitle = row.title,
+                        role = row.role,
+                        timestampEpochMs = row.timestamp_epoch_ms,
+                        snippet = row.fragment.orEmpty()
+                    )
+                }
+            }.getOrDefault(emptyList())
         }
     }
 
@@ -112,7 +157,8 @@ class ChatRepositoryImpl(
                     sources = message.sources,
                     reasoning = message.reasoning,
                     metrics = message.metrics,
-                    checkpoint_id = message.checkpointId
+                    checkpoint_id = message.checkpointId,
+                    model = message.model
                 )
                 db.sessionQueries.updateSessionTimestamp(message.timestampEpochMs, sessionId)
             }
@@ -166,8 +212,16 @@ class ChatRepositoryImpl(
         touchSession(sessionId) { db.messageQueries.updateMessageCheckpoint(checkpointId, messageId) }
     }
 
-    override suspend fun updateMessageMetrics(sessionId: String, messageId: String, metrics: TokenMetrics) {
-        touchSession(sessionId) { db.messageQueries.updateMessageMetrics(metrics, messageId) }
+    override suspend fun updateMessageMetrics(
+        sessionId: String,
+        messageId: String,
+        metrics: TokenMetrics,
+        model: String?
+    ) {
+        touchSession(sessionId) {
+            db.messageQueries.updateMessageMetrics(metrics, messageId)
+            if (model != null) db.messageQueries.updateMessageModel(model, messageId)
+        }
     }
 
     override suspend fun updateTitle(sessionId: String, title: String) {
@@ -184,6 +238,65 @@ class ChatRepositoryImpl(
 
     override suspend fun updateContextSummary(sessionId: String, summary: String) {
         withContext(ioDispatcher) { db.sessionQueries.updateSessionContextSummary(summary, sessionId) }
+    }
+
+    override suspend fun forkSession(sessionId: String): ChatSession? = withContext(ioDispatcher) {
+        // Mapa id viejo -> id nuevo, para arrastrar el overlay de media (imágenes y vídeos
+        // son transitorios y viven fuera de SQLite, indexados por id de mensaje).
+        val idRemap = mutableMapOf<String, String>()
+        val forked = db.transactionWithResult {
+            val src = db.sessionQueries.selectSessionById(sessionId).executeAsOneOrNull()
+                ?: return@transactionWithResult null
+            val now = Clock.System.now().toEpochMilliseconds()
+            val forkId = newId()
+            db.sessionQueries.insertSession(
+                id = forkId,
+                title = src.title,
+                model = src.model,
+                created_at_epoch_ms = src.created_at_epoch_ms,
+                // Se ordena por updated_at: `now` la deja arriba de su sección al crearse.
+                updated_at_epoch_ms = now,
+                pinned = false,
+                generation_params = src.generation_params,
+                context_summary = src.context_summary
+            )
+            val messages = db.messageQueries.selectMessagesBySession(sessionId).executeAsList()
+            messages.forEach { m ->
+                val copyId = newId()
+                idRemap[m.id] = copyId
+                db.messageQueries.insertMessage(
+                    id = copyId,
+                    session_id = forkId,
+                    role = m.role,
+                    content = m.content,
+                    timestamp_epoch_ms = m.timestamp_epoch_ms,
+                    // Mismo orden relativo: la copia se lee igual que el original.
+                    sort_order = m.sort_order,
+                    attachments = m.attachments,
+                    tool_calls = m.tool_calls,
+                    tool_call_id = m.tool_call_id,
+                    tool_name = m.tool_name,
+                    sources = m.sources,
+                    reasoning = m.reasoning,
+                    metrics = m.metrics,
+                    checkpoint_id = null,
+                    model = m.model
+                )
+            }
+            val domainMessages = messages.map { m ->
+                val (image, video) = mediaOverlay.value[m.id] ?: (null to null)
+                m.toDomain(image, video).copy(id = idRemap.getValue(m.id), checkpointId = null)
+            }
+            db.sessionQueries.selectSessionById(forkId).executeAsOne().toDomain(domainMessages)
+        }
+        if (forked != null && idRemap.isNotEmpty()) {
+            mediaOverlay.update { overlay ->
+                overlay + idRemap.mapNotNull { (oldId, newIdValue) ->
+                    overlay[oldId]?.let { newIdValue to it }
+                }
+            }
+        }
+        forked
     }
 
     override suspend fun deleteMessagesFrom(sessionId: String, messageId: String) {
@@ -230,6 +343,21 @@ private fun DbSession.toDomain(messages: List<ChatMessage>): ChatSession = ChatS
     contextSummary = context_summary
 )
 
+/**
+ * El recorte a [SessionSummary.PREVIEW_MAX_CHARS] se hace aquí y no en SQL: `substr` en
+ * SQLite cuenta bytes/caracteres según el tipo y no es equivalente a `take` de Kotlin con
+ * acentos o emoji, que en este chat abundan.
+ */
+private fun DbSessionSummary.toDomain(): SessionSummary = SessionSummary(
+    id = id,
+    title = title,
+    model = model,
+    createdAtEpochMs = created_at_epoch_ms,
+    updatedAtEpochMs = updated_at_epoch_ms,
+    pinned = pinned,
+    lastMessagePreview = last_message_preview?.take(SessionSummary.PREVIEW_MAX_CHARS)
+)
+
 private fun DbMessage.toDomain(imageDataUrl: String?, videoDataUrl: String?): ChatMessage = ChatMessage(
     id = id,
     role = role,
@@ -244,5 +372,6 @@ private fun DbMessage.toDomain(imageDataUrl: String?, videoDataUrl: String?): Ch
     sources = sources,
     reasoning = reasoning,
     metrics = metrics,
-    checkpointId = checkpoint_id
+    checkpointId = checkpoint_id,
+    model = model
 )

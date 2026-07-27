@@ -16,6 +16,8 @@ data class SettingsExport(
     val defaultSystemPrompt: String,
     val promptTemplates: List<PromptTemplate>,
     val imageServiceUrl: String,
+    /** Con default: los backups anteriores al índice semántico siguen deserializando. */
+    val embeddingsModel: String = "",
     val fsWorkspaceDir: String?,
     val fsYoloMode: Boolean,
     val fsAllowOutsideWorkspace: Boolean,

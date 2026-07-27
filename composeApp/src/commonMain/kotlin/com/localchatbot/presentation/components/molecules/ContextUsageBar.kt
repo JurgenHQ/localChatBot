@@ -31,6 +31,13 @@ import com.localchatbot.core.theme.Spacing
 fun ContextUsageBar(
     tokensUsed: Int,
     tokensMax: Int,
+    /**
+     * True si la sesión tiene compactación manual activa. Se marca porque el número de
+     * la barra sigue midiendo la conversación **visible**: hasta el próximo turno (cuando
+     * llegan las métricas reales del servidor) no refleja el ahorro, y sin el aviso parece
+     * que compactar no hizo nada.
+     */
+    compacted: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val pct = if (tokensMax <= 0) 0f else (tokensUsed.toFloat() / tokensMax).coerceIn(0f, 1f)
@@ -61,7 +68,7 @@ fun ContextUsageBar(
             )
         }
         Text(
-            text = "${formatTokens(tokensUsed)} / ${formatTokens(tokensMax)} tok",
+            text = (if (compacted) "⧉ " else "") + "${formatTokens(tokensUsed)} / ${formatTokens(tokensMax)} tok",
             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

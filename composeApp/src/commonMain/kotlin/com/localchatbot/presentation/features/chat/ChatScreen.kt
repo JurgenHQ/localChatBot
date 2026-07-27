@@ -43,13 +43,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
-import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.fs.rememberFilePicker
 import com.localchatbot.core.fs.rememberDirectoryPicker
 import com.localchatbot.core.image.rememberImagePicker
 import com.localchatbot.core.platform.PlatformCapabilities
+import com.localchatbot.core.platform.revealInFileManager
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.core.voice.VoiceConversationController
@@ -66,7 +67,7 @@ import com.localchatbot.presentation.components.organisms.ChatMessageList
 import com.localchatbot.presentation.components.organisms.ChatSearchBar
 import com.localchatbot.presentation.components.organisms.ChatTopBar
 import com.localchatbot.presentation.components.organisms.ErrorBanner
-import com.localchatbot.presentation.components.organisms.ToolConfirmationDialog
+import com.localchatbot.presentation.components.organisms.TopBarMenuItem
 import com.localchatbot.presentation.features.templates.PromptTemplatesSheet
 import com.localchatbot.presentation.features.voice.VoiceConversationSheet
 import com.localchatbot.presentation.preview.PreviewData
@@ -77,21 +78,21 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 fun ChatScreen(
     chatViewModel: ChatViewModel,
     voiceController: VoiceConversationController,
-    toolConfirmationController: ToolConfirmationController,
     todoTool: TodoTool,
     onOpenDrawer: () -> Unit,
     onChangeModel: () -> Unit = {},
     onOpenEditor: () -> Unit = {},
     onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
+    onOpenMetrics: () -> Unit = {},
     showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val state by chatViewModel.state.collectAsStateWithLifecycle()
     val speakingMessageId by chatViewModel.speakingMessageId.collectAsStateWithLifecycle()
     val voiceMode by voiceController.mode.collectAsStateWithLifecycle()
-    val pendingConfirmation by toolConfirmationController.pending.collectAsStateWithLifecycle()
     val pendingUserPrompt by chatViewModel.pendingUserPrompt.collectAsStateWithLifecycle()
     val pendingRevert by chatViewModel.pendingRevert.collectAsStateWithLifecycle()
+    val pendingScrollMessageId by chatViewModel.pendingScrollMessageId.collectAsStateWithLifecycle()
     val allTodos by todoTool.state.collectAsStateWithLifecycle()
     val activeSessionId = state.activeSession?.id
     val todoItems = remember(allTodos, activeSessionId) {
@@ -107,6 +108,17 @@ fun ChatScreen(
     )
     var templatesOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // Para las acciones de exportar del menú "⋮" (copiar al portapapeles).
+    val clipboard = LocalClipboardManager.current
+
+    // El VM no alcanza el portapapeles (solo existe dentro de Compose): pide, y acá se cumple.
+    val clipboardRequest by chatViewModel.clipboardRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(clipboardRequest) {
+        val text = clipboardRequest ?: return@LaunchedEffect
+        clipboard.setText(AnnotatedString(text))
+        chatViewModel.consumeClipboardRequest()
+        chatViewModel.notifyCopied("Conversación")
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         ChatContent(
@@ -143,6 +155,7 @@ fun ChatScreen(
             showMenuButton = showMenuButton,
             showAgentBar = PlatformCapabilities.isDesktop,
             onPickWorkspace = { workspacePicker.launch() },
+            onOpenWorkspaceFolder = { state.fsWorkspaceDir?.let(::revealInFileManager) },
             onToggleSandbox = chatViewModel::toggleFsSandbox,
             onToggleYolo = chatViewModel::toggleFsYoloMode,
             onTogglePreviewEdits = chatViewModel::toggleFsPreviewEdits,
@@ -152,7 +165,40 @@ fun ChatScreen(
             pendingPrompt = pendingUserPrompt,
             onSelectPromptOption = chatViewModel::submitPromptOption,
             onOpenFileInEditor = onOpenFileInEditor,
-            onRevertTurn = chatViewModel::requestRevert
+            onRevertTurn = chatViewModel::requestRevert,
+            onRemoveQueued = chatViewModel::removeQueued,
+            onSendQueuedNow = { chatViewModel.sendQueuedNow() },
+            onCopyTurn = { messageId ->
+                chatViewModel.turnMarkdown(messageId)?.let {
+                    clipboard.setText(AnnotatedString(it))
+                    chatViewModel.notifyCopied("Turno")
+                }
+            },
+            slashCommands = chatViewModel.availableSlashCommands(),
+            onSelectCommand = chatViewModel::runSlashCommand,
+            pendingScrollMessageId = pendingScrollMessageId,
+            onPendingScrollConsumed = chatViewModel::consumePendingScroll,
+            topBarMenuItems = buildList {
+                if (state.activeSession?.messages?.isNotEmpty() == true) {
+                    add(
+                        TopBarMenuItem("Copiar conversación (Markdown)") {
+                            chatViewModel.activeSessionMarkdown()?.let {
+                                clipboard.setText(AnnotatedString(it))
+                                chatViewModel.notifyCopied("Conversación")
+                            }
+                        }
+                    )
+                    // Guardar a archivo solo en desktop: en móvil `saveTextFile` es no-op.
+                    if (PlatformCapabilities.isDesktop) {
+                        add(TopBarMenuItem("Guardar conversación (.md)", chatViewModel::exportActiveSessionToFile))
+                    }
+                    add(TopBarMenuItem("Compactar contexto", chatViewModel::requestCompact))
+                    if (state.contextCompacted) {
+                        add(TopBarMenuItem("Deshacer compactación", chatViewModel::undoCompact))
+                    }
+                    add(TopBarMenuItem("Ver métricas de la sesión", onOpenMetrics))
+                }
+            }
         )
         if (voiceMode != VoiceMode.Off) {
             VoiceConversationSheet(
@@ -173,13 +219,6 @@ fun ChatScreen(
                 },
                 onSave = chatViewModel::savePromptTemplates,
                 onDismiss = { templatesOpen = false }
-            )
-        }
-        pendingConfirmation?.let { pending ->
-            ToolConfirmationDialog(
-                pending = pending,
-                onApprove = { toolConfirmationController.resolve(pending.id, approved = true) },
-                onReject = { toolConfirmationController.resolve(pending.id, approved = false) }
             )
         }
         pendingRevert?.let { revert ->
@@ -230,7 +269,9 @@ private fun RevertTurnDialog(
                 }
                 Text(
                     "Cambios posteriores sobre estos archivos también se perderán. " +
-                        "No cubre cambios hechos con run_command, MCP o scripts.",
+                        "Lo que tocaron run_command, MCP o scripts solo se revierte si el " +
+                        "workspace es un repo git, y únicamente en archivos que git ya sigue: " +
+                        "los que se hayan creado sin añadir al índice no se borran.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -277,6 +318,7 @@ fun ChatContent(
     showMenuButton: Boolean = true,
     showAgentBar: Boolean = false,
     onPickWorkspace: () -> Unit = {},
+    onOpenWorkspaceFolder: () -> Unit = {},
     onToggleSandbox: () -> Unit = {},
     onToggleYolo: () -> Unit = {},
     onTogglePreviewEdits: () -> Unit = {},
@@ -287,6 +329,18 @@ fun ChatContent(
     onSelectPromptOption: (String) -> Unit = {},
     onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
     onRevertTurn: ((String) -> Unit)? = null,
+    onRemoveQueued: (String) -> Unit = {},
+    onSendQueuedNow: () -> Unit = {},
+    /** Acciones del menú "⋮" de la barra (exportar, compactar). */
+    topBarMenuItems: List<TopBarMenuItem> = emptyList(),
+    /** Copiar un turno suelto al portapapeles, desde la burbuja del usuario. */
+    onCopyTurn: ((String) -> Unit)? = null,
+    /** Comandos `/` ofrecibles ahora, para el popup del composer. */
+    slashCommands: List<SlashCommand> = emptyList(),
+    onSelectCommand: (SlashCommand) -> Unit = {},
+    /** Mensaje al que saltar, pedido por la búsqueda global del drawer. */
+    pendingScrollMessageId: String? = null,
+    onPendingScrollConsumed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -308,8 +362,24 @@ fun ChatContent(
     }
     LaunchedEffect(messageCount) {
         if (messageCount == 0) return@LaunchedEffect
+        // Con un salto pendiente desde la búsqueda, el fondo no es el destino: al abrir la
+        // conversación este efecto y el del salto se disparan a la vez, y sin esto ganaría
+        // el que llegue último.
+        if (pendingScrollMessageId != null) return@LaunchedEffect
         val lastIsUser = messages?.lastOrNull()?.role == Role.User
         if (lastIsUser || nearBottom) listState.animateScrollToItem(0)
+    }
+
+    // El scroll al mensaje buscado lo hace ChatMessageList, que es quien sabe qué mensajes
+    // renderiza de verdad (filtra los que no pintan nada) y cuántos items van por delante.
+    // Aquí solo se guarda a cuál se saltó, para marcarlo un momento al llegar.
+    var jumpHighlightId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(jumpHighlightId) {
+        if (jumpHighlightId == null) return@LaunchedEffect
+        // La marca es para orientar al aterrizar, no un estado permanente: en una
+        // conversación larga, sin esto no sabés cuál de las burbujas es la que buscabas.
+        delay(JUMP_HIGHLIGHT_MS)
+        jumpHighlightId = null
     }
 
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
@@ -330,6 +400,7 @@ fun ChatContent(
                 }
             } else null,
             onEditorClick = if (showAgentBar && state.fsWorkspaceDir != null) onOpenEditor else null,
+            menuItems = topBarMenuItems,
             showMenuButton = showMenuButton
         )
 
@@ -379,7 +450,11 @@ fun ChatContent(
         }
 
         if (state.activeSession != null && state.tokensUsed > 0 && !searchOpen) {
-            ContextUsageBar(tokensUsed = state.tokensUsed, tokensMax = state.tokensMax)
+            ContextUsageBar(
+                tokensUsed = state.tokensUsed,
+                tokensMax = state.tokensMax,
+                compacted = state.contextCompacted
+            )
         }
         TodoProgressPanel(items = todoItems, onClearTodos = onClearTodos)
 
@@ -411,6 +486,18 @@ fun ChatContent(
                     onTapMessage = { keyboard?.hide() },
                     onOpenFileInEditor = onOpenFileInEditor,
                     onRevertTurn = onRevertTurn,
+                    queuedMessages = state.queuedMessages,
+                    onRemoveQueued = onRemoveQueued,
+                    onCopyTurn = onCopyTurn,
+                    // "Enviar ahora" solo cuando no hay turno en curso: con el modelo
+                    // trabajando la cola se vaciará sola al terminar.
+                    onSendQueuedNow = if (!state.sending) onSendQueuedNow else null,
+                    scrollToMessageId = pendingScrollMessageId,
+                    onScrolledToMessage = { id ->
+                        jumpHighlightId = id
+                        onPendingScrollConsumed()
+                    },
+                    highlightedMessageId = jumpHighlightId,
                     modifier = Modifier.fillMaxSize().then(dismissKeyboardModifier)
                 )
                 // Botón flotante para volver al fondo cuando el usuario subió a leer.
@@ -468,6 +555,8 @@ fun ChatContent(
             pendingSkill = state.pendingSkill,
             installedSkills = state.installedEnabledSkills,
             onSelectSkill = onSelectSkill,
+            slashCommands = slashCommands,
+            onSelectCommand = onSelectCommand,
             onClearSkill = onClearSkill,
             pendingPrompt = pendingPrompt,
             onSelectPromptOption = onSelectPromptOption,
@@ -475,6 +564,7 @@ fun ChatContent(
                 {
                     AgentControlsBar(
                         workspaceDir = state.fsWorkspaceDir,
+                        gitBranch = state.gitBranch,
                         // El chip de "Sandbox" muestra ON cuando los paths están
                         // restringidos al workspace (allowOutside == false).
                         sandboxOn = !state.fsAllowOutsideWorkspace,
@@ -482,6 +572,7 @@ fun ChatContent(
                         previewEditsOn = state.fsPreviewEdits,
                         planMode = state.planMode,
                         onPickWorkspace = onPickWorkspace,
+                        onOpenWorkspaceFolder = onOpenWorkspaceFolder,
                         onToggleSandbox = onToggleSandbox,
                         onToggleYolo = onToggleYolo,
                         onTogglePreviewEdits = onTogglePreviewEdits,
@@ -576,3 +667,6 @@ private fun ChatWithMessagesDarkPreview() = PreviewSurface(themeMode = ThemeMode
         onOpenDrawer = {}, onNewSession = {}, onDraftChange = {}, onSend = {}, onAttach = {}
     )
 }
+
+/** Cuánto dura la marca del mensaje al que se salta desde la búsqueda global. */
+private const val JUMP_HIGHLIGHT_MS = 2500L

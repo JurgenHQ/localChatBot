@@ -111,17 +111,25 @@ fun IconSquareButton(
     icon: ImageVector,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    enabled: Boolean = true,
+    contentDescription: String? = null
 ) {
+    val effectiveTint = if (enabled) tint else tint.copy(alpha = 0.38f)
     Box(
         modifier = modifier
             .size(44.dp)
             .clip(RoundedCornerShape(Radius.md))
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(Radius.md))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = effectiveTint,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }

@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
-import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.presentation.components.util.ContextMenuEntry
 import com.localchatbot.presentation.components.util.WithContextMenu
 import kotlinx.datetime.Instant
@@ -54,7 +54,7 @@ import kotlinx.datetime.toLocalDateTime
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionRow(
-    session: ChatSession,
+    session: SessionSummary,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
@@ -97,7 +97,7 @@ fun SessionRow(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRowContent(
-    session: ChatSession,
+    session: SessionSummary,
     onClick: () -> Unit,
     onRename: ((String) -> Unit)?,
     onTogglePin: (() -> Unit)?,

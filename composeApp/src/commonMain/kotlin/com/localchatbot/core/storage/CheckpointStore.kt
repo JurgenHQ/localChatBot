@@ -22,6 +22,20 @@ expect class CheckpointStore() {
      */
     suspend fun snapshotBeforeMutation(sessionId: String, turnId: String, absPath: String, toolName: String)
 
+    /**
+     * Snapshotea el estado del workspace **vía git** antes de un comando de shell (o una
+     * tool MCP / script de skill), que a diferencia de las fs tools no declara qué va a
+     * tocar. Idempotente por turno: solo cuenta el estado previo al primer comando.
+     *
+     * Devuelve true si quedó registrado algo reversible. Requiere que el workspace sea un
+     * repo git: sin git no hay forma barata de saber qué cambió, y copiar el árbol entero
+     * antes de cada comando no es viable (node_modules, build/…).
+     *
+     * **Solo cubre archivos que git ya sigue.** Lo que el comando cree sin añadir al índice
+     * no se borra al revertir. El diálogo de revert lo dice.
+     */
+    suspend fun snapshotWorkspaceGit(sessionId: String, turnId: String, workspaceDir: String): Boolean
+
     /** True si existe un checkpoint no vacío para el turno. */
     suspend fun hasCheckpoint(sessionId: String, turnId: String): Boolean
 
