@@ -21,7 +21,12 @@ fun isTransientNetworkError(e: Throwable): Boolean = when (e) {
     else -> {
         val msg = e.message?.lowercase() ?: ""
         msg.contains("timeout") ||
-            msg.contains("reset by peer") ||
+            // "connection reset" y no "reset by peer": la JVM lanza
+            // `SocketException: Connection reset` a secas cuando el servidor manda un
+            // RST a mitad del stream (LM Studio que descarga el modelo, se queda sin
+            // memoria o corta por TTL). Con el texto largo el corte más frecuente en
+            // desktop se quedaba fuera y no consumía ni uno de los reintentos.
+            msg.contains("connection reset") ||
             msg.contains("connection refused") ||
             // Suspensión en iOS: al pasar la app a background NSURLSession mata el
             // socket y Darwin reporta NSURLErrorNetworkConnectionLost (-1005,
