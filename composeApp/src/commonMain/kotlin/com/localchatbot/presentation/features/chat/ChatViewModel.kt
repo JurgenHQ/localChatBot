@@ -576,17 +576,21 @@ class ChatViewModel(
             }
         }
 
-        // Auto-seleccionar la primera sesión si no hay activa. Dispara SOLO cuando
-        // cambia la lista de sesiones (no cuando cambia activeSessionId): si
-        // recombináramos también con activeSessionId, un `set(newId)` recién hecho
-        // (p.ej. desde newSession()) se re-evaluaría contra un snapshot de `sessions`
-        // que aún no incluye esa sesión (el flow de SQLDelight se re-emite async tras
-        // el insert), la daríamos por inexistente y la pisaríamos con la anterior.
+        // Si la sesión activa fue borrada (dejó de existir en la lista), recuperar
+        // la primera disponible. Dispara SOLO cuando cambia la lista de sesiones (no
+        // cuando cambia activeSessionId): si recombináramos también con
+        // activeSessionId, un `set(newId)` recién hecho (p.ej. desde newSession()) se
+        // re-evaluaría contra un snapshot de `sessions` que aún no incluye esa sesión
+        // (el flow de SQLDelight se re-emite async tras el insert), la daríamos por
+        // inexistente y la pisaríamos con la anterior.
+        //
+        // Deliberadamente NO se autoselecciona una sesión al arrancar (active == null):
+        // la app debe abrir siempre en "nueva conversación", no resumir la última.
         viewModelScope.launch {
             chatRepository.sessionSummaries.collect { list ->
                 val active = activeSessionStore.activeSessionId.value
                 val valid = active != null && list.any { it.id == active }
-                if (!valid) {
+                if (!valid && active != null) {
                     val fallback = list.firstOrNull()?.id
                     if (fallback != activeSessionStore.activeSessionId.value) {
                         activeSessionStore.set(fallback)
@@ -651,7 +655,10 @@ class ChatViewModel(
     }
 
     private companion object {
-        const val DEFAULT_CONTEXT_LENGTH = 8192
+        // Mismo valor y mismo motivo que UseCases.DEFAULT_CONTEXT_TOKENS: solo LM Studio
+        // expone el context length real, así que la barra cae aquí para cualquier otro
+        // backend (DeepSeek y demás proveedores cloud, Ollama, llama.cpp genérico).
+        const val DEFAULT_CONTEXT_LENGTH = 32_768
         const val DEFAULT_LANGUAGE_TAG = "es-ES"
     }
 

@@ -5,7 +5,6 @@ import com.localchatbot.data.remote.DiagramRenderRequest
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -47,17 +46,12 @@ class DiagramRenderTool(
     override suspend fun isAvailable(): Boolean =
         preferences.current().effectiveImageServiceUrl.isNotBlank()
 
-    private val _lastImage = MutableStateFlow<String?>(null)
+    /** Imagen producida, por sesión del turno (ver [ProducedMediaSlot]). */
+    private val lastImage = ProducedMediaSlot()
 
-    private fun consumeLastImage(): String? {
-        val v = _lastImage.value
-        _lastImage.value = null
-        return v
-    }
+    override suspend fun consumeProducedImage(): String? = lastImage.consume()
 
-    override fun consumeProducedImage(): String? = consumeLastImage()
-
-    override fun peekProducedImage(): String? = _lastImage.value
+    override suspend fun peekProducedImage(): String? = lastImage.peek()
 
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
@@ -135,7 +129,7 @@ class DiagramRenderTool(
                     return@fold errorPayload(response.error ?: "El servicio devolvió success=false")
                 }
                 response.image_base64?.let { b64 ->
-                    _lastImage.value = "data:image/png;base64,$b64"
+                    lastImage.set("data:image/png;base64,$b64")
                 }
                 // Solo metadatos al modelo. El base64 queda fuera del contexto.
                 json.encodeToString(

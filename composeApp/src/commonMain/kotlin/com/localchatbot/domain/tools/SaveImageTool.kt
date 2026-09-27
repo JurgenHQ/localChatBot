@@ -35,7 +35,7 @@ class SaveImageTool(
     private val preferences: PreferencesRepository,
     private val json: Json,
     /** Devuelve el data URL de la última imagen generada SIN consumirla, o null. */
-    private val lastImageProvider: () -> String?
+    private val lastImageProvider: suspend () -> String?
 ) : Tool {
 
     override val name: String = TOOL_NAME

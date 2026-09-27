@@ -27,7 +27,7 @@ class SaveVideoTool(
     private val preferences: PreferencesRepository,
     private val json: Json,
     /** Devuelve el data URL del último video generado SIN consumirlo, o null. */
-    private val lastVideoProvider: () -> String?
+    private val lastVideoProvider: suspend () -> String?
 ) : Tool {
 
     override val name: String = TOOL_NAME

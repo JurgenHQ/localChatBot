@@ -10,6 +10,7 @@ import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ToolCall
 import com.localchatbot.domain.model.ChatMessage
+import com.localchatbot.domain.model.ConnectionConfig
 import com.localchatbot.domain.model.ChatSession
 import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.domain.model.MessageAttachment
@@ -36,6 +37,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.localchatbot.core.state.TurnSessionContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onEach
 import kotlinx.datetime.Clock
@@ -123,7 +125,39 @@ class SendMessageUseCase(
         text: String,
         imageDataUrl: String? = null,
         systemPromptOverride: String? = null,
-        attachments: List<MessageAttachment>? = null
+        attachments: List<MessageAttachment>? = null,
+        /**
+         * Perfil de conexión a usar en vez del globalmente activo (`prefs.current().connection`).
+         * Lo usa `AutomationScheduler` cuando una tarea programada tiene su propio
+         * `connectionProfileId` — así una tarea sigue apuntando a su servidor/modelo/API key
+         * aunque el usuario esté usando otro perfil en el chat interactivo mientras tanto.
+         */
+        connectionOverride: ConnectionConfig? = null,
+        /**
+         * Sesión contra la que resolver workspace y modo Plan/Build, si no es [sessionId].
+         * Solo la usa `spawn_agent`: la sesión hija está agrupada bajo `SUBAGENTS_GROUP_ID`,
+         * que no es un proyecto real, así que sin esto el sub-agente caería al workspace
+         * global en vez de trabajar sobre el proyecto del padre.
+         */
+        workspaceSessionId: String? = null
+    ): Result<Unit> = withContext(TurnSessionContext(sessionId, workspaceSessionId ?: sessionId)) {
+        // TurnSessionContext envuelve el turno ENTERO, no solo la ejecución de tools: todo lo
+        // que depende de "qué sesión es esta" (workspace y modo Plan/Build del system prompt,
+        // tools con estado por sesión como ask_user/manage_todos, el drenaje de imágenes
+        // out-of-band) resolvía contra `ActiveSessionStore`, que es la sesión VISIBLE. Un turno
+        // corre en `applicationScope` y sobrevive a que el usuario cambie de conversación, y
+        // además una tarea programada corre en paralelo al chat interactivo — así que ambas
+        // divergen y el turno terminaba escribiendo en la conversación equivocada.
+        runTurn(sessionId, text, imageDataUrl, systemPromptOverride, attachments, connectionOverride)
+    }
+
+    private suspend fun runTurn(
+        sessionId: String,
+        text: String,
+        imageDataUrl: String?,
+        systemPromptOverride: String?,
+        attachments: List<MessageAttachment>?,
+        connectionOverride: ConnectionConfig?
     ): Result<Unit> {
         val now = Clock.System.now().toEpochMilliseconds()
         val userMsg = ChatMessage(
@@ -136,7 +170,7 @@ class SendMessageUseCase(
         )
         chats.appendMessage(sessionId, userMsg)
         if (imageDataUrl != null) {
-            activeSessionStore?.setLastUserImage(imageDataUrl)
+            activeSessionStore?.setLastUserImage(sessionId, imageDataUrl)
         }
 
         val initialSession = chats.getSession(sessionId)
@@ -150,10 +184,11 @@ class SendMessageUseCase(
         }
 
         val currentPrefs = prefs.current()
-        val cfg = currentPrefs.connection
+        val cfg = connectionOverride ?: currentPrefs.connection
         if (!cfg.isValid()) {
             return Result.failure(IllegalStateException("Conexión no configurada"))
         }
+        val cfgApiKey = cfg.apiKey.takeIf { it.isNotBlank() }
 
         // Parámetros de generación: override sesión ?: global ?: default (AGENT_TEMPERATURE para agente).
         // Se calculan aquí una vez y se usan en cada ronda del loop de streaming.
@@ -164,12 +199,20 @@ class SendMessageUseCase(
         // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
         // que no puede ejecutar.
+        //
+        // Las INSTANCIAS se resuelven una sola vez por turno (reconectar los servidores MCP en
+        // cada ronda sería caro y nada de eso cambia a mitad de turno), pero las DEFINICIONES se
+        // recalculan en cada ronda: `set_agent_mode` puede habilitar las tools de escritura a
+        // mitad del turno, y con la lista congelada el modelo tendría que cerrar el turno y
+        // esperar al usuario para poder usar lo que acaba de desbloquear.
         val scriptTools = scriptToolFactory?.buildEnabledTools() ?: emptyList()
         val mcpTools = mcpToolProvider?.currentTools() ?: emptyList()
-        val tools = (toolRegistry.availableDefinitions()
-            + scriptTools.map { it.definition }
-            + mcpTools.filter { runCatching { it.isAvailable() }.getOrDefault(false) }.map { it.definition })
-            .takeIf { it.isNotEmpty() }
+        suspend fun resolveToolDefinitions(): List<com.localchatbot.data.remote.ToolDefinition>? =
+            (toolRegistry.availableDefinitions()
+                + scriptTools.map { it.definition }
+                + mcpTools.filter { runCatching { it.isAvailable() }.getOrDefault(false) }.map { it.definition })
+                .takeIf { it.isNotEmpty() }
+        var tools = resolveToolDefinitions()
 
         // Contexto del workspace (cwd, árbol de archivos, git status, AGENTS.md/CLAUDE.md).
         // Se calcula UNA vez por turno y se reinyecta en el system prompt de cada ronda,
@@ -230,6 +273,10 @@ class SendMessageUseCase(
             while (iter < MAX_TOOL_ITERATIONS) {
                 val currentMessages = chats.getSession(sessionId)?.messages
                     ?: return Result.failure(IllegalStateException("session vanished"))
+
+                // Re-resolver por ronda: una tool puede haber cambiado qué está disponible
+                // (`set_agent_mode` → Build habilita las de escritura). Ver arriba.
+                tools = resolveToolDefinitions()
 
                 var assistantId: String? = null
                 val buffer = StringBuilder()
@@ -319,7 +366,7 @@ class SendMessageUseCase(
                     val prevSummary = contextSummary
                     val transcript = buildSummaryTranscript(prevSummary, discarded)
                     scope.launch {
-                        model.summarize(cfg.baseUrl(), cfg.model, transcript)
+                        model.summarize(cfg.baseUrl(), cfg.model, transcript, cfgApiKey)
                             ?.let { newSummary ->
                                 chats.updateContextSummary(sessionId, newSummary)
                                 contextSummary = newSummary
@@ -377,7 +424,8 @@ class SendMessageUseCase(
                     cfg.model,
                     attemptMessages,
                     tools,
-                    generationParams = effectiveParams
+                    generationParams = effectiveParams,
+                    apiKeyOverride = cfgApiKey
                 )
                     .onEach { event ->
                         when (event) {
@@ -591,6 +639,8 @@ class SendMessageUseCase(
                         return call to truncateToolOutput(runHooksFor(call.function.name, rawResult))
                     }
 
+                    // El TurnSessionContext ya viene instalado desde `invoke` y se propaga por
+                    // el árbol de corutinas, incluida la ejecución paralela de abajo.
                     val results: List<Pair<ToolCall, String>> = if (needsSequential) {
                         finalToolCalls.map { executeCall(it) }
                     } else {
@@ -769,7 +819,7 @@ class SendMessageUseCase(
                     ?.content
                 if (!assistantText.isNullOrBlank()) {
                     scope.launch {
-                        model.generateTitle(cfg.baseUrl(), cfg.model, text, assistantText)
+                        model.generateTitle(cfg.baseUrl(), cfg.model, text, assistantText, cfgApiKey)
                             .getOrNull()
                             ?.let { title -> chats.updateTitle(sessionId, title) }
                     }
@@ -788,8 +838,10 @@ class SendMessageUseCase(
 
     /**
      * Context length del modelo activo, cacheado por baseUrl+model para no
-     * pegar al servidor en cada send. LM Studio lo expone; para otros
-     * servidores cae al default conservador.
+     * pegar al servidor en cada send. Solo LM Studio expone `/api/v0/models`
+     * con esta info (ver [LmStudioApi.fetchContextLength]); cualquier otro
+     * backend (DeepSeek, otros proveedores cloud, Ollama, llama.cpp genérico)
+     * cae siempre a [DEFAULT_CONTEXT_TOKENS].
      */
     private var cachedContextKey: String? = null
     private var cachedContextLength: Int? = null
@@ -1278,8 +1330,17 @@ class SendMessageUseCase(
          */
         private const val STREAM_PERSIST_INTERVAL_MS = 120L
 
-        /** Default conservador cuando el servidor no expone el context length. */
-        private const val DEFAULT_CONTEXT_TOKENS = 8192
+        /**
+         * Default cuando el servidor no expone el context length (ver
+         * [contextLengthTokens]). 32K en vez de un valor más chico porque hoy es el
+         * piso razonable para modelos cloud modernos (DeepSeek, GPT, Claude vía
+         * proxy…) que son el caso más común de "servidor sin auto-detección"; para
+         * un backend local con una ventana real más chica (llama.cpp con -c 4096,
+         * por ejemplo) este número sobreestima y el servidor puede rechazar o
+         * truncar la request si el historial crece — no hay forma de saberlo sin
+         * que el servidor lo exponga.
+         */
+        private const val DEFAULT_CONTEXT_TOKENS = 32_768
 
         /** Fracción del contexto disponible para historial; el resto queda para la respuesta. */
         private const val HISTORY_BUDGET_FRACTION = 0.7
@@ -1358,8 +1419,10 @@ class SendMessageUseCase(
                     "you. Use read_file, list_directory and search_files to understand the task. " +
                     "`run_command` is available but you MUST restrict it to read-only inspection " +
                     "(grep, find, cat, git log/status/diff) — never run commands that write, " +
-                    "install, delete, move, or commit. End by presenting the plan and telling the " +
-                    "user to switch to Build mode to apply it.\n" +
+                    "install, delete, move, or commit. End by presenting the plan and asking the " +
+                    "user (with `ask_user`) whether to apply it. If they agree, call " +
+                    "`set_agent_mode` with mode=\"build\" — do NOT tell them to flip the switch " +
+                    "themselves, and do NOT switch without asking first.\n" +
                     "=============================\n\n"
             } else ""
             val permissionLine = if (yoloMode) {

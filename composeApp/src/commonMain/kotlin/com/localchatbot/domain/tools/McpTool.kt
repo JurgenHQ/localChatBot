@@ -7,7 +7,6 @@ import com.localchatbot.data.mcp.McpContent
 import com.localchatbot.data.mcp.McpToolInfo
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -32,15 +31,11 @@ class McpTool(
      * chat (out-of-band, igual que `generate_image`): así el usuario la ve sin que el
      * base64 viaje al modelo.
      */
-    private val _lastImage = MutableStateFlow<String?>(null)
+    private val lastImage = ProducedMediaSlot()
 
-    override fun peekProducedImage(): String? = _lastImage.value
+    override suspend fun peekProducedImage(): String? = lastImage.peek()
 
-    override fun consumeProducedImage(): String? {
-        val v = _lastImage.value
-        _lastImage.value = null
-        return v
-    }
+    override suspend fun consumeProducedImage(): String? = lastImage.consume()
 
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
@@ -67,7 +62,7 @@ class McpTool(
                 // Captura la primera imagen del resultado (p. ej. captura de pantalla)
                 // para mostrarla en el chat; el texto que ve el modelo no la incluye.
                 result.content.filterIsInstance<McpContent.Image>().firstOrNull()?.let { img ->
-                    _lastImage.value = "data:${img.mimeType};base64,${img.data}"
+                    lastImage.set("data:${img.mimeType};base64,${img.data}")
                 }
                 result.toText()
             }

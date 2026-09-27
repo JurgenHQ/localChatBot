@@ -46,8 +46,13 @@ interface Tool {
      * Si la tool produjo una imagen "out of band" (no devuelta al modelo en el JSON
      * de tool result, sino almacenada aparte para no inflar el contexto), devuelve aquí
      * el data URL y consume el estado interno. Llamado por el use case tras cada ronda.
+     *
+     * Es `suspend` porque la media se guarda **por sesión** ([ProducedMediaSlot]) y la sesión
+     * se lee del [com.localchatbot.core.state.TurnSessionContext] de la corutina: las tools son
+     * singletons compartidos por todos los turnos, así que un slot único hacía que un turno
+     * drenara la imagen de otro (ver [ProducedMediaSlot]).
      */
-    fun consumeProducedImage(): String? = null
+    suspend fun consumeProducedImage(): String? = null
 
     /**
      * Igual que [consumeProducedImage] pero SIN limpiar el estado interno: devuelve
@@ -55,16 +60,16 @@ interface Tool {
      * adjuntando al chat. Lo usa `save_image` para persistir en disco la imagen que
      * ya se está mostrando, sin "robarla" del flujo normal.
      */
-    fun peekProducedImage(): String? = null
+    suspend fun peekProducedImage(): String? = null
 
     /**
      * Igual que [consumeProducedImage] pero para video (`animate`/`cartoon_video`): devuelve
      * el data URL y consume el estado interno.
      */
-    fun consumeProducedVideo(): String? = null
+    suspend fun consumeProducedVideo(): String? = null
 
     /** Igual que [peekProducedImage] pero para video. Lo usa `save_video`. */
-    fun peekProducedVideo(): String? = null
+    suspend fun peekProducedVideo(): String? = null
 }
 
 private const val MAX_TOOL_OUTPUT_CHARS = 8_000

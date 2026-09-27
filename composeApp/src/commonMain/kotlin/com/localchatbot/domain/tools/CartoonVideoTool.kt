@@ -5,7 +5,6 @@ import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.data.remote.VideoGenApi
 import com.localchatbot.domain.repository.PreferencesRepository
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -27,7 +26,7 @@ class CartoonVideoTool(
     private val api: VideoGenApi,
     private val preferences: PreferencesRepository,
     private val json: Json,
-    private val sourceImageProvider: () -> String?
+    private val sourceImageProvider: suspend () -> String?
 ) : Tool {
 
     override val name: String = TOOL_NAME
@@ -37,17 +36,12 @@ class CartoonVideoTool(
     override suspend fun isAvailable(): Boolean =
         preferences.current().effectiveImageServiceUrl.isNotBlank()
 
-    private val _lastVideo = MutableStateFlow<String?>(null)
+    /** Video producido, por sesión del turno (ver [ProducedMediaSlot]). */
+    private val lastVideo = ProducedMediaSlot()
 
-    private fun consumeLastVideo(): String? {
-        val v = _lastVideo.value
-        _lastVideo.value = null
-        return v
-    }
+    override suspend fun consumeProducedVideo(): String? = lastVideo.consume()
 
-    override fun consumeProducedVideo(): String? = consumeLastVideo()
-
-    override fun peekProducedVideo(): String? = _lastVideo.value
+    override suspend fun peekProducedVideo(): String? = lastVideo.peek()
 
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
@@ -121,7 +115,7 @@ class CartoonVideoTool(
                     return@fold errorPayload(response.error ?: "El servicio devolvió success=false")
                 }
                 response.video_base64?.let { b64 ->
-                    _lastVideo.value = "data:video/mp4;base64,$b64"
+                    lastVideo.set("data:video/mp4;base64,$b64")
                 }
                 json.encodeToString(
                     JsonObject.serializer(),

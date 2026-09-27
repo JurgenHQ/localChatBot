@@ -4,6 +4,7 @@ import com.localchatbot.core.platform.SystemNotifier
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.PendingUserPrompt
 import com.localchatbot.core.state.PendingUserPromptStore
+import com.localchatbot.core.state.TurnSessionContext
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlin.coroutines.coroutineContext
 
 /**
  * Tool para que el modelo pregunte algo al usuario o le ofrezca opciones a elegir.
@@ -98,7 +100,12 @@ class AskUserTool(
             return """{"status":"auto_answered","answer":"${answer.escapeJson()}"}"""
         }
 
-        val sessionId = activeSessionStore.activeSessionId.value ?: ""
+        // La sesión del turno en curso, no la que esté visible en la UI en este instante:
+        // un turno lanzado en background sigue corriendo aunque el usuario navegue a otra
+        // sesión (ver TurnSessionContext). ActiveSessionStore queda como fallback para el
+        // caso (no debería darse en producción) de que la tool corra fuera de un turno.
+        val sessionId = coroutineContext[TurnSessionContext]?.sessionId
+            ?: activeSessionStore.activeSessionId.value ?: ""
         promptStore.set(
             PendingUserPrompt(
                 sessionId = sessionId,

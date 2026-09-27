@@ -5,8 +5,6 @@ import com.localchatbot.data.remote.ImageGenApi
 import com.localchatbot.data.remote.ImageGenRequest
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,8 +21,8 @@ import kotlinx.serialization.json.put
  * IMPORTANTE sobre el manejo del base64: el modelo recibe en `role=tool` SOLO metadatos
  * (filename, seed, prompt) — el blob base64 NO se devuelve como contenido del tool message,
  * porque se traduciría a decenas de miles de tokens basura en el contexto en la siguiente
- * iteración. En su lugar lo exponemos en [lastGeneratedImageDataUrl] para que
- * `SendMessageUseCase` lo recoja y lo adjunte al `ChatMessage` final del assistant.
+ * iteración. En su lugar lo dejamos en un [ProducedMediaSlot] para que `SendMessageUseCase`
+ * lo recoja y lo adjunte al `ChatMessage` final del assistant.
  */
 class ImageGenerationTool(
     private val api: ImageGenApi,
@@ -43,18 +41,12 @@ class ImageGenerationTool(
     override suspend fun isAvailable(): Boolean =
         preferences.current().effectiveImageServiceUrl.isNotBlank()
 
-    private val _lastImage = MutableStateFlow<String?>(null)
-    val lastGeneratedImageDataUrl: StateFlow<String?> = _lastImage
+    /** Imagen producida, por sesión del turno (ver [ProducedMediaSlot]). */
+    private val lastImage = ProducedMediaSlot()
 
-    fun consumeLastImage(): String? {
-        val v = _lastImage.value
-        _lastImage.value = null
-        return v
-    }
+    override suspend fun consumeProducedImage(): String? = lastImage.consume()
 
-    override fun consumeProducedImage(): String? = consumeLastImage()
-
-    override fun peekProducedImage(): String? = _lastImage.value
+    override suspend fun peekProducedImage(): String? = lastImage.peek()
 
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
@@ -120,7 +112,7 @@ class ImageGenerationTool(
                     return@fold errorPayload(response.error ?: "El servicio devolvió success=false")
                 }
                 response.image_base64?.let { b64 ->
-                    _lastImage.value = "data:image/png;base64,$b64"
+                    lastImage.set("data:image/png;base64,$b64")
                 }
                 // Devolver al modelo SOLO metadatos. El base64 queda fuera del contexto.
                 json.encodeToString(

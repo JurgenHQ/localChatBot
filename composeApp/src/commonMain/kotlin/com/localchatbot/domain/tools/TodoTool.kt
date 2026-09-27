@@ -1,6 +1,7 @@
 package com.localchatbot.domain.tools
 
 import com.localchatbot.core.state.ActiveSessionStore
+import com.localchatbot.core.state.TurnSessionContext
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,12 +18,14 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.coroutineContext
 
 data class TodoItem(val id: String, val text: String, val done: Boolean = false)
 
 /**
  * Todos scoped per chat session — la lista de una sesión NUNCA aparece en otra.
- * Si no hay sesión activa cuando se llama la tool, se usa la clave "" como fallback.
+ * La sesión se resuelve por [TurnSessionContext] (la sesión del turno en curso); si la
+ * tool corre fuera de un turno se usa [ActiveSessionStore] y, en último caso, la clave "".
  */
 class TodoTool(
     private val activeSessionStore: ActiveSessionStore
@@ -41,7 +44,12 @@ class TodoTool(
     fun itemsFor(sessionId: String?): List<TodoItem> =
         if (sessionId == null) emptyList() else _state.value[sessionId].orEmpty()
 
-    private fun currentSessionKey(): String = activeSessionStore.activeSessionId.value ?: ""
+    // La sesión del turno en curso (ver TurnSessionContext), no la visible en la UI en
+    // este instante: un turno lanzado en background sigue corriendo aunque el usuario
+    // navegue a otra sesión. ActiveSessionStore queda como fallback si la tool corre
+    // fuera de un turno (no debería darse en producción).
+    private suspend fun currentSessionKey(): String =
+        coroutineContext[TurnSessionContext]?.sessionId ?: activeSessionStore.activeSessionId.value ?: ""
 
     private fun publish() {
         _state.value = items.mapValues { it.value.toList() }

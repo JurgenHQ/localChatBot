@@ -2,6 +2,7 @@ package com.localchatbot.domain.tools
 
 import com.localchatbot.core.confirm.AutoApproveConfirmations
 import com.localchatbot.core.platform.PlatformCapabilities
+import com.localchatbot.core.state.TurnSessionContext
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.model.Role
@@ -55,10 +56,14 @@ class SubAgentRun : AbstractCoroutineContextElement(Key) {
  *   bloqueado esperándola.
  * - **Anidamiento máximo 1**, vía [SubAgentRun] (ver arriba).
  *
- * Nota: el hijo comparte con el padre el workspace efectivo (lo resuelve
- * [com.localchatbot.core.state.ActiveWorkspaceStore] por la sesión *activa*, que sigue
- * siendo la del padre) y la lista de todos de [TodoTool] (también indexada por sesión
- * activa). Es el mismo comportamiento que ya tienen las sesiones del scheduler.
+ * Nota sobre qué hereda y qué no: el hijo comparte el **workspace efectivo y el modo
+ * Plan/Build del padre**, que se le pasan explícitamente vía
+ * [SendMessageUseCase.invoke]`(workspaceSessionId = …)` — su propia sesión está agrupada bajo
+ * [ProjectRepository.SUBAGENTS_GROUP_ID], que no es un proyecto real, así que resolver contra
+ * ella lo mandaría al workspace global. En cambio la lista de [TodoTool] y la media
+ * out-of-band que produzca **son suyas** (van por [com.localchatbot.core.state.TurnSessionContext],
+ * es decir por la sesión hija): su plan intermedio no ensucia el panel de todos del padre ni
+ * le mete imágenes en el chat.
  */
 class SpawnAgentTool(
     private val chats: ChatRepository,
@@ -163,8 +168,17 @@ class SpawnAgentTool(
             projects.assignSession(session.id, ProjectRepository.SUBAGENTS_GROUP_ID)
         }
 
+        // El hijo trabaja sobre el workspace y el modo Plan/Build del PADRE: su sesión está
+        // agrupada bajo SUBAGENTS_GROUP_ID, que no es un proyecto real, así que resolver contra
+        // ella lo mandaría al workspace global en vez de al del proyecto donde se le encargó
+        // la tarea. Lo demás (todos, media out-of-band) sí es suyo.
+        val parentSessionId = coroutineContext[TurnSessionContext]?.workspaceSessionId
         val result = withContext(AutoApproveConfirmations() + SubAgentRun()) {
-            sendMessageProvider().invoke(session.id, task)
+            sendMessageProvider().invoke(
+                sessionId = session.id,
+                text = task,
+                workspaceSessionId = parentSessionId
+            )
         }
 
         val error = result.exceptionOrNull()
