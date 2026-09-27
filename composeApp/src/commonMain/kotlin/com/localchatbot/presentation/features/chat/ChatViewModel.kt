@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -212,17 +213,22 @@ class ChatViewModel(
 
         // Cuando cambian la conexión, el modelo configurado, o el modelo real devuelto
         // por el servidor (activeSession.model), re-fetchear el context length.
+        // También al terminar cada respuesta: el servidor puede haberse relanzado con
+        // otro contexto (p. ej. llama-server con otro `-c`) sin cambiar el nombre del modelo.
         viewModelScope.launch {
             combine(
                 preferences.preferences.map { it.connection },
-                state.map { it.activeSession?.model.orEmpty() }
-            ) { cfg, sessionModel -> cfg to sessionModel }
+                state.map { it.activeSession?.model.orEmpty() },
+                streamingStateStore.streaming.map { it.isEmpty() }
+            ) { cfg, sessionModel, idle -> Triple(cfg, sessionModel, idle) }
                 .distinctUntilChanged { a, b ->
                     a.first.baseUrl() == b.first.baseUrl() &&
                     a.first.model == b.first.model &&
-                    a.second == b.second
+                    a.second == b.second &&
+                    a.third == b.third
                 }
-                .collect { (cfg, _) ->
+                .filter { (_, _, idle) -> idle }
+                .collect { (cfg, _, _) ->
                     if (!cfg.isValid()) {
                         _tokensMax.value = DEFAULT_CONTEXT_LENGTH
                         return@collect

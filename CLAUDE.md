@@ -56,7 +56,7 @@ Presentation (Compose + ViewModels)
 
 - **`core/`** — cross-cutting infrastructure with no business logic: `HttpClientFactory`, `SettingsFactory`, `ActiveSessionStore` (shared ViewModel state), `StreamingStateStore`, platform `expect`/`actual` declarations (image decode/save, URL opener, TTS, speech recognition, system bars).
 - **`domain/`** — pure models (`ChatSession`, `ChatMessage`, `AppPreferences`, `ConnectionConfig`), repository interfaces, use cases, and the `Tool` / `ToolRegistry` abstractions. Has zero dependency on Ktor or Compose.
-- **`data/`** — Ktor-based API clients (`OpenAiApi`, `TavilyApi`, `ImageGenApi`, `DiagramRenderApi`, `LmStudioApi`), JSON DTOs, and `*RepositoryImpl` classes that persist via `multiplatform-settings`.
+- **`data/`** — Ktor-based API clients (`OpenAiApi`, `TavilyApi`, `ImageGenApi`, `DiagramRenderApi`, `LmStudioApi`, `LlamaCppApi`), JSON DTOs, and `*RepositoryImpl` classes that persist via `multiplatform-settings`.
 - **`presentation/`** — Compose screens, ViewModels, and Atomic Design components.
 - **`di/AppContainer.kt`** — manual DI composition root; wires everything together. No framework.
 

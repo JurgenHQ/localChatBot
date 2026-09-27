@@ -416,19 +416,24 @@ class SendMessageUseCase(
     }
 
     /**
-     * Context length del modelo activo, cacheado por baseUrl+model para no
-     * pegar al servidor en cada send. LM Studio lo expone; para otros
-     * servidores cae al default conservador.
+     * Context length del modelo activo, cacheado por baseUrl+model durante
+     * [CONTEXT_CACHE_TTL_MS] para no pegar al servidor en cada ronda de tools.
+     * Caduca para detectar un servidor relanzado con otro contexto bajo el mismo
+     * nombre de modelo. LM Studio y llama.cpp lo exponen; para otros servidores
+     * cae al default conservador.
      */
     private var cachedContextKey: String? = null
     private var cachedContextLength: Int? = null
+    private var cachedContextAtMs: Long = 0L
 
     private suspend fun contextLengthTokens(): Int {
         val cfg = prefs.current().connection
         val key = "${cfg.baseUrl()}|${cfg.model}"
-        if (cachedContextKey != key) {
+        val now = Clock.System.now().toEpochMilliseconds()
+        if (cachedContextKey != key || now - cachedContextAtMs > CONTEXT_CACHE_TTL_MS) {
             cachedContextLength = model.fetchContextLength(cfg.baseUrl(), cfg.model)
             cachedContextKey = key
+            cachedContextAtMs = now
         }
         return cachedContextLength ?: DEFAULT_CONTEXT_TOKENS
     }
@@ -608,6 +613,7 @@ class SendMessageUseCase(
 
         /** Default conservador cuando el servidor no expone el context length. */
         private const val DEFAULT_CONTEXT_TOKENS = 8192
+        private const val CONTEXT_CACHE_TTL_MS = 60_000L
 
         /** Fracción del contexto disponible para historial; el resto queda para la respuesta. */
         private const val HISTORY_BUDGET_FRACTION = 0.7

@@ -18,6 +18,7 @@ import com.localchatbot.core.voice.TextToSpeech
 import com.localchatbot.core.voice.VoiceConversationController
 import com.localchatbot.data.remote.DiagramRenderApi
 import com.localchatbot.data.remote.ImageGenApi
+import com.localchatbot.data.remote.LlamaCppApi
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.TavilyApi
@@ -65,6 +66,10 @@ class AppContainer {
         httpClient,
         authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
     )
+    private val llamaCppApi = LlamaCppApi(
+        httpClient,
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+    )
     private val imageGenApi = ImageGenApi(httpClient, json, networkInspector)
     private val diagramRenderApi = DiagramRenderApi(httpClient, json, networkInspector)
     private val tavilyApi = TavilyApi(httpClient, json, networkInspector)
@@ -86,7 +91,7 @@ class AppContainer {
     val skillFileStore: SkillFileStore = createSkillFileStore()
     val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
     val chatRepository: ChatRepository = ChatRepositoryImpl(settings, json)
-    val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi)
+    val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi, llamaCppApi)
 
     val activeSessionStore = ActiveSessionStore()
     val streamingStateStore = StreamingStateStore()
