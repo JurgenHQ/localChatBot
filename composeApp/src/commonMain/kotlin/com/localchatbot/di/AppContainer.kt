@@ -22,6 +22,7 @@ import com.localchatbot.core.state.PendingUserPromptStore
 import com.localchatbot.core.state.QueuedMessageStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.core.terminal.TerminalController
+import com.localchatbot.core.terminal.TerminalLayoutStore
 import com.localchatbot.core.storage.SettingsFactory
 import com.localchatbot.core.storage.CheckpointStore
 import com.localchatbot.core.hooks.HooksStore
@@ -200,6 +201,9 @@ class AppContainer {
         scope = applicationScope,
         workspaceForSession = { sessionId -> activeWorkspaceStore.forSession(sessionId) }
     )
+
+    /** Acople (abajo/derecha) y tamaño del panel de terminal, persistidos. */
+    val terminalLayoutStore = TerminalLayoutStore(settings)
 
     /**
      * Preguntas pendientes que el modelo lanza al usuario vía `ask_user`.

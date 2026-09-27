@@ -403,11 +403,16 @@ Desktop-only Ktor server (`ktor-server-cio` + websockets) that exposes the chats
 
 ### Integrated terminal (`TerminalController` / `TerminalPanel`)
 
-Desktop-only panel docked at the bottom of the window (chip in `AgentControlsBar`, **Ctrl+`**, or
+Desktop-only panel docked at the bottom or right of the window (chip in `AgentControlsBar`, **Ctrl+`**, or
 the command palette) where you type shell commands — and where the commands the agent runs are
 **mirrored live**, so you can watch a build it launched progress instead of waiting for the tool
 result.
 
+- **Dock & size (VS Code-style)**: the panel docks at the **bottom** (spans the content area) or on the
+  **right** (full height), toggled from its header button or the command palette. Drag the inner edge
+  to resize (double-click resets); the size is clamped so at least `TERMINAL_MIN_CONTENT_SPACE` stays
+  for the chat. `TerminalLayoutStore` (`core/terminal/`) persists dock + height + width in settings
+  (not part of `AppPreferences`/export); height and width are kept separately per dock.
 - **One terminal per chat session**, keyed like everything else session-scoped: the running turn's
   session comes from `TurnSessionContext`, not from `ActiveSessionStore`. A scheduled task or a
   sub-agent runs concurrently with the chat you have open, so a single global buffer would

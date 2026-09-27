@@ -2,16 +2,23 @@ package com.localchatbot.presentation.features.terminal
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -20,8 +27,10 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -44,6 +54,7 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -54,12 +65,16 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.resizeCursor
 import com.localchatbot.core.terminal.SessionTerminal
+import com.localchatbot.core.terminal.TerminalDock
 import com.localchatbot.core.terminal.TerminalLineKind
 import com.localchatbot.core.theme.Spacing
 
 /**
- * Panel de terminal acoplado al fondo de la ventana.
+ * Panel de terminal acoplado abajo o a la derecha de la ventana, como en VS Code: se
+ * redimensiona arrastrando su borde interior (doble clic lo devuelve al tamaño por defecto)
+ * y el botón de la cabecera lo cambia de lado.
  *
  * Sin ViewModel, por el mismo motivo que `NetworkInspectorScreen`: todo el estado con vida
  * propia (buffer, cwd, historial, proceso) ya vive en [SessionTerminal], que es de ámbito de
@@ -72,8 +87,15 @@ import com.localchatbot.core.theme.Spacing
 @Composable
 fun TerminalPanel(
     terminal: SessionTerminal,
-    height: Dp,
+    dock: TerminalDock,
+    /** Alto si [dock] es Bottom, ancho si es Right. */
+    size: Dp,
+    /** Delta de tamaño durante el arrastre; positivo agranda el panel. */
     onResize: (Dp) -> Unit,
+    /** Fin del arrastre: momento de persistir el tamaño. */
+    onResizeEnd: () -> Unit,
+    onResetSize: () -> Unit,
+    onToggleDock: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -111,27 +133,17 @@ fun TerminalPanel(
         input = TextFieldValue(text, selection = androidx.compose.ui.text.TextRange(text.length))
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(height)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        // Asa de redimensionado: la primera fila del panel, no un borde de 1 px, para que
-        // se pueda agarrar sin puntería.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .background(MaterialTheme.colorScheme.outlineVariant)
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures { _, dragAmount ->
-                        // Arrastrar hacia arriba (negativo) agranda el panel.
-                        onResize(with(density) { -dragAmount.toDp() })
-                    }
-                }
+    // El asa va en el borde que da al chat: arriba si el panel está abajo, a la izquierda
+    // si está a la derecha. En ambos casos arrastrar hacia el chat (delta negativo) agranda.
+    val handle = @Composable {
+        ResizeHandle(
+            horizontal = dock == TerminalDock.Right,
+            onDrag = { px -> onResize(with(density) { -px.toDp() }) },
+            onDragEnd = onResizeEnd,
+            onDoubleClick = onResetSize
         )
-
+    }
+    val body: @Composable ColumnScope.() -> Unit = {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -157,6 +169,11 @@ fun TerminalPanel(
             }
             PanelIcon(Icons.Filled.Refresh, "Reiniciar el shell", terminal::restart)
             PanelIcon(Icons.Filled.DeleteSweep, "Limpiar la salida", terminal::clear)
+            if (dock == TerminalDock.Bottom) {
+                PanelIcon(Icons.Filled.VerticalSplit, "Mover la terminal a la derecha", onToggleDock)
+            } else {
+                PanelIcon(Icons.Filled.HorizontalSplit, "Mover la terminal abajo", onToggleDock)
+            }
             PanelIcon(Icons.Filled.Close, "Cerrar la terminal", onClose)
         }
 
@@ -269,13 +286,95 @@ fun TerminalPanel(
             )
             if (running) {
                 Text(
-                    text = "en curso · Ctrl+C, «exit» o ⏹ para detener",
+                    // Acoplada a la derecha el panel es estrecho: el aviso largo dejaría el
+                    // campo de texto sin ancho.
+                    text = if (dock == TerminalDock.Right) "en curso"
+                    else "en curso · Ctrl+C, «exit» o ⏹ para detener",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }
         }
+    }
+
+    val background = MaterialTheme.colorScheme.surfaceVariant
+    when (dock) {
+        TerminalDock.Bottom -> Column(
+            modifier = modifier.fillMaxWidth().height(size).background(background)
+        ) {
+            handle()
+            body()
+        }
+        TerminalDock.Right -> Row(
+            modifier = modifier.fillMaxHeight().width(size).background(background)
+        ) {
+            handle()
+            Column(modifier = Modifier.weight(1f).fillMaxHeight()) { body() }
+        }
+    }
+}
+
+/**
+ * Asa de redimensionado: 6 dp de zona agarrable con una línea de 1 dp que se resalta al
+ * pasar el ratón o arrastrar, y cursor de resize en desktop. Doble clic resetea el tamaño.
+ *
+ * @param horizontal true si se arrastra en horizontal (panel a la derecha).
+ */
+@Composable
+private fun ResizeHandle(
+    horizontal: Boolean,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDoubleClick: () -> Unit
+) {
+    // `pointerInput` se lanza una sola vez por clave: sin esto usaría las lambdas del
+    // primer frame para siempre.
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnDoubleClick by rememberUpdatedState(onDoubleClick)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    var dragging by remember { mutableStateOf(false) }
+    val active = hovered || dragging
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .then(if (horizontal) Modifier.fillMaxHeight().width(6.dp) else Modifier.fillMaxWidth().height(6.dp))
+            .hoverable(interaction)
+            .pointerHoverIcon(resizeCursor(horizontal))
+            .pointerInput(horizontal) {
+                val end = { dragging = false; currentOnDragEnd() }
+                if (horizontal) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragging = true },
+                        onDragEnd = end,
+                        onDragCancel = end
+                    ) { change, amount -> change.consume(); currentOnDrag(amount) }
+                } else {
+                    detectVerticalDragGestures(
+                        onDragStart = { dragging = true },
+                        onDragEnd = end,
+                        onDragCancel = end
+                    ) { change, amount -> change.consume(); currentOnDrag(amount) }
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onDoubleTap = { currentOnDoubleClick() })
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .then(
+                    if (horizontal) Modifier.fillMaxHeight().width(if (active) 3.dp else 1.dp)
+                    else Modifier.fillMaxWidth().height(if (active) 3.dp else 1.dp)
+                )
+                .background(
+                    if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outlineVariant
+                )
+        )
     }
 }
 
@@ -301,7 +400,8 @@ private val TERMINAL_TEXT_STYLE = TextStyle(
     lineHeight = 16.sp
 )
 
-/** Alto por defecto del panel y límites del arrastre. */
-val TERMINAL_DEFAULT_HEIGHT = 260.dp
-val TERMINAL_MIN_HEIGHT = 120.dp
-val TERMINAL_MAX_HEIGHT = 700.dp
+/**
+ * Espacio mínimo que el panel deja siempre al chat al agrandarse, para que nunca se pueda
+ * tapar la conversación por completo.
+ */
+val TERMINAL_MIN_CONTENT_SPACE = 240.dp

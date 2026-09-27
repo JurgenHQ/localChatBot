@@ -68,9 +68,9 @@ import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
 import com.localchatbot.presentation.features.tasks.TasksScreen
 import com.localchatbot.presentation.features.tasks.TasksViewModel
-import com.localchatbot.presentation.features.terminal.TERMINAL_DEFAULT_HEIGHT
-import com.localchatbot.presentation.features.terminal.TERMINAL_MAX_HEIGHT
-import com.localchatbot.presentation.features.terminal.TERMINAL_MIN_HEIGHT
+import com.localchatbot.core.terminal.TerminalDock
+import com.localchatbot.core.terminal.TerminalLayout
+import com.localchatbot.presentation.features.terminal.TERMINAL_MIN_CONTENT_SPACE
 import com.localchatbot.presentation.features.terminal.TerminalPanel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -89,7 +89,8 @@ fun MainScaffold(container: AppContainer) {
     // La terminal es un panel acoplado, no un overlay: se ve a la vez que el chat, que es
     // el punto de poder mirar lo que ejecuta el agente mientras trabaja.
     var terminalOpen by rememberSaveable { mutableStateOf(false) }
-    var terminalHeight by rememberSaveable { mutableStateOf(TERMINAL_DEFAULT_HEIGHT.value) }
+    // Acople (abajo/derecha) y tamaño persistidos entre arranques.
+    val terminalLayout by container.terminalLayoutStore.layout.collectAsStateWithLifecycle()
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -271,77 +272,107 @@ fun MainScaffold(container: AppContainer) {
             // imePadding al Column externo: con windowSoftInputMode=adjustResize en el manifest,
             // el sistema redimensiona la ventana al tamaño correcto y imePadding no duplica.
             Column(modifier = Modifier.weight(1f).fillMaxSize().imePadding()) {
-                Box(modifier = Modifier.weight(1f)) {
-                    when (selected) {
-                        BottomTab.Chat -> ChatScreen(
-                            chatViewModel = chatViewModel,
-                            voiceController = container.voiceController,
-                            todoTool = container.todoTool,
-                            // Con panel permanente el botón de menú colapsa/expande
-                            // el sidebar; en angosto abre el drawer modal.
-                            onOpenDrawer = {
-                                if (permanentDrawer) sidebarCollapsed = !sidebarCollapsed
-                                else sessionsViewModel.openDrawer()
-                            },
-                            onChangeModel = { modelPickerOpen = true },
-                            onOpenEditor = { editorOpen = true },
-                            // Click en una referencia a archivo del chat → abre el editor
-                            // en ese archivo. Solo desktop (el editor es desktop-only).
-                            onOpenFileInEditor = if (PlatformCapabilities.isDesktop) {
-                                { path, line ->
-                                    editorViewModel.openFile(path, line)
-                                    editorOpen = true
-                                }
-                            } else null,
-                            onOpenMetrics = { metricsOpen = true },
-                            terminalOpen = terminalOpen,
-                            onToggleTerminal = if (PlatformCapabilities.isDesktop) {
-                                { terminalOpen = !terminalOpen }
-                            } else null,
-                            showMenuButton = true
-                        )
-                        BottomTab.Agent -> AgentScreen(
-                            viewModel = agentViewModel,
-                            onOpenSkills = { skillsOpen = true },
-                            onOpenMcpServers = { mcpOpen = true },
-                            onOpenEditor = { editorOpen = true }
-                        )
-                        BottomTab.Settings -> SettingsScreen(
-                            viewModel = settingsViewModel,
-                            editorViewModelFactory = { editor ->
-                                SettingsEditorViewModel(
-                                    preferences = container.preferencesRepository,
-                                    editor = editor,
-                                    listModels = container.listModels
+                val showTerminal = terminalOpen && PlatformCapabilities.isDesktop
+                // Mismo esquema que VS Code: abajo, el panel ocupa solo el ancho del área de
+                // contenido; a la derecha, todo su alto. El contenido va siempre en el mismo
+                // hueco del árbol para que cambiar el acople no recree la pantalla activa.
+                BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                    val areaWidth = maxWidth
+                    val areaHeight = maxHeight
+                    // Fuera del `when (selected)` a propósito: el panel sigue visible aunque
+                    // te vayas a Agente o Ajustes, igual que el diálogo de confirmación.
+                    val terminalPanel = @Composable { dock: TerminalDock ->
+                        val activeSessionId by container.activeSessionStore.activeSessionId
+                            .collectAsStateWithLifecycle()
+                        // Sin conversación activa (pantalla de conversación nueva) se usa la
+                        // terminal del borrador, que la conversación adopta al crearse. La
+                        // terminal nunca depende de haber empezado a chatear.
+                        val terminal = remember(activeSessionId) {
+                            activeSessionId
+                                ?.let(container.terminalController::terminalForAdoptingScratch)
+                                ?: container.terminalController.scratch()
+                        }
+                        val available = if (dock == TerminalDock.Bottom) areaHeight else areaWidth
+                        val maxSize = (available - TERMINAL_MIN_CONTENT_SPACE).value
+                            .coerceAtLeast(TerminalLayout.MIN_SIZE)
+                        TerminalPanel(
+                            terminal = terminal,
+                            dock = dock,
+                            // Se acota también al pintar: si la ventana encoge, el panel
+                            // no se come el chat aunque el tamaño guardado sea mayor.
+                            size = terminalLayout.size.coerceIn(TerminalLayout.MIN_SIZE, maxSize).dp,
+                            onResize = { delta ->
+                                val current = container.terminalLayoutStore.layout.value.size
+                                    .coerceIn(TerminalLayout.MIN_SIZE, maxSize)
+                                container.terminalLayoutStore.resize(
+                                    (current + delta.value).coerceIn(TerminalLayout.MIN_SIZE, maxSize)
                                 )
                             },
-                            onOpenNetworkInspector = { inspectorOpen = true },
-                            onOpenRemoteViewer = { remoteViewerOpen = true }
+                            onResizeEnd = container.terminalLayoutStore::commit,
+                            onResetSize = container.terminalLayoutStore::resetSize,
+                            onToggleDock = container.terminalLayoutStore::toggleDock,
+                            onClose = { terminalOpen = false }
                         )
                     }
-                }
-                // Fuera del `when (selected)` a propósito: el panel sigue visible aunque
-                // te vayas a Agente o Ajustes, igual que el diálogo de confirmación.
-                if (terminalOpen && PlatformCapabilities.isDesktop) {
-                    val activeSessionId by container.activeSessionStore.activeSessionId
-                        .collectAsStateWithLifecycle()
-                    // Sin conversación activa (pantalla de conversación nueva) se usa la
-                    // terminal del borrador, que la conversación adopta al crearse. La
-                    // terminal nunca depende de haber empezado a chatear.
-                    val terminal = remember(activeSessionId) {
-                        activeSessionId
-                            ?.let(container.terminalController::terminalForAdoptingScratch)
-                            ?: container.terminalController.scratch()
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                when (selected) {
+                                    BottomTab.Chat -> ChatScreen(
+                                        chatViewModel = chatViewModel,
+                                        voiceController = container.voiceController,
+                                        todoTool = container.todoTool,
+                                        // Con panel permanente el botón de menú colapsa/expande
+                                        // el sidebar; en angosto abre el drawer modal.
+                                        onOpenDrawer = {
+                                            if (permanentDrawer) sidebarCollapsed = !sidebarCollapsed
+                                            else sessionsViewModel.openDrawer()
+                                        },
+                                        onChangeModel = { modelPickerOpen = true },
+                                        onOpenEditor = { editorOpen = true },
+                                        // Click en una referencia a archivo del chat → abre el editor
+                                        // en ese archivo. Solo desktop (el editor es desktop-only).
+                                        onOpenFileInEditor = if (PlatformCapabilities.isDesktop) {
+                                            { path, line ->
+                                                editorViewModel.openFile(path, line)
+                                                editorOpen = true
+                                            }
+                                        } else null,
+                                        onOpenMetrics = { metricsOpen = true },
+                                        terminalOpen = terminalOpen,
+                                        onToggleTerminal = if (PlatformCapabilities.isDesktop) {
+                                            { terminalOpen = !terminalOpen }
+                                        } else null,
+                                        showMenuButton = true
+                                    )
+                                    BottomTab.Agent -> AgentScreen(
+                                        viewModel = agentViewModel,
+                                        onOpenSkills = { skillsOpen = true },
+                                        onOpenMcpServers = { mcpOpen = true },
+                                        onOpenEditor = { editorOpen = true }
+                                    )
+                                    BottomTab.Settings -> SettingsScreen(
+                                        viewModel = settingsViewModel,
+                                        editorViewModelFactory = { editor ->
+                                            SettingsEditorViewModel(
+                                                preferences = container.preferencesRepository,
+                                                editor = editor,
+                                                listModels = container.listModels
+                                            )
+                                        },
+                                        onOpenNetworkInspector = { inspectorOpen = true },
+                                        onOpenRemoteViewer = { remoteViewerOpen = true }
+                                    )
+                                }
+                            }
+                            if (showTerminal && terminalLayout.dock == TerminalDock.Bottom) {
+                                terminalPanel(TerminalDock.Bottom)
+                            }
+                        }
+                        if (showTerminal && terminalLayout.dock == TerminalDock.Right) {
+                            terminalPanel(TerminalDock.Right)
+                        }
                     }
-                    TerminalPanel(
-                        terminal = terminal,
-                        height = terminalHeight.dp,
-                        onResize = { delta ->
-                            terminalHeight = (terminalHeight + delta.value)
-                                .coerceIn(TERMINAL_MIN_HEIGHT.value, TERMINAL_MAX_HEIGHT.value)
-                        },
-                        onClose = { terminalOpen = false }
-                    )
                 }
                 if (!imeVisible) {
                     AppBottomBar(
@@ -491,6 +522,18 @@ fun MainScaffold(container: AppContainer) {
                     add(PaletteCommand("o-terminal", "Abrir/cerrar terminal", "Ctrl+`", "Navegación") {
                         terminalOpen = !terminalOpen
                     })
+                    add(
+                        PaletteCommand(
+                            "o-terminal-dock",
+                            if (terminalLayout.dock == TerminalDock.Bottom) "Mover terminal a la derecha"
+                            else "Mover terminal abajo",
+                            null,
+                            "Navegación"
+                        ) {
+                            container.terminalLayoutStore.toggleDock()
+                            terminalOpen = true
+                        }
+                    )
                     add(PaletteCommand("o-editor", "Abrir editor", null, "Navegación") { editorOpen = true })
                     add(PaletteCommand("o-tasks", "Abrir tareas programadas", null, "Navegación") { tasksOpen = true })
                 }
