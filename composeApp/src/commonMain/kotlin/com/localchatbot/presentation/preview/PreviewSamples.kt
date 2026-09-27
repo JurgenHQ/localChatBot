@@ -10,6 +10,7 @@ import com.localchatbot.core.theme.AppTheme
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.ChatMessage
 import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.domain.model.Role
 
 @Composable
@@ -67,27 +68,34 @@ object PreviewData {
         messages = emptyList()
     )
 
+    /**
+     * El drawer consume [SessionSummary], no [ChatSession]: solo necesita metadatos y el
+     * preview del último mensaje, nunca la lista de mensajes (ver `ChatRepository`).
+     */
     val sessionList = listOf(
-        activeSession,
-        ChatSession(
+        SessionSummary(
+            id = "s1",
+            title = "Refactor de auth",
+            model = "llama-3.1-8b-instruct",
+            createdAtEpochMs = nowMs,
+            updatedAtEpochMs = nowMs + 2_000,
+            lastMessagePreview = "Es el caso 2. Mira el handler."
+        ),
+        SessionSummary(
             id = "s2",
             title = "Diseño de tabla SQL",
             model = "llama-3.1-8b-instruct",
             createdAtEpochMs = nowMs - 10_000,
             updatedAtEpochMs = nowMs - 10_000,
-            messages = listOf(
-                ChatMessage("x", Role.Assistant, "Te recomendaría un índice compuesto…", nowMs - 9_500)
-            )
+            lastMessagePreview = "Te recomendaría un índice compuesto…"
         ),
-        ChatSession(
+        SessionSummary(
             id = "s3",
             title = "Error de compilación",
             model = "llama-3.1-8b-instruct",
             createdAtEpochMs = nowMs - 20_000,
             updatedAtEpochMs = nowMs - 20_000,
-            messages = listOf(
-                ChatMessage("x", Role.Assistant, "Posiblemente sea el classpath…", nowMs - 19_500)
-            )
+            lastMessagePreview = "Posiblemente sea el classpath…"
         )
     )
 }

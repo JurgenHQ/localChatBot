@@ -1,0 +1,13 @@
+-- Migración 1 → 2: modelo real que generó cada mensaje.
+--
+-- Hasta ahora el modelo solo se guardaba a nivel de sesión (`session.model`), que se pisa
+-- al cambiar de modelo a mitad de conversación: las métricas de los turnos anteriores
+-- quedaban atribuidas al modelo actual. Con esta columna cada respuesta recuerda con qué
+-- modelo se generó.
+--
+-- Es deliberadamente NULLABLE y sin DEFAULT: en SQLite un ADD COLUMN así es una operación
+-- de solo metadatos —no reescribe ni una fila—, así que las bases existentes conservan su
+-- contenido intacto y sus mensajes previos quedan con model = NULL. El código trata ese
+-- NULL como "desconocido" y cae a `session.model`, que es exactamente lo que se mostraba
+-- antes de esta migración.
+ALTER TABLE message ADD COLUMN model TEXT;

@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.theme.Radius
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.presentation.components.atoms.SectionLabel
@@ -138,7 +139,8 @@ private fun McpServersContent(
         Spacer(Modifier.height(Spacing.lg))
         Text(
             "Los servidores MCP exponen tools externas (bases de datos, APIs, herramientas) que el modelo " +
-                "puede invocar vía un endpoint HTTP remoto. Usa los headers para autenticación si el server lo requiere.",
+                "puede invocar vía un endpoint HTTP remoto o, en desktop, un proceso local (stdio, ej. npx/uvx). " +
+                "Usa los headers para autenticación si el server HTTP lo requiere.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -171,7 +173,13 @@ private fun McpServerRow(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    item.config.url,
+                    if (item.config.isStdio) {
+                        val cmd = listOf(item.config.command.orEmpty())
+                            .plus(item.config.args).joinToString(" ").trim()
+                        if (PlatformCapabilities.isDesktop) "stdio · $cmd" else "stdio · solo desktop"
+                    } else {
+                        item.config.url
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

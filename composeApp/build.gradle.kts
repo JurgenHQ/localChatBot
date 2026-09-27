@@ -9,6 +9,7 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.sqldelight)
 }
 
 kotlin {
@@ -29,6 +30,10 @@ kotlin {
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
+            // El link intermedio de Gradle (linkDebugFrameworkIos*) tolera símbolos sin
+            // resolver, pero el link final del binario de la app en Xcode no: SQLDelight
+            // native-driver llama a sqlite3 vía cinterop sin enlazar la lib del sistema.
+            linkerOpts += "-lsqlite3"
         }
     }
 
@@ -59,6 +64,9 @@ kotlin {
             implementation(libs.multiplatform.settings.coroutines)
 
             implementation(libs.markdown.renderer.m3)
+
+            implementation(libs.sqldelight.runtime)
+            implementation(libs.sqldelight.coroutines.extensions)
         }
 
         androidMain.dependencies {
@@ -66,18 +74,29 @@ kotlin {
             implementation(libs.androidx.activityCompose)
             implementation(libs.ktor.client.okhttp)
             implementation(libs.peekaboo.image.picker)
+            implementation(libs.pdfbox.android)
+            implementation(libs.sqldelight.android.driver)
         }
 
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
             implementation(libs.peekaboo.image.picker)
+            implementation(libs.sqldelight.native.driver)
         }
 
         val desktopMain by getting
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.ktor.client.cio)
+            implementation(libs.ktor.server.core)
+            implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.server.websockets)
+            implementation(libs.ktor.server.content.negotiation)
+            implementation(libs.ktor.server.status.pages)
             implementation(libs.kotlinx.coroutines.swing)
+            implementation(libs.pdfbox)
+            implementation(libs.sqldelight.sqlite.driver)
+            implementation(libs.jna.platform)
         }
     }
 }
@@ -113,6 +132,20 @@ android {
     }
 }
 
+sqldelight {
+    databases {
+        create("LocalChatBotDatabase") {
+            packageName.set("com.localchatbot.data.local.db")
+            // Snapshots `.db` del esquema por versión. Son lo que hace que verifyMigrations
+            // sirva de algo: sin ellos la tarea falla por falta de base contra la que aplicar
+            // los `.sqm`. Se commitean; `1.db` es el esquema tal como quedó en las bases de
+            // los usuarios antes de que existiera el versionado.
+            schemaOutputDirectory.set(file("src/commonMain/sqldelight/databases"))
+            verifyMigrations.set(true)
+        }
+    }
+}
+
 compose.desktop {
     application {
         mainClass = "com.localchatbot.MainKt"
@@ -120,9 +153,14 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "LocalChatBot"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.6"
             description = "Chat con un modelo LLM local en tu red"
             vendor = "LocalChatBot"
+            // jlink solo incluye módulos detectados por análisis estático (jdeps); el driver
+            // JDBC de SQLite carga java.sql.DriverManager por reflexión (ServiceLoader), así
+            // que jdeps no lo ve y el runtime empaquetado queda sin el módulo -> NoClassDefFoundError
+            // en el binario instalado (no se reproduce con `./gradlew run`, que usa el JDK completo).
+            modules("java.sql")
 
             macOS {
                 bundleID = "com.localchatbot.desktop"

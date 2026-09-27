@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
-import com.localchatbot.domain.model.ChatSession
+import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.presentation.components.util.ContextMenuEntry
 import com.localchatbot.presentation.components.util.WithContextMenu
 import kotlinx.datetime.Instant
@@ -54,13 +54,17 @@ import kotlinx.datetime.toLocalDateTime
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionRow(
-    session: ChatSession,
+    session: SessionSummary,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
     onRename: ((String) -> Unit)? = null,
-    onTogglePin: (() -> Unit)? = null
+    onTogglePin: (() -> Unit)? = null,
+    onMoveToProject: (() -> Unit)? = null
 ) {
+    // Swipe-para-borrar en todas las plataformas. En desktop el arrastre a proyectos NO
+    // vive en la fila sino en un "asa" de agarre aparte (ver DraggableSession), así que ya
+    // no pelea con el swipe. El menú contextual mantiene "Mover a proyecto".
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { target ->
             if (target == SwipeToDismissBoxValue.EndToStart) {
@@ -84,7 +88,8 @@ fun SessionRow(
             session = session,
             onClick = onClick,
             onRename = onRename,
-            onTogglePin = onTogglePin
+            onTogglePin = onTogglePin,
+            onMoveToProject = onMoveToProject
         )
     }
 }
@@ -92,15 +97,16 @@ fun SessionRow(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRowContent(
-    session: ChatSession,
+    session: SessionSummary,
     onClick: () -> Unit,
     onRename: ((String) -> Unit)?,
-    onTogglePin: (() -> Unit)?
+    onTogglePin: (() -> Unit)?,
+    onMoveToProject: (() -> Unit)?
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
-    val actionable = onRename != null || onTogglePin != null
+    val actionable = onRename != null || onTogglePin != null || onMoveToProject != null
 
     val rowContent: @Composable () -> Unit = {
         Column(
@@ -167,6 +173,9 @@ private fun SessionRowContent(
                 if (onTogglePin != null) {
                     add(ContextMenuEntry(if (session.pinned) "Desfijar" else "Fijar", onTogglePin))
                 }
+                if (onMoveToProject != null) {
+                    add(ContextMenuEntry("Mover a proyecto", onMoveToProject))
+                }
             }
         }) {
             rowContent()
@@ -193,6 +202,15 @@ private fun SessionRowContent(
                         onClick = {
                             menuOpen = false
                             onTogglePin()
+                        }
+                    )
+                }
+                if (onMoveToProject != null) {
+                    DropdownMenuItem(
+                        text = { Text("Mover a proyecto") },
+                        onClick = {
+                            menuOpen = false
+                            onMoveToProject()
                         }
                     )
                 }

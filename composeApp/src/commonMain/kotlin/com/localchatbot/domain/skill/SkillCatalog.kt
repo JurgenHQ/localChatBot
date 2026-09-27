@@ -76,6 +76,56 @@ Rules:
 - If the user's position has legitimate strong points, acknowledge them briefly before pivoting to the rebuttal.
 - End each response by asking: "How would you respond to this?"
 - Do NOT break character."""
+        ),
+        SkillDefinition(
+            id = "office_docs",
+            name = "Documentos Office",
+            description = "Crea, lee y edita documentos Word (.docx) y Excel (.xlsx).",
+            fullDescription = "Permite al agente generar, leer y modificar documentos de Word y hojas de cálculo de Excel usando Python (python-docx y openpyxl) a través de la terminal. Requiere la app de escritorio (usa run_command) y Python 3 instalado; las librerías se instalan solas la primera vez. Trabaja sobre los archivos del workspace configurado.",
+            systemPromptAddition = """You can create, read, and edit Microsoft Word (.docx) and Excel (.xlsx) files by running Python through the run_command tool. This capability requires the desktop app (run_command / shell) and Python 3 on the machine.
+
+## Libraries
+- Word (.docx): the `python-docx` library (import name: `docx`).
+- Excel (.xlsx): the `openpyxl` library.
+
+## First-time setup
+Do this ONCE per session, before your first document operation.
+
+1. Find a working Python 3 interpreter — the command name varies per OS. Try IN ORDER until one prints `Python 3.x`: `python3 --version`, `python --version`, `py -3 --version` (Windows). Call the winner PY and use it for every command below.
+   - Windows trap: the Microsoft Store ships fake `python`/`python3` stubs that print "Python was not found" or open the Store. That output = NOT a working interpreter; move on to the next candidate.
+   - If none works, stop and tell the user to install Python 3 (Windows: `winget install Python.Python.3.12` or python.org; do NOT install it yourself).
+2. Check the libraries: `PY -c "import docx, openpyxl"`. If it succeeds, setup is done.
+3. If the import fails, install: `PY -m pip install --user python-docx openpyxl` (give the command a generous timeout, e.g. 120s — the first install downloads packages).
+   - Error "No module named pip" → run `PY -m ensurepip --upgrade` first, then retry the install.
+   - Error "externally-managed-environment" (PEP 668, common on modern Linux/macOS) → retry with `PY -m pip install --user --break-system-packages python-docx openpyxl`.
+   - NEVER use `sudo` or install system-wide.
+4. Verify with step 2 again. If the import STILL fails, stop and report the exact pip/import error to the user — do not keep retrying blindly.
+
+## How to work
+- Operate on files inside the configured workspace. Use relative paths; never write outside the workspace unless the user explicitly asks.
+- For anything beyond a one-liner, WRITE a small Python script to a file in the workspace (e.g. `._office_task.py`) using create_file, run it with `PY ._office_task.py` (the interpreter found in setup), then delete it. This avoids shell-quoting problems. Use `PY -c "..."` only for trivial reads.
+- After creating or editing a file, verify it exists and report the path to the user.
+- For READS, extract the text/data and summarize it for the user; do not dump the entire raw file unless asked.
+
+## Recipes
+- New Word doc: `from docx import Document; d=Document(); d.add_heading('Title',0); d.add_paragraph('text'); d.save('out.docx')`.
+- Read Word doc: iterate `Document(path).paragraphs` and join `p.text`; for tables iterate `doc.tables`.
+- Edit Word doc: open with `Document(path)`, modify paragraphs/runs or `add_*`, then `save` (same or new path).
+- New Excel: `from openpyxl import Workbook; wb=Workbook(); ws=wb.active; ws.append(['A','B']); wb.save('out.xlsx')`.
+- Read Excel: `from openpyxl import load_workbook; wb=load_workbook(path, data_only=True); ws=wb.active; [list(r) for r in ws.iter_rows(values_only=True)]`.
+- Edit Excel: `load_workbook(path)`, write cells (`ws['A1']=...` or `ws.append([...])`), then `save`.
+- Native Excel chart (real editable chart object, not an image): write the data to cells first, then reference it. Example (bar chart):
+  `from openpyxl.chart import BarChart, Reference`
+  `data = Reference(ws, min_col=2, min_row=1, max_col=2, max_row=ws.max_row)  # values incl. header`
+  `cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)             # category labels`
+  `chart = BarChart(); chart.add_data(data, titles_from_data=True); chart.set_categories(cats); chart.title = 'My chart'`
+  `ws.add_chart(chart, 'E2'); wb.save(path)`
+  Swap `BarChart` for `LineChart`, `PieChart`, `ScatterChart`, `AreaChart` (all from `openpyxl.chart`) as the user needs. The chart renders natively when the file is opened in Excel.
+
+## Rules
+- Keep scripts minimal and focused on the requested task.
+- If a library import fails mid-task, re-run the First-time setup install steps (including the pip/PEP 668 fallbacks) and retry once; if it still fails, report the exact error to the user.
+- Legacy binary `.doc` (not `.docx`) is not supported — ask the user to convert it to `.docx` first."""
         )
     )
 

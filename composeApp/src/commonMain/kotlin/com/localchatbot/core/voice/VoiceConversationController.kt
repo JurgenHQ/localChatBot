@@ -1,6 +1,7 @@
 package com.localchatbot.core.voice
 
 import com.localchatbot.core.background.BackgroundExecutor
+import com.localchatbot.core.network.friendlyStreamErrorMessage
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.StreamingStateStore
 import com.localchatbot.domain.model.Role
@@ -120,7 +121,7 @@ class VoiceConversationController(
             val failure = sendResult.exceptionOrNull()
                 ?: sendResult.getOrNull()?.exceptionOrNull()
             if (failure != null) {
-                val msg = failure.message ?: "Error enviando el mensaje"
+                val msg = friendlyStreamErrorMessage(failure)
                 _mode.value = VoiceMode.Speaking(msg)
                 runCatching { tts.speak(msg, lang) }
                 continue
@@ -156,8 +157,8 @@ class VoiceConversationController(
     }
 
     private suspend fun lastAssistantText(sessionId: String): String? {
-        val session = chatRepository.sessions.firstOrNull()?.firstOrNull { it.id == sessionId }
-            ?: return null
+        // Lectura puntual por id: no hace falta un flow ni el resto del historial.
+        val session = chatRepository.getSession(sessionId) ?: return null
         return session.messages.lastOrNull { it.role == Role.Assistant }?.content
     }
 

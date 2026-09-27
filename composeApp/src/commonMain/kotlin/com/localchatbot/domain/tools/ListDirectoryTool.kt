@@ -1,6 +1,5 @@
 package com.localchatbot.domain.tools
 
-import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
@@ -16,13 +15,15 @@ import kotlinx.serialization.json.put
 /** Tool que lista las entradas (no recursivo) de un directorio. */
 class ListDirectoryTool(
     private val agent: FilesystemAgent,
-    private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
     private val json: Json
 ) : Tool {
 
     override val name: String = TOOL_NAME
-    override val requiresConfirmation: Boolean = true
+    // Listar es inofensivo (solo lectura) y el sandbox de paths se aplica igual en
+    // execute(). Sin confirmación para no romper la autonomía del agente; solo las
+    // escrituras/shell siguen pidiendo aprobación.
+    override val requiresConfirmation: Boolean = false
 
     override val activityLabel: String = "Listando directorio…"
 
@@ -63,12 +64,6 @@ class ListDirectoryTool(
         val abs = FsToolUtil.resolvePath(agent, preferences, json, path).getOrElse { e ->
             return FsToolUtil.errorPayload(json, e.message ?: "Path inválido")
         }
-
-        val approved = confirm.requestApproval(
-            title = "Listar directorio",
-            detail = abs
-        )
-        if (!approved) return FsToolUtil.cancelledPayload(json)
 
         return FsToolUtil.fsResultToJson(json, agent.listDirectory(abs))
     }

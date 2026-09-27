@@ -21,10 +21,34 @@ fun isTransientNetworkError(e: Throwable): Boolean = when (e) {
     else -> {
         val msg = e.message?.lowercase() ?: ""
         msg.contains("timeout") ||
-            msg.contains("reset by peer") ||
+            // "connection reset" y no "reset by peer": la JVM lanza
+            // `SocketException: Connection reset` a secas cuando el servidor manda un
+            // RST a mitad del stream (LM Studio que descarga el modelo, se queda sin
+            // memoria o corta por TTL). Con el texto largo el corte más frecuente en
+            // desktop se quedaba fuera y no consumía ni uno de los reintentos.
+            msg.contains("connection reset") ||
             msg.contains("connection refused") ||
+            // Suspensión en iOS: al pasar la app a background NSURLSession mata el
+            // socket y Darwin reporta NSURLErrorNetworkConnectionLost (-1005,
+            // "The network connection was lost.") o errno 53 ("Software caused
+            // connection abort"). Reintentable: el retry ya corre en foreground.
+            msg.contains("connection was lost") ||
+            msg.contains("connection abort") ||
+            msg.contains("socket is not connected") ||
+            msg.contains("socket closed") ||
             TRANSIENT_HTTP_CODES.any { msg.contains(it.toString()) }
     }
 }
 
 private val TRANSIENT_HTTP_CODES = setOf(502, 503, 504)
+
+/**
+ * Mensaje amigable para el usuario cuando el stream falla definitivamente
+ * (agotados los reintentos y reanudaciones). Evita mostrar textos crudos del
+ * engine como "NSURLErrorDomain -1005".
+ */
+fun friendlyStreamErrorMessage(e: Throwable): String =
+    if (isTransientNetworkError(e))
+        "Se perdió la conexión con el servidor y no se pudo reanudar. " +
+            "Comprueba que el servidor del modelo siga activo y reintenta."
+    else e.message ?: "Error inesperado durante la respuesta"

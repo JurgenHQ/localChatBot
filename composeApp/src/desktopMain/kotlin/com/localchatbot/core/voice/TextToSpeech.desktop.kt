@@ -93,7 +93,7 @@ actual class TextToSpeech actual constructor() {
         /** macOS `say` y Linux `espeak`: palabras por minuto (default del SO ~175-200). */
         const val RATE_WPM = 235
         /** Windows `SpeechSynthesizer.Rate`: -10 (lento) … 0 (normal) … 10 (rápido). */
-        const val WINDOWS_RATE = 3
+        const val WINDOWS_RATE = 1
         /** Linux `spd-say`: -100 (lento) … 0 (normal) … 100 (rápido). */
         const val SPD_SAY_RATE = 30
     }

@@ -5,6 +5,11 @@ on:
     branches:
       - main
       - 'feature/**'
+  # Compila también los PR hacia main, para ver si rompen el build antes de fusionar.
+  # El paso de publicar el release está limitado a refs/heads/main, así que aquí no corre.
+  pull_request:
+    branches:
+      - main
 
 # Necesario para que la action pueda crear/actualizar el release y mover el tag.
 permissions:

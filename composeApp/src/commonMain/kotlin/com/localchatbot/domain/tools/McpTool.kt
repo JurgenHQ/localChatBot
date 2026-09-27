@@ -25,6 +25,18 @@ class McpTool(
 
     override val activityLabel: String = "MCP: ${toolInfo.name}…"
 
+    /**
+     * Última imagen (data URL) recibida en un resultado MCP — típicamente una captura
+     * de `browser_take_screenshot`. Se drena en el use case y se adjunta al mensaje del
+     * chat (out-of-band, igual que `generate_image`): así el usuario la ve sin que el
+     * base64 viaje al modelo.
+     */
+    private val lastImage = ProducedMediaSlot()
+
+    override suspend fun peekProducedImage(): String? = lastImage.peek()
+
+    override suspend fun consumeProducedImage(): String? = lastImage.consume()
+
     override val definition: ToolDefinition = ToolDefinition(
         type = "function",
         function = FunctionDefinition(
@@ -46,7 +58,14 @@ class McpTool(
         }.getOrNull()
 
         return client.callTool(toolInfo.name, args)
-            .map { it.toText() }
+            .map { result ->
+                // Captura la primera imagen del resultado (p. ej. captura de pantalla)
+                // para mostrarla en el chat; el texto que ve el modelo no la incluye.
+                result.content.filterIsInstance<McpContent.Image>().firstOrNull()?.let { img ->
+                    lastImage.set("data:${img.mimeType};base64,${img.data}")
+                }
+                result.toText()
+            }
             .getOrElse { "MCP error: ${it.message}" }
             .let { truncateToolOutput(it) }
     }
@@ -56,7 +75,7 @@ class McpTool(
         return content.joinToString("\n") { item ->
             when (item) {
                 is McpContent.Text -> item.text
-                is McpContent.Image -> "[image: ${item.mimeType}]"
+                is McpContent.Image -> "[imagen ${item.mimeType} recibida — mostrada en el chat]"
             }
         }.also { if (isError) return "MCP tool error: $it" }
     }

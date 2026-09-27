@@ -3,6 +3,7 @@ package com.localchatbot.data.repository
 import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ChatCompletionRequest
 import com.localchatbot.data.remote.FunctionCall
+import com.localchatbot.data.remote.LlamaCppApi
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.OpenAiMessage
@@ -10,7 +11,10 @@ import com.localchatbot.data.remote.StreamOptions
 import com.localchatbot.data.remote.ToolCall
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.data.remote.Usage
+import com.localchatbot.domain.model.AvailableModel
 import com.localchatbot.domain.model.ChatMessage
+import com.localchatbot.domain.model.GenerationParams
+import com.localchatbot.domain.model.ModelCatalog
 import com.localchatbot.domain.model.Role
 import com.localchatbot.domain.repository.ModelRepository
 import com.localchatbot.domain.repository.StreamEvent
@@ -28,7 +32,8 @@ import kotlinx.serialization.json.jsonPrimitive
 
 class ModelRepositoryImpl(
     private val api: OpenAiApi,
-    private val lmStudioApi: LmStudioApi
+    private val lmStudioApi: LmStudioApi,
+    private val llamaCppApi: LlamaCppApi
 ) : ModelRepository {
 
     override suspend fun sendChat(
@@ -70,22 +75,29 @@ class ModelRepositoryImpl(
         baseUrl: String,
         model: String,
         messages: List<ChatMessage>,
-        tools: List<ToolDefinition>?
+        tools: List<ToolDefinition>?,
+        generationParams: GenerationParams?,
+        apiKeyOverride: String?
     ): Flow<StreamEvent> = flow {
+        val p = generationParams ?: GenerationParams()
+        // DeepSeek documenta temperature/top_p/presence_penalty/frequency_penalty como
+        // incompatibles con el modo thinking, que reasoning_effort activa implícitamente.
+        // Omitirlos cuando hay un nivel elegido evita que el servidor rechace el request.
+        val samplingParamsBlocked = p.reasoningEffort != null
         val req = ChatCompletionRequest(
             model = model,
             messages = messages.map { it.toDto() },
             stream = true,
             tools = tools,
             toolChoice = if (tools.isNullOrEmpty()) null else "auto",
-            // Pide tokens (usage) en el chunk final. Servidores que no lo soportan
-            // ignoran el campo; si aun así no llega usage, estimamos por longitud.
-            streamOptions = StreamOptions(includeUsage = true)
-            // Temperatura: dejamos el default del servidor (suele ser ~0.7) para que
-            // las conversaciones normales suenen naturales. El precio es que la
-            // decisión "¿invoco la tool?" no es 100% determinista — pero cuando hay
-            // key configurada y el prompt es claro, los modelos modernos suelen
-            // invocarla de forma consistente.
+            streamOptions = StreamOptions(includeUsage = true),
+            temperature = p.temperature.takeUnless { samplingParamsBlocked },
+            topP = p.topP.takeUnless { samplingParamsBlocked },
+            maxTokens = p.maxTokens,
+            presencePenalty = p.presencePenalty.takeUnless { samplingParamsBlocked },
+            frequencyPenalty = p.frequencyPenalty.takeUnless { samplingParamsBlocked },
+            seed = p.seed,
+            reasoningEffort = p.reasoningEffort
         )
 
         // Acumuladores para tool_calls que llegan fragmentados.
@@ -95,19 +107,26 @@ class ModelRepositoryImpl(
         var usage: Usage? = null
         var firstTokenMs: Long? = null
         var contentChars = 0
+        var reasoningStartMs: Long? = null
+        var reasoningEndMs: Long? = null
 
-        api.streamChatCompletion(baseUrl, req).collect { chunk ->
+        api.streamChatCompletion(baseUrl, req, apiKeyOverride).collect { chunk ->
             if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
             chunk.usage?.let { usage = it }
             val choice = chunk.choices.firstOrNull() ?: return@collect
             val delta = choice.delta
             delta?.content?.takeIf { it.isNotEmpty() }?.let {
                 if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                if (reasoningStartMs != null && reasoningEndMs == null) {
+                    reasoningEndMs = Clock.System.now().toEpochMilliseconds()
+                }
                 contentChars += it.length
                 emit(StreamEvent.ContentDelta(it))
             }
             delta?.reasoningContent?.takeIf { it.isNotEmpty() }?.let {
-                if (firstTokenMs == null) firstTokenMs = Clock.System.now().toEpochMilliseconds()
+                val now = Clock.System.now().toEpochMilliseconds()
+                if (firstTokenMs == null) firstTokenMs = now
+                if (reasoningStartMs == null) reasoningStartMs = now
                 emit(StreamEvent.ReasoningDelta(it))
             }
 
@@ -132,7 +151,9 @@ class ModelRepositoryImpl(
         // de salida por longitud (~4 chars/token, regla de dedo) y marcamos `estimated`.
         val reportedOutput = usage?.completionTokens
         val outputTokens = reportedOutput ?: (contentChars / 4).takeIf { it > 0 }
-        val generationMs = firstTokenMs?.let { Clock.System.now().toEpochMilliseconds() - it }
+        val now = Clock.System.now().toEpochMilliseconds()
+        val generationMs = firstTokenMs?.let { now - it }
+        val reasoningMs = reasoningStartMs?.let { (reasoningEndMs ?: now) - it }
 
         emit(
             StreamEvent.Finish(
@@ -142,7 +163,8 @@ class ModelRepositoryImpl(
                 inputTokens = usage?.promptTokens,
                 outputTokens = outputTokens,
                 generationMs = generationMs,
-                estimated = reportedOutput == null
+                estimated = reportedOutput == null,
+                reasoningMs = reasoningMs
             )
         )
     }
@@ -160,36 +182,76 @@ class ModelRepositoryImpl(
         return api.listModels(baseUrl)
     }
 
-    override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
-        lmStudioApi.fetchContextLength(baseUrl, modelId)
-
-    override suspend fun generateSuggestions(
-        baseUrl: String,
-        model: String
-    ): Result<List<String>> {
-        val request = ChatCompletionRequest(
-            model = model,
-            messages = listOf(
-                OpenAiMessage.text("system", SUGGESTIONS_SYSTEM_PROMPT),
-                OpenAiMessage.text("user", SUGGESTIONS_USER_PROMPT)
-            ),
-            // Subimos un poco la temperatura para que las sugerencias varíen entre llamadas;
-            // si la dejamos al default del servidor (~0.7) tienden a repetirse.
-            temperature = 0.9
-        )
-        return api.chatCompletion(baseUrl, request).mapCatching { response ->
-            val raw = response.choices.firstOrNull()?.message?.content?.asText()
-                ?: throw IllegalStateException("Respuesta vacía al pedir sugerencias")
-            parseSuggestionsArray(raw)
-                ?: throw IllegalStateException("No se pudo parsear el JSON de sugerencias: $raw")
+    /**
+     * Fallback en tres niveles:
+     *  1. API v1 de LM Studio (>= 0.4.0): todos los modelos descargados con estado
+     *     de carga y soporte de load/unload (`canManage = true`).
+     *  2. API v0 de LM Studio (0.3.x): lista con estado pero sin load/unload.
+     *  3. `/v1/models` OpenAI estándar (Ollama, llama.cpp…): solo ids, sin estado.
+     */
+    override suspend fun listModelsDetailed(baseUrl: String): Result<ModelCatalog> {
+        lmStudioApi.listModelsV1(baseUrl)?.let { v1 ->
+            val models = v1
+                .filterNot { it.type.equals("embedding", ignoreCase = true) }
+                .map { m ->
+                    AvailableModel(
+                        id = m.key,
+                        displayName = m.displayName,
+                        loaded = m.loadedInstances.isNotEmpty(),
+                        instanceIds = m.loadedInstances.map { it.id },
+                        paramsString = m.paramsString,
+                        maxContextLength = m.maxContextLength
+                    )
+                }
+                .sortedByDescending { it.loaded == true }
+            return Result.success(ModelCatalog(models, canManage = true))
+        }
+        runCatching { lmStudioApi.fetchAllModels(baseUrl) }.getOrNull()?.let { v0 ->
+            val models = v0
+                .filterNot { it.type.equals("embedding", ignoreCase = true) }
+                .map { m ->
+                    AvailableModel(
+                        id = m.id,
+                        loaded = m.state.equals("loaded", ignoreCase = true),
+                        maxContextLength = m.maxContextLength
+                    )
+                }
+                .sortedByDescending { it.loaded == true }
+            return Result.success(ModelCatalog(models, canManage = false))
+        }
+        return api.listModels(baseUrl).map { ids ->
+            ModelCatalog(ids.map { AvailableModel(id = it) }, canManage = false)
         }
     }
+
+    override suspend fun loadModel(baseUrl: String, modelId: String): Result<String> =
+        lmStudioApi.loadModel(baseUrl, modelId).map { it.instanceId }
+
+    override suspend fun unloadModel(baseUrl: String, instanceId: String): Result<Unit> =
+        lmStudioApi.unloadModel(baseUrl, instanceId)
+
+    /** LM Studio (`/api/v0/models`) primero; si no responde, llama.cpp (`/props`). */
+    override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
+        lmStudioApi.fetchContextLength(baseUrl, modelId)
+            ?: llamaCppApi.fetchContextLength(baseUrl, modelId)
+
+    override suspend fun isModelLoaded(baseUrl: String, modelId: String): Boolean? {
+        lmStudioApi.listModelsV1(baseUrl)?.let { v1 ->
+            return v1.firstOrNull { it.key == modelId }?.loadedInstances?.isNotEmpty() ?: false
+        }
+        runCatching { lmStudioApi.fetchAllModels(baseUrl) }.getOrNull()?.let { v0 ->
+            return v0.firstOrNull { it.id == modelId }?.state.equals("loaded", ignoreCase = true)
+        }
+        return null
+    }
+
 
     override suspend fun generateTitle(
         baseUrl: String,
         model: String,
         userText: String,
-        assistantText: String
+        assistantText: String,
+        apiKeyOverride: String?
     ): Result<String> {
         val request = ChatCompletionRequest(
             model = model,
@@ -203,7 +265,7 @@ class ModelRepositoryImpl(
             // Baja temperatura: queremos un título estable y literal, no creativo.
             temperature = 0.2
         )
-        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+        return api.chatCompletion(baseUrl, request, apiKeyOverride).mapCatching { response ->
             val raw = response.choices.firstOrNull()?.message?.content?.asText()
                 ?: throw IllegalStateException("Respuesta vacía al pedir título")
             sanitizeTitle(raw)
@@ -233,23 +295,109 @@ class ModelRepositoryImpl(
         return if (cleaned.length <= 60) cleaned else cleaned.take(60).substringBeforeLast(' ').ifBlank { cleaned.take(60) }
     }
 
+    override suspend fun summarize(
+        baseUrl: String,
+        model: String,
+        transcript: String,
+        apiKeyOverride: String?
+    ): String? {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", SUMMARY_SYSTEM_PROMPT),
+                OpenAiMessage.text("user", transcript.take(8000))
+            ),
+            temperature = 0.3
+        )
+        return api.chatCompletion(baseUrl, request, apiKeyOverride).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    override suspend fun generateDocument(
+        baseUrl: String,
+        model: String,
+        systemPrompt: String,
+        userPrompt: String
+    ): String? {
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", systemPrompt),
+                OpenAiMessage.text("user", userPrompt)
+            ),
+            temperature = 0.3
+        )
+        return api.chatCompletion(baseUrl, request).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    override suspend fun completeCode(
+        baseUrl: String,
+        model: String,
+        prefix: String,
+        suffix: String,
+        fileName: String,
+        apiKeyOverride: String?
+    ): String? {
+        // El contexto se acota acá y no en quien llama: así el tamaño del request no
+        // depende de lo grande que sea el archivo abierto. Se conserva la cola del
+        // prefijo y la cabeza del sufijo, que es lo pegado al cursor.
+        val head = prefix.takeLast(COMPLETION_PREFIX_CHARS)
+        val tail = suffix.take(COMPLETION_SUFFIX_CHARS)
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", CODE_COMPLETION_SYSTEM_PROMPT),
+                OpenAiMessage.text(
+                    "user",
+                    "Archivo: $fileName\n\n<PREFIX>\n$head\n</PREFIX>\n\n<SUFFIX>\n$tail\n</SUFFIX>"
+                )
+            ),
+            // Determinista y corto: queremos la continuación más probable, no una
+            // propuesta creativa, y que llegue rápido.
+            temperature = 0.2,
+            maxTokens = COMPLETION_MAX_TOKENS
+        )
+        val raw = api.chatCompletion(baseUrl, request, apiKeyOverride).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?: return null
+        return sanitizeCompletion(raw, head)
+    }
+
     /**
-     * El modelo a veces envuelve el JSON en bloques de código (```json … ```) o
-     * añade texto extra antes/después. Extraemos el primer array balanceado
-     * `[...]` y lo decodificamos. Si lo que queda dentro no son strings, devolvemos null.
+     * Un modelo de chat genérico no respeta del todo "devolvé solo el código": suele
+     * envolverlo en cercas markdown, razonar antes, o repetir la línea que estás
+     * escribiendo. Esto lo normaliza a un fragmento insertable, o null si no queda nada.
      */
-    private fun parseSuggestionsArray(raw: String): List<String>? {
-        val start = raw.indexOf('[')
-        val end = raw.lastIndexOf(']')
-        if (start < 0 || end <= start) return null
-        val slice = raw.substring(start, end + 1)
-        return runCatching {
-            val arr = suggestionsJson.parseToJsonElement(slice) as? JsonArray ?: return null
-            arr.map { (it as JsonPrimitive).content }
-                .filter { it.isNotBlank() }
-                .take(3)
-                .takeIf { it.size == 3 }
-        }.getOrNull()
+    private fun sanitizeCompletion(raw: String, prefix: String): String? {
+        var text = raw.replace(Regex("(?s)<think>.*?(</think>|$)"), "")
+
+        // Cercas de código: nos quedamos con el interior del primer bloque.
+        val fence = Regex("(?s)```[a-zA-Z0-9_+-]*\\n?(.*?)(```|$)").find(text)
+        if (fence != null) {
+            text = fence.groupValues[1]
+        }
+        if (text.isBlank()) return null
+
+        // El modelo suele re-emitir la línea parcial sobre la que está el cursor. Si el
+        // resultado empieza exactamente por ella, sobra: ya está en el archivo, e
+        // insertarla otra vez la duplicaría. Solo se compara la línea actual (no todo el
+        // prefijo) para no recortar código legítimo que casualmente coincida.
+        val currentLine = prefix.substringAfterLast('\n')
+        if (currentLine.isNotEmpty() && text.startsWith(currentLine)) {
+            text = text.removePrefix(currentLine)
+        }
+
+        // Recorte final: una sugerencia inline es una ayuda breve, no un archivo entero.
+        val capped = text.lineSequence()
+            .take(COMPLETION_MAX_LINES)
+            .joinToString("\n")
+            .take(COMPLETION_MAX_CHARS)
+            .trimEnd()
+
+        return capped.takeIf { it.isNotBlank() }
     }
 
     private fun ChatMessage.toDto(): OpenAiMessage {
@@ -282,8 +430,6 @@ class ModelRepositoryImpl(
         else -> null
     }
 
-    private val suggestionsJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
     private class ToolCallBuilder {
         var id: String? = null
         var name: String? = null
@@ -306,21 +452,29 @@ class ModelRepositoryImpl(
                 "language the user wrote in, no quotes, no trailing period, no markdown, " +
                 "no explanation."
 
-        const val SUGGESTIONS_SYSTEM_PROMPT =
-            "You generate short example prompts for a chat app. Reply with ONLY a JSON array " +
-                "of exactly 3 strings, no markdown fences, no commentary, no extra text."
+        /** Cuánto código alrededor del cursor se manda como contexto de autocompletado. */
+        const val COMPLETION_PREFIX_CHARS = 4000
+        const val COMPLETION_SUFFIX_CHARS = 1000
 
-        val SUGGESTIONS_USER_PROMPT = """
-            Genera 3 ejemplos de prompts en español que un usuario podría tocar para empezar una conversación.
-            Cada uno debe ser una pregunta o instrucción concreta, en una sola frase, idealmente menos de 80 caracteres.
+        /** Techos de la sugerencia: corta y barata, o deja de servir como ayuda inline. */
+        const val COMPLETION_MAX_TOKENS = 120
+        const val COMPLETION_MAX_LINES = 8
+        const val COMPLETION_MAX_CHARS = 400
 
-            Categorías exactas y en este orden:
-            1. Desarrollo de software o programación.
-            2. Noticias o eventos actuales (algo que se beneficie de buscar en internet hoy).
-            3. Tema random, creativo, divertido o sorprendente.
+        const val CODE_COMPLETION_SYSTEM_PROMPT =
+            "You are a code completion engine, like GitHub Copilot. The user gives you the " +
+                "code before the cursor inside <PREFIX> and the code after the cursor inside " +
+                "<SUFFIX>. Reply with ONLY the raw code that must be inserted at the cursor. " +
+                "No markdown, no ``` fences, no explanation, no comments about your answer. " +
+                "Never repeat code that is already in <PREFIX> or <SUFFIX>. Complete at most a " +
+                "few lines: finish the current statement or block and stop. Match the " +
+                "indentation and style of the surrounding code. If nothing sensible can be " +
+                "completed, reply with an empty response."
 
-            Devuelve SOLO un JSON array con 3 strings. Ejemplo de formato:
-            ["...", "...", "..."]
-        """.trimIndent()
+        const val SUMMARY_SYSTEM_PROMPT =
+            "You summarize chat history. Given a conversation transcript, produce a concise " +
+                "summary (3-8 sentences) capturing the main task, key decisions, files or " +
+                "commands involved, and current state. Write in the same language as the " +
+                "conversation. No markdown, no bullet points, no preamble — just the summary."
     }
 }
