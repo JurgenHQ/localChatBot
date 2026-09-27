@@ -127,6 +127,15 @@ data class AppPreferences(
      * tarea programada. Activado por defecto.
      */
     val desktopNotificationsEnabled: Boolean = true,
+    /**
+     * Si está activo (solo desktop), el editor sugiere código mientras escribes: al
+     * dejar de teclear ~500 ms pide una continuación al modelo del chat y la muestra
+     * como texto fantasma, que se acepta con Tab. Apagado por defecto — dispara
+     * llamadas de red solo (mismo criterio que `hooks.json`: nada se ejecuta sin que
+     * el usuario lo encienda a propósito). El atajo manual (Ctrl+Espacio) también
+     * depende de este flag.
+     */
+    val codeCompletionEnabled: Boolean = false,
     /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
     val generationParams: GenerationParams = GenerationParams()
 ) {
@@ -179,6 +188,7 @@ data class AppPreferences(
             remoteAccessPin = "",
             remoteViewerUrl = "",
             desktopNotificationsEnabled = true,
+            codeCompletionEnabled = false,
             generationParams = GenerationParams()
         )
     }

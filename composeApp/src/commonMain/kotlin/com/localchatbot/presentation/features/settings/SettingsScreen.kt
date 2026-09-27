@@ -109,7 +109,8 @@ fun SettingsScreen(
             localIps = state.localIps,
             onToggleRemoteAccess = viewModel::toggleRemoteAccess,
             onRegenerateRemotePin = viewModel::regenerateRemotePin,
-            onToggleDesktopNotifications = viewModel::toggleDesktopNotifications
+            onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
+            onToggleCodeCompletion = viewModel::toggleCodeCompletion
         )
 
         state.openEditor?.let { editor ->
@@ -167,6 +168,7 @@ fun SettingsContent(
     onToggleRemoteAccess: (Boolean) -> Unit = {},
     onRegenerateRemotePin: () -> Unit = {},
     onToggleDesktopNotifications: (Boolean) -> Unit = {},
+    onToggleCodeCompletion: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -387,6 +389,12 @@ fun SettingsContent(
                 onClick = { onOpenEditor(SettingsEditor.Seed) },
                 trailing = { MonoValue(gp.seed?.toString() ?: "aleatorio") }
             )
+            Divider()
+            SettingsRow(
+                title = "Esfuerzo de razonamiento",
+                onClick = { onOpenEditor(SettingsEditor.ReasoningEffort) },
+                trailing = { MonoValue(gp.reasoningEffort ?: "automático") }
+            )
         }
         Text(
             "Se envían en cada request. Vacío = el servidor usa su valor por defecto. " +
@@ -460,6 +468,30 @@ fun SettingsContent(
                 "Lo usa la tool search_code_semantic para indexar el workspace vía /v1/embeddings. " +
                     "Vacío = se usa el primer modelo del servidor cuyo nombre contenga \"embed\". " +
                     "Ojo: en LM Studio el modelo de embeddings ocupa memoria junto al de chat.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (PlatformCapabilities.isDesktop) {
+            SectionLabel("Editor")
+            SectionCard {
+                SettingsRow(
+                    title = "Autocompletado de código",
+                    onClick = { onToggleCodeCompletion(!preferences.codeCompletionEnabled) },
+                    trailing = {
+                        Switch(
+                            checked = preferences.codeCompletionEnabled,
+                            onCheckedChange = onToggleCodeCompletion
+                        )
+                    }
+                )
+            }
+            Text(
+                "En el editor, al dejar de escribir sugiere cómo continuar el código y lo " +
+                    "muestra atenuado: Tab lo acepta, Esc lo descarta, Ctrl+Espacio lo pide a " +
+                    "mano. Usa el modelo del chat, así que la sugerencia tarda lo que tarde tu " +
+                    "modelo local en responder.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

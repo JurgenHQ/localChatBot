@@ -1,8 +1,16 @@
 package com.localchatbot.presentation.features.editor
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +19,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -25,63 +32,118 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Image as ImageIcon
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.PrimaryButton
+import com.localchatbot.presentation.components.util.ContextMenuEntry
+import com.localchatbot.presentation.components.util.WithContextMenu
 import com.localchatbot.presentation.preview.PreviewSurface
 import com.mikepenz.markdown.m3.Markdown
 import org.jetbrains.compose.ui.tooling.preview.Preview
+
+/** Carpeta contenedora de [path] (nuestros paths se construyen siempre con "/" como separador). */
+private fun parentDirOf(path: String): String {
+    val idx = path.lastIndexOf('/')
+    return if (idx <= 0) path else path.substring(0, idx)
+}
 
 @Composable
 fun EditorContent(
     state: EditorUiState,
     onClose: () -> Unit,
-    onNavigate: (String) -> Unit,
-    onGoUp: () -> Unit,
-    onOpenFile: (String) -> Unit,
-    onContentChange: (String) -> Unit,
+    onEntryClick: (FsEntry) -> Unit,
+    onRequestNewEntry: (parentDir: String, isDir: Boolean) -> Unit,
+    onConfirmNewEntry: (String) -> Unit,
+    onCancelNewEntry: () -> Unit,
+    onRequestRename: (FsEntry) -> Unit,
+    onConfirmRename: (String) -> Unit,
+    onCancelRename: () -> Unit,
+    onRequestDelete: (FsEntry) -> Unit,
+    onConfirmDelete: () -> Unit,
+    onCancelDelete: () -> Unit,
+    onDuplicate: (FsEntry) -> Unit,
+    onCopyPath: (FsEntry) -> Unit,
+    onReveal: (FsEntry) -> Unit,
+    onRefreshTree: () -> Unit,
+    onRefreshNode: (String) -> Unit,
+    onMoveEntry: (FsEntry, String) -> Unit,
+    onContentChange: (text: String, cursor: Int, selectionCollapsed: Boolean) -> Unit,
+    onRequestCompletion: () -> Unit = {},
+    onDismissSuggestion: () -> Unit = {},
     onSave: () -> Unit,
     onRequestSave: () -> Unit = onSave,
     onConfirmSave: () -> Unit = onSave,
     onCancelSave: () -> Unit = {},
-    onCreateFile: (String) -> Unit,
     onCloseFile: () -> Unit,
     onClearError: () -> Unit,
     onClearScrollToLine: () -> Unit = {},
@@ -145,15 +207,24 @@ fun EditorContent(
         Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             FileExplorerPane(
                 state = state,
-                onNavigate = onNavigate,
-                onGoUp = onGoUp,
-                onOpenFile = onOpenFile,
-                onCreateFile = onCreateFile,
-                modifier = Modifier.width(280.dp).fillMaxHeight()
+                workspaceRoot = state.workspaceRoot,
+                onEntryClick = onEntryClick,
+                onRequestNewEntry = onRequestNewEntry,
+                onRequestRename = onRequestRename,
+                onRequestDelete = onRequestDelete,
+                onDuplicate = onDuplicate,
+                onCopyPath = onCopyPath,
+                onReveal = onReveal,
+                onRefreshTree = onRefreshTree,
+                onRefreshNode = onRefreshNode,
+                onMoveEntry = onMoveEntry,
+                modifier = Modifier.width(300.dp).fillMaxHeight()
             )
             EditorPane(
                 state = state,
                 onContentChange = onContentChange,
+                onRequestCompletion = onRequestCompletion,
+                onDismissSuggestion = onDismissSuggestion,
                 onRequestSave = onRequestSave,
                 onCloseFile = onCloseFile,
                 onClearScrollToLine = onClearScrollToLine,
@@ -176,39 +247,105 @@ fun EditorContent(
             onDismiss = onCancelSave
         )
     }
+    state.newEntryPrompt?.let { prompt ->
+        NewEntryDialog(prompt = prompt, onConfirm = onConfirmNewEntry, onDismiss = onCancelNewEntry)
+    }
+    state.renamePrompt?.let { prompt ->
+        RenameEntryDialog(prompt = prompt, onConfirm = onConfirmRename, onDismiss = onCancelRename)
+    }
+    state.deleteConfirm?.let { prompt ->
+        DeleteEntryDialog(prompt = prompt, onConfirm = onConfirmDelete, onDismiss = onCancelDelete)
+    }
 }
 
-// ── File explorer ─────────────────────────────────────────────────────────────
+// ── File explorer (árbol expandible) ────────────────────────────────────────────
 
 @Composable
 private fun FileExplorerPane(
     state: EditorUiState,
-    onNavigate: (String) -> Unit,
-    onGoUp: () -> Unit,
-    onOpenFile: (String) -> Unit,
-    onCreateFile: (String) -> Unit,
+    workspaceRoot: String,
+    onEntryClick: (FsEntry) -> Unit,
+    onRequestNewEntry: (parentDir: String, isDir: Boolean) -> Unit,
+    onRequestRename: (FsEntry) -> Unit,
+    onRequestDelete: (FsEntry) -> Unit,
+    onDuplicate: (FsEntry) -> Unit,
+    onCopyPath: (FsEntry) -> Unit,
+    onReveal: (FsEntry) -> Unit,
+    onRefreshTree: () -> Unit,
+    onRefreshNode: (String) -> Unit,
+    onMoveEntry: (FsEntry, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var showNewFile by remember { mutableStateOf(false) }
-    var newFileName by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+
+    // Drag & drop: cada fila registra su posición en pantalla al componerse; durante
+    // un arrastre se compara la posición del puntero contra esos rects para saber
+    // qué fila está debajo (hit-test manual, no hay reorder API nativa en LazyColumn).
+    val rowCoordinates = remember { mutableStateMapOf<String, LayoutCoordinates>() }
+    var draggedPath by remember { mutableStateOf<String?>(null) }
+    var hoverTargetPath by remember { mutableStateOf<String?>(null) }
+    val entryByPath = remember(state.visibleRows) { state.visibleRows.associate { it.entry.path to it.entry } }
+
+    fun resolveHoverTarget(rootPosition: Offset): String? {
+        for ((path, coords) in rowCoordinates) {
+            if (!coords.isAttached) continue
+            val bounds = coords.boundsInRoot()
+            if (rootPosition.y in bounds.top..bounds.bottom) return path
+        }
+        return null
+    }
+
+    fun handleDragEnd(dragged: FsEntry) {
+        val hoverEntry = hoverTargetPath?.let { entryByPath[it] }
+        draggedPath = null
+        hoverTargetPath = null
+        val targetDir = when {
+            hoverEntry == null -> workspaceRoot
+            hoverEntry.isDir -> hoverEntry.path
+            else -> parentDirOf(hoverEntry.path)
+        }
+        onMoveEntry(dragged, targetDir)
+    }
 
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(Radius.md))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(Radius.md))
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                val entry = state.selectedEntry
+                if (entry != null && event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.Delete, Key.Backspace -> {
+                            onRequestDelete(entry)
+                            true
+                        }
+                        Key.F2 -> {
+                            onRequestRename(entry)
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = Spacing.md, end = Spacing.xs, top = Spacing.xs, bottom = Spacing.xs),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                state.relativeDir,
+                "Workspace",
                 style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            IconButton(onClick = { showNewFile = !showNewFile }, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = { onRequestNewEntry(workspaceRoot, false) }, modifier = Modifier.size(32.dp)) {
                 Icon(
                     Icons.Outlined.Add,
                     contentDescription = "Nuevo archivo",
@@ -216,92 +353,311 @@ private fun FileExplorerPane(
                     modifier = Modifier.size(18.dp)
                 )
             }
-        }
-
-        if (showNewFile) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.sm, vertical = Spacing.xs),
-                verticalArrangement = Arrangement.spacedBy(Spacing.xs)
-            ) {
-                AppTextField(
-                    value = newFileName,
-                    onValueChange = { newFileName = it },
-                    placeholder = "nombre.txt",
-                    monospace = true
+            IconButton(onClick = { onRequestNewEntry(workspaceRoot, true) }, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Outlined.CreateNewFolder,
+                    contentDescription = "Nueva carpeta",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp)
                 )
-                PrimaryButton(
-                    text = "Crear",
-                    onClick = {
-                        onCreateFile(newFileName)
-                        newFileName = ""
-                        showNewFile = false
-                    },
-                    enabled = newFileName.isNotBlank()
+            }
+            IconButton(onClick = onRefreshTree, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Outlined.Refresh,
+                    contentDescription = "Refrescar árbol",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            if (state.canGoUp) {
+            items(state.visibleRows, key = { it.entry.path }) { row ->
+                TreeEntryRow(
+                    row = row,
+                    selected = row.entry.path == state.selectedPath,
+                    openFilePath = state.openFilePath,
+                    loading = row.entry.path in state.loadingPaths,
+                    expanded = row.entry.path in state.expandedPaths,
+                    isDragging = row.entry.path == draggedPath,
+                    isDropTarget = row.entry.isDir && row.entry.path == hoverTargetPath && draggedPath != null && draggedPath != row.entry.path,
+                    onClick = {
+                        focusRequester.requestFocus()
+                        onEntryClick(row.entry)
+                    },
+                    onRequestNewFile = { onRequestNewEntry(row.entry.path, false) },
+                    onRequestNewFolder = { onRequestNewEntry(row.entry.path, true) },
+                    onRequestRename = { onRequestRename(row.entry) },
+                    onRequestDelete = { onRequestDelete(row.entry) },
+                    onDuplicate = { onDuplicate(row.entry) },
+                    onCopyPath = { onCopyPath(row.entry) },
+                    onReveal = { onReveal(row.entry) },
+                    onRefresh = { onRefreshNode(row.entry.path) },
+                    onRegisterCoordinates = { coords -> rowCoordinates[row.entry.path] = coords },
+                    onDragStart = { draggedPath = row.entry.path; hoverTargetPath = row.entry.path },
+                    onDragMove = { rootPos -> hoverTargetPath = resolveHoverTarget(rootPos) },
+                    onDragEnd = { handleDragEnd(row.entry) },
+                    onDragCancel = { draggedPath = null; hoverTargetPath = null }
+                )
+            }
+            if (state.visibleRows.isEmpty() && workspaceRoot !in state.loadingPaths) {
                 item {
-                    EntryRow(
-                        label = "..",
-                        isDir = true,
-                        onClick = onGoUp,
-                        iconUp = true
+                    Text(
+                        "Workspace vacío.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(Spacing.md)
                     )
                 }
-            }
-            items(state.entries, key = { it.path }) { entry ->
-                EntryRow(
-                    label = entry.name,
-                    isDir = entry.isDir,
-                    selected = entry.path == state.openFilePath,
-                    onClick = {
-                        if (entry.isDir) onNavigate(entry.path) else onOpenFile(entry.path)
-                    }
-                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun EntryRow(
-    label: String,
-    isDir: Boolean,
-    selected: Boolean = false,
-    iconUp: Boolean = false,
-    onClick: () -> Unit
+private fun TreeEntryRow(
+    row: TreeRow,
+    selected: Boolean,
+    openFilePath: String?,
+    loading: Boolean,
+    expanded: Boolean,
+    isDragging: Boolean,
+    isDropTarget: Boolean,
+    onClick: () -> Unit,
+    onRequestNewFile: () -> Unit,
+    onRequestNewFolder: () -> Unit,
+    onRequestRename: () -> Unit,
+    onRequestDelete: () -> Unit,
+    onDuplicate: () -> Unit,
+    onCopyPath: () -> Unit,
+    onReveal: () -> Unit,
+    onRefresh: () -> Unit,
+    onRegisterCoordinates: (LayoutCoordinates) -> Unit,
+    onDragStart: () -> Unit,
+    onDragMove: (rootPosition: Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .background(
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                else MaterialTheme.colorScheme.surface
+    var menuOpen by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val entry = row.entry
+    val ext = entry.name.substringAfterLast('.', "").lowercase()
+    val highlighted = selected || entry.path == openFilePath
+    var rowCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    val rowContent: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onGloballyPositioned {
+                    rowCoords = it
+                    onRegisterCoordinates(it)
+                }
+                .then(
+                    if (PlatformCapabilities.isDesktop) {
+                        Modifier
+                            .clickable(onClick = onClick)
+                            .pointerInput(entry.path) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { onDragStart() },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        val coords = rowCoords ?: return@detectDragGesturesAfterLongPress
+                                        onDragMove(coords.localToRoot(change.position))
+                                    },
+                                    onDragEnd = onDragEnd,
+                                    onDragCancel = onDragCancel
+                                )
+                            }
+                    } else {
+                        Modifier.combinedClickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = onClick,
+                            onLongClick = { menuOpen = true }
+                        )
+                    }
+                )
+                .background(
+                    when {
+                        isDropTarget -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                        highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        else -> MaterialTheme.colorScheme.surface
+                    }
+                )
+                .then(
+                    if (isDropTarget) {
+                        Modifier.border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(Radius.sm))
+                    } else {
+                        Modifier
+                    }
+                )
+                .then(if (isDragging) Modifier.alpha(0.4f) else Modifier)
+                .padding(
+                    start = Spacing.md + (row.depth * 16).dp,
+                    end = Spacing.sm,
+                    top = Spacing.sm,
+                    bottom = Spacing.sm
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            if (entry.isDir) {
+                Icon(
+                    if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            } else {
+                Spacer(Modifier.size(16.dp))
+            }
+            Icon(
+                when {
+                    entry.isDir -> Icons.Outlined.Folder
+                    ext in IMAGE_EXTENSIONS -> Icons.Outlined.ImageIcon
+                    else -> Icons.Outlined.Description
+                },
+                contentDescription = null,
+                tint = if (entry.isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
             )
-            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        Icon(
-            when {
-                iconUp -> Icons.Outlined.KeyboardArrowUp
-                isDir -> Icons.Outlined.Folder
-                else -> Icons.Outlined.Description
-            },
-            contentDescription = null,
-            tint = if (isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp)
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+            Text(
+                entry.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (loading) {
+                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+            }
+        }
     }
+
+    val menuItems: List<ContextMenuEntry> = buildList {
+        if (entry.isDir) {
+            add(ContextMenuEntry("Nuevo archivo aquí", onRequestNewFile))
+            add(ContextMenuEntry("Nueva carpeta aquí", onRequestNewFolder))
+        }
+        add(ContextMenuEntry("Renombrar", onRequestRename))
+        add(ContextMenuEntry("Duplicar", onDuplicate))
+        add(ContextMenuEntry("Copiar ruta", onCopyPath))
+        add(ContextMenuEntry("Revelar en el explorador", onReveal))
+        if (entry.isDir) {
+            add(ContextMenuEntry("Refrescar", onRefresh))
+        }
+        add(ContextMenuEntry("Eliminar", onRequestDelete))
+    }
+
+    if (PlatformCapabilities.isDesktop) {
+        WithContextMenu(items = { menuItems }) {
+            rowContent()
+        }
+    } else {
+        Box {
+            rowContent()
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                menuItems.forEach { item ->
+                    DropdownMenuItem(
+                        text = { Text(item.label) },
+                        onClick = {
+                            menuOpen = false
+                            item.onClick()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Diálogos de gestión de archivos ─────────────────────────────────────────────
+
+@Composable
+private fun NewEntryDialog(prompt: NewEntryPrompt, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var value by remember(prompt.parentDir, prompt.isDir) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (prompt.isDir) "Nueva carpeta" else "Nuevo archivo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    placeholder = { Text(if (prompt.isDir) "carpeta" else "archivo.txt") },
+                    singleLine = true
+                )
+                prompt.error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }, enabled = value.isNotBlank()) { Text("Crear") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
+}
+
+@Composable
+private fun RenameEntryDialog(prompt: RenamePrompt, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var value by remember(prompt.path) { mutableStateOf(prompt.currentName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Renombrar") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true
+                )
+                prompt.error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }, enabled = value.isNotBlank()) { Text("Guardar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
+}
+
+@Composable
+private fun DeleteEntryDialog(prompt: DeleteConfirm, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (prompt.isDir) "Eliminar carpeta" else "Eliminar archivo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                Text(
+                    if (prompt.isDir) {
+                        "Se eliminará \"${prompt.name}\" y todo su contenido. Esta acción no se puede deshacer."
+                    } else {
+                        "Se eliminará \"${prompt.name}\". Esta acción no se puede deshacer."
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                prompt.error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Eliminar", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
 }
 
 // ── Editor pane ───────────────────────────────────────────────────────────────
@@ -309,7 +665,9 @@ private fun EntryRow(
 @Composable
 private fun EditorPane(
     state: EditorUiState,
-    onContentChange: (String) -> Unit,
+    onContentChange: (text: String, cursor: Int, selectionCollapsed: Boolean) -> Unit,
+    onRequestCompletion: () -> Unit,
+    onDismissSuggestion: () -> Unit,
     onRequestSave: () -> Unit,
     onCloseFile: () -> Unit,
     onClearScrollToLine: () -> Unit,
@@ -338,9 +696,11 @@ private fun EditorPane(
             return@Column
         }
 
-        // Header: nombre, botones de acción, cerrar
         val ext = state.openFileName?.substringAfterLast('.', "")?.lowercase() ?: ""
         val isMarkdown = ext == "md" || ext == "markdown"
+        val isImage = ext in IMAGE_EXTENSIONS
+
+        // Header: nombre, botones de acción, cerrar
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             Text(
                 (state.openFileName ?: "") + if (state.dirty) " •" else "",
@@ -360,8 +720,8 @@ private fun EditorPane(
                     )
                 }
             }
-            // Búsqueda — oculta en preview
-            if (!state.previewMode) {
+            // Búsqueda — oculta en preview y en imágenes
+            if (!state.previewMode && !isImage) {
                 IconButton(onClick = onToggleSearch) {
                     Icon(
                         Icons.Outlined.Search,
@@ -380,6 +740,34 @@ private fun EditorPane(
                     modifier = Modifier.size(18.dp)
                 )
             }
+        }
+
+        // ── Preview de imagen (solo lectura) ─────────────────────────────────
+        if (isImage) {
+            val bitmap = state.imageBitmap
+            if (bitmap != null) {
+                ImagePreviewPane(
+                    bitmap = bitmap,
+                    fileName = state.openFileName ?: "imagen",
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.md))
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(Radius.md)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (state.loading) "Cargando imagen…" else "No se pudo previsualizar la imagen.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            return@Column
         }
 
         // Barra de búsqueda
@@ -440,6 +828,29 @@ private fun EditorPane(
         val scrollState = rememberScrollState()
         var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
 
+        // El campo es dueño del texto Y del cursor mientras hay un archivo abierto; el VM
+        // lo refleja vía onContentChange. Solo se re-siembra cuando el VM carga contenido
+        // distinto del disco (abrir/recargar): al guardar, `originalContent` cambia pero el
+        // texto no, y re-sembrar ahí devolvería el cursor al principio en cada guardado.
+        var fieldValue by remember { mutableStateOf(TextFieldValue(state.content)) }
+        LaunchedEffect(state.openFilePath, state.originalContent) {
+            if (fieldValue.text != state.content) {
+                fieldValue = TextFieldValue(state.content, TextRange(0))
+            }
+        }
+
+        // La sugerencia solo se pinta si sigue anclada donde está el cursor ahora mismo.
+        val ghost = state.suggestion
+            ?.takeIf { fieldValue.selection.collapsed && state.suggestionAnchor == fieldValue.selection.start }
+
+        fun acceptSuggestion(text: String) {
+            val at = fieldValue.selection.start
+            val updated = fieldValue.text.substring(0, at) + text + fieldValue.text.substring(at)
+            val cursor = at + text.length
+            fieldValue = TextFieldValue(updated, TextRange(cursor))
+            onContentChange(updated, cursor, true)
+        }
+
         // Scroll a línea pedida
         val targetLine = state.scrollToLine
         LaunchedEffect(targetLine, textLayout) {
@@ -475,12 +886,16 @@ private fun EditorPane(
             SyntaxHighlighter.highlight(state.content, ext)
         }
 
-        // Transformación combinada: sintaxis + búsqueda
+        // Transformación combinada: sintaxis + búsqueda + sugerencia fantasma
+        val ghostColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
         val transformation = rememberCombinedTransformation(
             syntaxSpans = syntaxSpans,
             searchMatches = matches,
             currentMatchIdx = matchIdx,
             queryLength = state.searchQuery.length,
+            ghostText = ghost,
+            ghostAnchor = state.suggestionAnchor,
+            ghostColor = ghostColor,
             kwColor = kwColor,
             strColor = strColor,
             commentColor = commentColor,
@@ -499,12 +914,37 @@ private fun EditorPane(
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(Radius.md))
         ) {
             BasicTextField(
-                value = state.content,
-                onValueChange = onContentChange,
+                value = fieldValue,
+                onValueChange = {
+                    fieldValue = it
+                    onContentChange(it.text, it.selection.start, it.selection.collapsed)
+                },
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(Spacing.md),
+                    .padding(Spacing.md)
+                    // Preview: Tab/Esc tienen que llegar antes que el manejo por
+                    // defecto del campo (Tab movería el foco). Esc solo se consume
+                    // si hay sugerencia visible; si no, sigue hasta el Esc global
+                    // de MainScaffold, que cierra el editor.
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when {
+                            event.key == Key.Tab && ghost != null -> {
+                                acceptSuggestion(ghost)
+                                true
+                            }
+                            event.key == Key.Escape && ghost != null -> {
+                                onDismissSuggestion()
+                                true
+                            }
+                            event.key == Key.Spacebar && event.isCtrlPressed -> {
+                                onRequestCompletion()
+                                true
+                            }
+                            else -> false
+                        }
+                    },
                 textStyle = TextStyle(
                     color = MaterialTheme.colorScheme.onSurface,
                     fontFamily = FontFamily.Monospace,
@@ -516,10 +956,71 @@ private fun EditorPane(
             )
         }
 
+        if (state.codeCompletionEnabled) {
+            Text(
+                when {
+                    ghost != null -> "Tab para aceptar la sugerencia · Esc para descartarla"
+                    state.suggestionLoading -> "Pensando una sugerencia…"
+                    else -> "Autocompletado activo · Ctrl+Espacio para pedir una sugerencia"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         PrimaryButton(
             text = "Guardar",
             onClick = onRequestSave,
             enabled = state.dirty && !state.loading
+        )
+    }
+}
+
+// ── Preview de imagen (zoom básico con pinch/scroll + doble-tap para resetear) ──
+
+@Composable
+private fun ImagePreviewPane(
+    bitmap: ImageBitmap,
+    fileName: String,
+    modifier: Modifier = Modifier
+) {
+    var scale by remember(fileName) { mutableStateOf(1f) }
+    var offset by remember(fileName) { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(Radius.md))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(Radius.md))
+            .clipToBounds()
+            .pointerInput(fileName) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    scale = newScale
+                    offset = if (newScale <= 1f) Offset.Zero else offset + pan
+                }
+            }
+            .pointerInput(fileName) {
+                detectTapGestures(onDoubleTap = {
+                    scale = 1f
+                    offset = Offset.Zero
+                })
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = fileName,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(Spacing.md)
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    translationX = offset.x,
+                    translationY = offset.y
+                )
         )
     }
 }
@@ -532,6 +1033,9 @@ private fun rememberCombinedTransformation(
     searchMatches: List<Int>,
     currentMatchIdx: Int,
     queryLength: Int,
+    ghostText: String?,
+    ghostAnchor: Int,
+    ghostColor: Color,
     kwColor: Color,
     strColor: Color,
     commentColor: Color,
@@ -540,21 +1044,41 @@ private fun rememberCombinedTransformation(
     matchColor: Color,
     activeMatchColor: Color
 ): VisualTransformation = remember(
-    syntaxSpans, searchMatches, currentMatchIdx, queryLength,
+    syntaxSpans, searchMatches, currentMatchIdx, queryLength, ghostText, ghostAnchor, ghostColor,
     kwColor, strColor, commentColor, numColor, annColor, matchColor, activeMatchColor
 ) {
     val hasSyntax = syntaxSpans.isNotEmpty()
     val hasSearch = queryLength > 0 && searchMatches.isNotEmpty()
-    if (!hasSyntax && !hasSearch) return@remember VisualTransformation.None
+    val ghost = ghostText?.takeIf { it.isNotEmpty() && ghostAnchor >= 0 }
+    if (!hasSyntax && !hasSearch && ghost == null) return@remember VisualTransformation.None
 
     VisualTransformation { text ->
-        val builder = AnnotatedString.Builder(text)
+        val anchor = ghost?.let { ghostAnchor.coerceIn(0, text.length) } ?: -1
+        val ghostLen = ghost?.length ?: 0
+
+        // El texto fantasma NO está en el contenido real: se inserta solo para pintarlo,
+        // así que todos los offsets posteriores al cursor se desplazan y hay que mapearlos
+        // en ambos sentidos (sin esto el cursor y la selección apuntarían al carácter
+        // equivocado en cuanto apareciera una sugerencia).
+        fun shift(offset: Int): Int = if (anchor < 0 || offset <= anchor) offset else offset + ghostLen
+
+        val displayed: AnnotatedString = if (ghost == null) {
+            text
+        } else {
+            buildAnnotatedString {
+                append(text.subSequence(0, anchor))
+                append(ghost)
+                append(text.subSequence(anchor, text.length))
+            }
+        }
+        val builder = AnnotatedString.Builder(displayed)
+        val len = displayed.length
 
         // Sintaxis (color de texto)
         if (hasSyntax) {
             syntaxSpans.forEach { span ->
-                val s = span.start.coerceAtMost(text.length)
-                val e = span.end.coerceAtMost(text.length)
+                val s = shift(span.start).coerceAtMost(len)
+                val e = shift(span.end).coerceAtMost(len)
                 if (s >= e) return@forEach
                 val color = when (span.type) {
                     SyntaxType.Keyword -> kwColor
@@ -572,17 +1096,41 @@ private fun rememberCombinedTransformation(
         // Búsqueda (fondo — no interfiere con el color de texto)
         if (hasSearch) {
             searchMatches.forEachIndexed { i, start ->
-                val end = (start + queryLength).coerceAtMost(text.length)
-                if (start < end) {
+                val s = shift(start).coerceAtMost(len)
+                val e = shift(start + queryLength).coerceAtMost(len)
+                if (s < e) {
                     builder.addStyle(
                         SpanStyle(background = if (i == currentMatchIdx) activeMatchColor else matchColor),
-                        start, end
+                        s, e
                     )
                 }
             }
         }
 
-        TransformedText(builder.toAnnotatedString(), OffsetMapping.Identity)
+        // Se aplica al final a propósito: un span de sintaxis que cruce el cursor abarca
+        // también el hueco del fantasma, y el último estilo añadido es el que manda.
+        if (ghost != null) {
+            builder.addStyle(
+                SpanStyle(color = ghostColor, fontStyle = FontStyle.Italic),
+                anchor,
+                (anchor + ghostLen).coerceAtMost(len)
+            )
+        }
+
+        val mapping = if (ghost == null) {
+            OffsetMapping.Identity
+        } else {
+            object : OffsetMapping {
+                override fun originalToTransformed(offset: Int): Int = shift(offset)
+                override fun transformedToOriginal(offset: Int): Int = when {
+                    offset <= anchor -> offset
+                    offset <= anchor + ghostLen -> anchor
+                    else -> offset - ghostLen
+                }
+            }
+        }
+
+        TransformedText(builder.toAnnotatedString(), mapping)
     }
 }
 
@@ -662,18 +1210,38 @@ private fun EditorContentPreview() {
         EditorContent(
             state = EditorUiState(
                 workspaceRoot = "/home/user/proj",
-                currentDir = "/home/user/proj",
-                entries = listOf(
-                    FsEntry("src", true, "/home/user/proj/src"),
-                    FsEntry("README.md", false, "/home/user/proj/README.md")
+                childrenByPath = mapOf(
+                    "/home/user/proj" to listOf(
+                        FsEntry("src", true, "/home/user/proj/src"),
+                        FsEntry("README.md", false, "/home/user/proj/README.md")
+                    )
                 ),
                 openFilePath = "/home/user/proj/README.md",
                 openFileName = "README.md",
                 content = "# Hello\n\nEdit me.",
                 dirty = true
             ),
-            onClose = {}, onNavigate = {}, onGoUp = {}, onOpenFile = {},
-            onContentChange = {}, onSave = {}, onCreateFile = {}, onCloseFile = {}, onClearError = {}
+            onClose = {},
+            onEntryClick = {},
+            onRequestNewEntry = { _, _ -> },
+            onConfirmNewEntry = {},
+            onCancelNewEntry = {},
+            onRequestRename = {},
+            onConfirmRename = {},
+            onCancelRename = {},
+            onRequestDelete = {},
+            onConfirmDelete = {},
+            onCancelDelete = {},
+            onDuplicate = {},
+            onCopyPath = {},
+            onReveal = {},
+            onRefreshTree = {},
+            onRefreshNode = {},
+            onMoveEntry = { _, _ -> },
+            onContentChange = { _, _, _ -> },
+            onSave = {},
+            onCloseFile = {},
+            onClearError = {}
         )
     }
 }

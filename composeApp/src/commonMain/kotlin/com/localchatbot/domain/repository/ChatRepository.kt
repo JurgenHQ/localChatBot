@@ -115,7 +115,9 @@ interface ModelRepository {
         model: String,
         messages: List<ChatMessage>,
         tools: List<ToolDefinition>?,
-        generationParams: GenerationParams? = null
+        generationParams: GenerationParams? = null,
+        /** API key a usar en vez de la del perfil de conexión activo (correr con otro perfil). */
+        apiKeyOverride: String? = null
     ): Flow<StreamEvent>
 
     suspend fun ping(baseUrl: String): Result<Long>
@@ -154,7 +156,8 @@ interface ModelRepository {
         baseUrl: String,
         model: String,
         userText: String,
-        assistantText: String
+        assistantText: String,
+        apiKeyOverride: String? = null
     ): Result<String>
 
     /**
@@ -164,7 +167,8 @@ interface ModelRepository {
     suspend fun summarize(
         baseUrl: String,
         model: String,
-        transcript: String
+        transcript: String,
+        apiKeyOverride: String? = null
     ): String?
 
     /**
@@ -177,5 +181,24 @@ interface ModelRepository {
         model: String,
         systemPrompt: String,
         userPrompt: String
+    ): String?
+
+    /**
+     * Sugiere el texto que continúa en la posición del cursor del editor, dado el
+     * código que está **antes** ([prefix]) y **después** ([suffix]) de él — es el
+     * planteo "fill-in-the-middle" clásico del autocompletado, pero servido por el
+     * mismo modelo de chat en vez de por un endpoint FIM dedicado.
+     *
+     * Devuelve solo el fragmento a insertar (ya saneado: sin cercas de código ni
+     * explicaciones), o null si el modelo no produjo nada aprovechable. Nunca lanza:
+     * es una ayuda de fondo y un fallo no debe interrumpir la edición.
+     */
+    suspend fun completeCode(
+        baseUrl: String,
+        model: String,
+        prefix: String,
+        suffix: String,
+        fileName: String,
+        apiKeyOverride: String? = null
     ): String?
 }

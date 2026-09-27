@@ -286,6 +286,11 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(desktopNotificationsEnabled = value)
     }
 
+    override suspend fun updateCodeCompletionEnabled(value: Boolean) {
+        settings.putBoolean(KEY_CODE_COMPLETION, value)
+        _state.value = _state.value.copy(codeCompletionEnabled = value)
+    }
+
     override suspend fun updateGenerationParams(params: GenerationParams) {
         settings.putString(KEY_GEN_PARAMS, templatesJson.encodeToString(GenerationParams.serializer(), params))
         _state.value = _state.value.copy(generationParams = params)
@@ -301,7 +306,7 @@ class PreferencesRepositoryImpl(
             KEY_SESSION_AGENT_MODES, KEY_SESSION_COMPACT_BOUNDARIES,
             KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
             KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
-            KEY_DESKTOP_NOTIFICATIONS, KEY_GEN_PARAMS
+            KEY_DESKTOP_NOTIFICATIONS, KEY_CODE_COMPLETION, KEY_GEN_PARAMS
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -364,6 +369,9 @@ class PreferencesRepositoryImpl(
             remoteViewerUrl = settings.getString(KEY_REMOTE_VIEWER_URL, default.remoteViewerUrl),
             desktopNotificationsEnabled = settings.getBoolean(
                 KEY_DESKTOP_NOTIFICATIONS, default.desktopNotificationsEnabled
+            ),
+            codeCompletionEnabled = settings.getBoolean(
+                KEY_CODE_COMPLETION, default.codeCompletionEnabled
             ),
             generationParams = runCatching {
                 val raw = settings.getStringOrNull(KEY_GEN_PARAMS) ?: return@runCatching GenerationParams()
@@ -492,6 +500,7 @@ class PreferencesRepositoryImpl(
         const val KEY_REMOTE_PIN = "remote_access_pin"
         const val KEY_REMOTE_VIEWER_URL = "remote_viewer_url"
         const val KEY_DESKTOP_NOTIFICATIONS = "desktop_notifications_enabled"
+        const val KEY_CODE_COMPLETION = "code_completion_enabled"
         const val KEY_GEN_PARAMS = "generation_params"
     }
 }

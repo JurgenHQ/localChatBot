@@ -74,9 +74,14 @@ class ModelRepositoryImpl(
         model: String,
         messages: List<ChatMessage>,
         tools: List<ToolDefinition>?,
-        generationParams: GenerationParams?
+        generationParams: GenerationParams?,
+        apiKeyOverride: String?
     ): Flow<StreamEvent> = flow {
         val p = generationParams ?: GenerationParams()
+        // DeepSeek documenta temperature/top_p/presence_penalty/frequency_penalty como
+        // incompatibles con el modo thinking, que reasoning_effort activa implícitamente.
+        // Omitirlos cuando hay un nivel elegido evita que el servidor rechace el request.
+        val samplingParamsBlocked = p.reasoningEffort != null
         val req = ChatCompletionRequest(
             model = model,
             messages = messages.map { it.toDto() },
@@ -84,12 +89,13 @@ class ModelRepositoryImpl(
             tools = tools,
             toolChoice = if (tools.isNullOrEmpty()) null else "auto",
             streamOptions = StreamOptions(includeUsage = true),
-            temperature = p.temperature,
-            topP = p.topP,
+            temperature = p.temperature.takeUnless { samplingParamsBlocked },
+            topP = p.topP.takeUnless { samplingParamsBlocked },
             maxTokens = p.maxTokens,
-            presencePenalty = p.presencePenalty,
-            frequencyPenalty = p.frequencyPenalty,
-            seed = p.seed
+            presencePenalty = p.presencePenalty.takeUnless { samplingParamsBlocked },
+            frequencyPenalty = p.frequencyPenalty.takeUnless { samplingParamsBlocked },
+            seed = p.seed,
+            reasoningEffort = p.reasoningEffort
         )
 
         // Acumuladores para tool_calls que llegan fragmentados.
@@ -102,7 +108,7 @@ class ModelRepositoryImpl(
         var reasoningStartMs: Long? = null
         var reasoningEndMs: Long? = null
 
-        api.streamChatCompletion(baseUrl, req).collect { chunk ->
+        api.streamChatCompletion(baseUrl, req, apiKeyOverride).collect { chunk ->
             if (actualModel == null) actualModel = chunk.model?.takeIf { it.isNotBlank() }
             chunk.usage?.let { usage = it }
             val choice = chunk.choices.firstOrNull() ?: return@collect
@@ -240,7 +246,8 @@ class ModelRepositoryImpl(
         baseUrl: String,
         model: String,
         userText: String,
-        assistantText: String
+        assistantText: String,
+        apiKeyOverride: String?
     ): Result<String> {
         val request = ChatCompletionRequest(
             model = model,
@@ -254,7 +261,7 @@ class ModelRepositoryImpl(
             // Baja temperatura: queremos un título estable y literal, no creativo.
             temperature = 0.2
         )
-        return api.chatCompletion(baseUrl, request).mapCatching { response ->
+        return api.chatCompletion(baseUrl, request, apiKeyOverride).mapCatching { response ->
             val raw = response.choices.firstOrNull()?.message?.content?.asText()
                 ?: throw IllegalStateException("Respuesta vacía al pedir título")
             sanitizeTitle(raw)
@@ -284,7 +291,12 @@ class ModelRepositoryImpl(
         return if (cleaned.length <= 60) cleaned else cleaned.take(60).substringBeforeLast(' ').ifBlank { cleaned.take(60) }
     }
 
-    override suspend fun summarize(baseUrl: String, model: String, transcript: String): String? {
+    override suspend fun summarize(
+        baseUrl: String,
+        model: String,
+        transcript: String,
+        apiKeyOverride: String?
+    ): String? {
         val request = ChatCompletionRequest(
             model = model,
             messages = listOf(
@@ -293,7 +305,7 @@ class ModelRepositoryImpl(
             ),
             temperature = 0.3
         )
-        return api.chatCompletion(baseUrl, request).getOrNull()
+        return api.chatCompletion(baseUrl, request, apiKeyOverride).getOrNull()
             ?.choices?.firstOrNull()?.message?.content?.asText()
             ?.trim()?.takeIf { it.isNotBlank() }
     }
@@ -315,6 +327,73 @@ class ModelRepositoryImpl(
         return api.chatCompletion(baseUrl, request).getOrNull()
             ?.choices?.firstOrNull()?.message?.content?.asText()
             ?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    override suspend fun completeCode(
+        baseUrl: String,
+        model: String,
+        prefix: String,
+        suffix: String,
+        fileName: String,
+        apiKeyOverride: String?
+    ): String? {
+        // El contexto se acota acá y no en quien llama: así el tamaño del request no
+        // depende de lo grande que sea el archivo abierto. Se conserva la cola del
+        // prefijo y la cabeza del sufijo, que es lo pegado al cursor.
+        val head = prefix.takeLast(COMPLETION_PREFIX_CHARS)
+        val tail = suffix.take(COMPLETION_SUFFIX_CHARS)
+        val request = ChatCompletionRequest(
+            model = model,
+            messages = listOf(
+                OpenAiMessage.text("system", CODE_COMPLETION_SYSTEM_PROMPT),
+                OpenAiMessage.text(
+                    "user",
+                    "Archivo: $fileName\n\n<PREFIX>\n$head\n</PREFIX>\n\n<SUFFIX>\n$tail\n</SUFFIX>"
+                )
+            ),
+            // Determinista y corto: queremos la continuación más probable, no una
+            // propuesta creativa, y que llegue rápido.
+            temperature = 0.2,
+            maxTokens = COMPLETION_MAX_TOKENS
+        )
+        val raw = api.chatCompletion(baseUrl, request, apiKeyOverride).getOrNull()
+            ?.choices?.firstOrNull()?.message?.content?.asText()
+            ?: return null
+        return sanitizeCompletion(raw, head)
+    }
+
+    /**
+     * Un modelo de chat genérico no respeta del todo "devolvé solo el código": suele
+     * envolverlo en cercas markdown, razonar antes, o repetir la línea que estás
+     * escribiendo. Esto lo normaliza a un fragmento insertable, o null si no queda nada.
+     */
+    private fun sanitizeCompletion(raw: String, prefix: String): String? {
+        var text = raw.replace(Regex("(?s)<think>.*?(</think>|$)"), "")
+
+        // Cercas de código: nos quedamos con el interior del primer bloque.
+        val fence = Regex("(?s)```[a-zA-Z0-9_+-]*\\n?(.*?)(```|$)").find(text)
+        if (fence != null) {
+            text = fence.groupValues[1]
+        }
+        if (text.isBlank()) return null
+
+        // El modelo suele re-emitir la línea parcial sobre la que está el cursor. Si el
+        // resultado empieza exactamente por ella, sobra: ya está en el archivo, e
+        // insertarla otra vez la duplicaría. Solo se compara la línea actual (no todo el
+        // prefijo) para no recortar código legítimo que casualmente coincida.
+        val currentLine = prefix.substringAfterLast('\n')
+        if (currentLine.isNotEmpty() && text.startsWith(currentLine)) {
+            text = text.removePrefix(currentLine)
+        }
+
+        // Recorte final: una sugerencia inline es una ayuda breve, no un archivo entero.
+        val capped = text.lineSequence()
+            .take(COMPLETION_MAX_LINES)
+            .joinToString("\n")
+            .take(COMPLETION_MAX_CHARS)
+            .trimEnd()
+
+        return capped.takeIf { it.isNotBlank() }
     }
 
     private fun ChatMessage.toDto(): OpenAiMessage {
@@ -368,6 +447,25 @@ class ModelRepositoryImpl(
                 "assistant reply, respond with ONLY the title: 3 to 6 words, in the same " +
                 "language the user wrote in, no quotes, no trailing period, no markdown, " +
                 "no explanation."
+
+        /** Cuánto código alrededor del cursor se manda como contexto de autocompletado. */
+        const val COMPLETION_PREFIX_CHARS = 4000
+        const val COMPLETION_SUFFIX_CHARS = 1000
+
+        /** Techos de la sugerencia: corta y barata, o deja de servir como ayuda inline. */
+        const val COMPLETION_MAX_TOKENS = 120
+        const val COMPLETION_MAX_LINES = 8
+        const val COMPLETION_MAX_CHARS = 400
+
+        const val CODE_COMPLETION_SYSTEM_PROMPT =
+            "You are a code completion engine, like GitHub Copilot. The user gives you the " +
+                "code before the cursor inside <PREFIX> and the code after the cursor inside " +
+                "<SUFFIX>. Reply with ONLY the raw code that must be inserted at the cursor. " +
+                "No markdown, no ``` fences, no explanation, no comments about your answer. " +
+                "Never repeat code that is already in <PREFIX> or <SUFFIX>. Complete at most a " +
+                "few lines: finish the current statement or block and stop. Match the " +
+                "indentation and style of the surrounding code. If nothing sensible can be " +
+                "completed, reply with an empty response."
 
         const val SUMMARY_SYSTEM_PROMPT =
             "You summarize chat history. Given a conversation transcript, produce a concise " +

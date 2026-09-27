@@ -41,6 +41,7 @@ sealed interface SettingsEditor {
     data object PresencePenalty : SettingsEditor
     data object FrequencyPenalty : SettingsEditor
     data object Seed : SettingsEditor
+    data object ReasoningEffort : SettingsEditor
 }
 
 data class SettingsUiState(
@@ -154,6 +155,10 @@ class SettingsViewModel(
     }
 
     /** Activa/desactiva las notificaciones de escritorio (banner + rebote del dock). */
+    fun toggleCodeCompletion(value: Boolean) {
+        viewModelScope.launch { preferences.updateCodeCompletionEnabled(value) }
+    }
+
     fun toggleDesktopNotifications(value: Boolean) {
         viewModelScope.launch { preferences.updateDesktopNotifications(value) }
     }
