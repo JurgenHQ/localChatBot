@@ -140,6 +140,28 @@ expect class FilesystemAgent() {
     suspend fun deletePath(absPath: String, recursive: Boolean): FsResult
 
     /**
+     * Renombra/mueve [fromAbsPath] a [toAbsPath]. Falla si [toAbsPath] ya existe
+     * (no sobrescribe) o si [fromAbsPath] no existe. Pensado para el editor
+     * in-app (renombrar un archivo o carpeta dentro del mismo directorio).
+     */
+    suspend fun renamePath(fromAbsPath: String, toAbsPath: String): FsResult
+
+    /**
+     * Copia [fromAbsPath] a [toAbsPath]. Si es un directorio, copia recursivamente
+     * todo su contenido; si es un archivo, copia solo ese archivo. Falla si
+     * [toAbsPath] ya existe (no sobrescribe) o si [fromAbsPath] no existe.
+     */
+    suspend fun copyPath(fromAbsPath: String, toAbsPath: String): FsResult
+
+    /**
+     * Lee el archivo en [absPath] como bytes crudos (sin decodificar como texto)
+     * y los devuelve codificados en base64 en `content`. Pensado para el preview
+     * de imágenes del editor in-app, donde `readFileRaw` (UTF-8) corrompería el
+     * binario. [maxBytes] es el techo de seguridad para cargarlo en memoria.
+     */
+    suspend fun readFileBytes(absPath: String, maxBytes: Int = 20_000_000): FsResult
+
+    /**
      * Ejecuta [command] en una shell con [workingDir] como cwd.
      *
      * Si [background] es false (default): bloquea hasta que el proceso termina o
@@ -150,13 +172,20 @@ expect class FilesystemAgent() {
      * o un error de arranque), y retorna con `background=true` y el PID. El proceso
      * sigue corriendo en segundo plano. Para detenerlo usar `run_command` con
      * `kill <pid>`.
+     *
+     * [onOutput] recibe la salida (stdout y stderr) **a medida que llega**, para poder
+     * reflejarla en vivo en la terminal integrada. Es puramente un observador: no cambia
+     * nada de lo que se devuelve ni de cómo se ejecuta el comando. En background sigue
+     * emitiendo mientras el proceso viva, que es justo lo que hace útil ver un servidor de
+     * desarrollo lanzado por el agente.
      */
     suspend fun runCommand(
         command: String,
         workingDir: String,
         timeoutSeconds: Int = 30,
         background: Boolean = false,
-        startupCheckSeconds: Int = 5
+        startupCheckSeconds: Int = 5,
+        onOutput: ((String) -> Unit)? = null
     ): FsResult
 }
 

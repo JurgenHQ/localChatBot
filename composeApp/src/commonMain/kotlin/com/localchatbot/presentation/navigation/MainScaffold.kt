@@ -68,6 +68,10 @@ import com.localchatbot.presentation.features.skills.SkillsScreen
 import com.localchatbot.presentation.features.skills.SkillsViewModel
 import com.localchatbot.presentation.features.tasks.TasksScreen
 import com.localchatbot.presentation.features.tasks.TasksViewModel
+import com.localchatbot.presentation.features.terminal.TERMINAL_DEFAULT_HEIGHT
+import com.localchatbot.presentation.features.terminal.TERMINAL_MAX_HEIGHT
+import com.localchatbot.presentation.features.terminal.TERMINAL_MIN_HEIGHT
+import com.localchatbot.presentation.features.terminal.TerminalPanel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
@@ -82,6 +86,10 @@ fun MainScaffold(container: AppContainer) {
     var remoteViewerOpen by rememberSaveable { mutableStateOf(false) }
     var tasksOpen by rememberSaveable { mutableStateOf(false) }
     var metricsOpen by rememberSaveable { mutableStateOf(false) }
+    // La terminal es un panel acoplado, no un overlay: se ve a la vez que el chat, que es
+    // el punto de poder mirar lo que ejecuta el agente mientras trabaja.
+    var terminalOpen by rememberSaveable { mutableStateOf(false) }
+    var terminalHeight by rememberSaveable { mutableStateOf(TERMINAL_DEFAULT_HEIGHT.value) }
     // En layout ancho el panel de sesiones es permanente pero colapsable: el
     // botón de menú del top bar lo muestra/oculta para dar más ancho al chat.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
@@ -117,7 +125,8 @@ fun MainScaffold(container: AppContainer) {
             createSessionUseCase = container.createSession,
             projectRepository = container.projectRepository,
             checkpointStore = container.checkpointStore,
-            queuedMessageStore = container.queuedMessageStore
+            queuedMessageStore = container.queuedMessageStore,
+            terminalController = container.terminalController
         )
     }
     val settingsViewModel = remember {
@@ -139,7 +148,12 @@ fun MainScaffold(container: AppContainer) {
         AgentViewModel(preferences = container.preferencesRepository)
     }
     val editorViewModel = remember {
-        EditorViewModel(activeWorkspaceStore = container.activeWorkspaceStore, agent = container.filesystemAgent)
+        EditorViewModel(
+            activeWorkspaceStore = container.activeWorkspaceStore,
+            agent = container.filesystemAgent,
+            modelRepository = container.modelRepository,
+            preferences = container.preferencesRepository
+        )
     }
     val remoteViewerViewModel = remember {
         RemoteViewerViewModel(preferences = container.preferencesRepository)
@@ -209,6 +223,11 @@ fun MainScaffold(container: AppContainer) {
                 true
             }
             cmd && event.key == Key.Comma -> { selected = BottomTab.Settings; true }
+            // Ctrl+` como en cualquier editor. Solo desktop: en móvil no hay shell.
+            cmd && event.key == Key.Grave && PlatformCapabilities.isDesktop -> {
+                terminalOpen = !terminalOpen
+                true
+            }
             event.key == Key.Escape -> {
                 // Esc cierra lo que esté encima; si no hay nada, corta el stream. En ese
                 // orden: con un diálogo abierto, Esc significa "cerrá esto", no "pará el modelo".
@@ -275,6 +294,10 @@ fun MainScaffold(container: AppContainer) {
                                 }
                             } else null,
                             onOpenMetrics = { metricsOpen = true },
+                            terminalOpen = terminalOpen,
+                            onToggleTerminal = if (PlatformCapabilities.isDesktop) {
+                                { terminalOpen = !terminalOpen }
+                            } else null,
                             showMenuButton = true
                         )
                         BottomTab.Agent -> AgentScreen(
@@ -296,6 +319,29 @@ fun MainScaffold(container: AppContainer) {
                             onOpenRemoteViewer = { remoteViewerOpen = true }
                         )
                     }
+                }
+                // Fuera del `when (selected)` a propósito: el panel sigue visible aunque
+                // te vayas a Agente o Ajustes, igual que el diálogo de confirmación.
+                if (terminalOpen && PlatformCapabilities.isDesktop) {
+                    val activeSessionId by container.activeSessionStore.activeSessionId
+                        .collectAsStateWithLifecycle()
+                    // Sin conversación activa (pantalla de conversación nueva) se usa la
+                    // terminal del borrador, que la conversación adopta al crearse. La
+                    // terminal nunca depende de haber empezado a chatear.
+                    val terminal = remember(activeSessionId) {
+                        activeSessionId
+                            ?.let(container.terminalController::terminalForAdoptingScratch)
+                            ?: container.terminalController.scratch()
+                    }
+                    TerminalPanel(
+                        terminal = terminal,
+                        height = terminalHeight.dp,
+                        onResize = { delta ->
+                            terminalHeight = (terminalHeight + delta.value)
+                                .coerceIn(TERMINAL_MIN_HEIGHT.value, TERMINAL_MAX_HEIGHT.value)
+                        },
+                        onClose = { terminalOpen = false }
+                    )
                 }
                 if (!imeVisible) {
                     AppBottomBar(
@@ -442,6 +488,9 @@ fun MainScaffold(container: AppContainer) {
                 add(PaletteCommand("o-mcp", "Abrir servidores MCP", null, "Navegación") { mcpOpen = true })
                 add(PaletteCommand("o-inspector", "Abrir inspector de red", null, "Navegación") { inspectorOpen = true })
                 if (PlatformCapabilities.isDesktop) {
+                    add(PaletteCommand("o-terminal", "Abrir/cerrar terminal", "Ctrl+`", "Navegación") {
+                        terminalOpen = !terminalOpen
+                    })
                     add(PaletteCommand("o-editor", "Abrir editor", null, "Navegación") { editorOpen = true })
                     add(PaletteCommand("o-tasks", "Abrir tareas programadas", null, "Navegación") { tasksOpen = true })
                 }

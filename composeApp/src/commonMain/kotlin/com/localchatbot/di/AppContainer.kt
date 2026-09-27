@@ -21,6 +21,7 @@ import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
 import com.localchatbot.core.state.QueuedMessageStore
 import com.localchatbot.core.state.StreamingStateStore
+import com.localchatbot.core.terminal.TerminalController
 import com.localchatbot.core.storage.SettingsFactory
 import com.localchatbot.core.storage.CheckpointStore
 import com.localchatbot.core.hooks.HooksStore
@@ -83,6 +84,7 @@ import com.localchatbot.domain.tools.TodoTool
 import com.localchatbot.domain.tools.ToolRegistry
 import com.localchatbot.domain.skill.SkillCatalog
 import com.localchatbot.domain.tools.ScriptToolFactory
+import com.localchatbot.domain.tools.SetAgentModeTool
 import com.localchatbot.domain.tools.UseSkillTool
 import com.localchatbot.domain.tools.FetchUrlTool
 import com.localchatbot.domain.tools.GitCommitTool
@@ -186,6 +188,15 @@ class AppContainer {
     ).also { FsToolUtil.workspaceStore = it }
 
     /**
+     * Terminales integradas, una por sesión de chat. Cada shell arranca en el workspace
+     * efectivo de *su* sesión, no en el de la que esté visible.
+     */
+    val terminalController = TerminalController(
+        scope = applicationScope,
+        workspaceForSession = { sessionId -> activeWorkspaceStore.forSession(sessionId) }
+    )
+
+    /**
      * Preguntas pendientes que el modelo lanza al usuario vía `ask_user`.
      * La escribe [AskUserTool] y la observa [com.localchatbot.presentation.features.chat.ChatScreen].
      */
@@ -209,18 +220,18 @@ class AppContainer {
      * última imagen producida por otra tool de imagen (encadenable), si no la última foto que
      * subió el usuario (seteada por `SendMessageUseCase` en `activeSessionStore`).
      */
-    private fun sourceImageForVideoTools(): String? =
+    private suspend fun sourceImageForVideoTools(): String? =
         cartoonTool.peekProducedImage()
             ?: imageGenerationTool.peekProducedImage()
             ?: diagramRenderTool.peekProducedImage()
-            ?: activeSessionStore.lastUserImageDataUrl.value
+            ?: activeSessionStore.lastUserImageForTurn()
 
     private val cartoonTool = CartoonTool(
         imageGenApi, preferencesRepository, json,
         sourceImageProvider = {
             imageGenerationTool.peekProducedImage()
                 ?: diagramRenderTool.peekProducedImage()
-                ?: activeSessionStore.lastUserImageDataUrl.value
+                ?: activeSessionStore.lastUserImageForTurn()
         }
     )
     private val animateTool = AnimateTool(videoGenApi, preferencesRepository, json, ::sourceImageForVideoTools)
@@ -280,7 +291,8 @@ class AppContainer {
         json = json
     )
     private val searchCodeSemanticTool = SearchCodeSemanticTool(workspaceIndexer, preferencesRepository, json)
-    private val runCommandTool = RunCommandTool(filesystemAgent, toolConfirmationController, preferencesRepository, json)
+    private val runCommandTool =
+        RunCommandTool(filesystemAgent, toolConfirmationController, preferencesRepository, json, terminalController)
     // Tools de git: las de lectura sin confirmación y disponibles en modo Plan; solo el
     // commit, que escribe, pide aprobación y exige Build.
     private val gitStatusTool = GitStatusTool(filesystemAgent, preferencesRepository, json)
@@ -332,6 +344,13 @@ class AppContainer {
         json = json
     )
 
+    /**
+     * Deja que el modelo aplique el cambio Plan → Build que el prompt de modo Plan le pide
+     * proponer, en vez de quedarse pidiéndole al usuario que toque el chip a mano.
+     */
+    private val setAgentModeTool =
+        SetAgentModeTool(preferencesRepository, toolConfirmationController, json)
+
     private val readToolDocsTool = ReadToolDocsTool(toolDocsStore, json)
     private val readMemoryTool = ReadMemoryTool(memoryStore, json)
     private val saveMemoryTool = SaveMemoryTool(memoryStore, toolConfirmationController, json)
@@ -340,6 +359,7 @@ class AppContainer {
         listOf(
             todoTool,
             askUserTool,
+            setAgentModeTool,
             useSkillTool,
             readToolDocsTool,
             readMemoryTool,

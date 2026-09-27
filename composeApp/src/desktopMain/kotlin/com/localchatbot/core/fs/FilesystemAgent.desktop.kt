@@ -1,5 +1,6 @@
 package com.localchatbot.core.fs
 
+import com.localchatbot.core.text.ConsoleText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
@@ -557,12 +558,100 @@ actual class FilesystemAgent {
             }.getOrElse { e -> FsResult.Err(e.message ?: "Error eliminando") }
         }
 
+    actual suspend fun renamePath(fromAbsPath: String, toAbsPath: String): FsResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val from = Paths.get(fromAbsPath)
+                val to = Paths.get(toAbsPath)
+                if (!Files.exists(from)) {
+                    return@runCatching FsResult.Err("No existe: $fromAbsPath")
+                }
+                if (Files.exists(to)) {
+                    return@runCatching FsResult.Err(
+                        "Ya existe un archivo o carpeta en $toAbsPath"
+                    )
+                }
+                to.parent?.let { Files.createDirectories(it) }
+                Files.move(from, to)
+                FsResult.Ok(buildJsonObject {
+                    put("success", true)
+                    put("from", fromAbsPath)
+                    put("to", toAbsPath)
+                })
+            }.getOrElse { e -> FsResult.Err(e.message ?: "Error renombrando") }
+        }
+
+    actual suspend fun copyPath(fromAbsPath: String, toAbsPath: String): FsResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val from = Paths.get(fromAbsPath)
+                val to = Paths.get(toAbsPath)
+                if (!Files.exists(from)) {
+                    return@runCatching FsResult.Err("No existe: $fromAbsPath")
+                }
+                if (Files.exists(to)) {
+                    return@runCatching FsResult.Err(
+                        "Ya existe un archivo o carpeta en $toAbsPath"
+                    )
+                }
+                to.parent?.let { Files.createDirectories(it) }
+                var copiedCount = 0
+                if (from.isDirectory()) {
+                    Files.walk(from).use { stream ->
+                        stream.forEach { src ->
+                            val dst = to.resolve(from.relativize(src))
+                            if (src.isDirectory()) {
+                                Files.createDirectories(dst)
+                            } else {
+                                Files.copy(src, dst)
+                                copiedCount++
+                            }
+                        }
+                    }
+                } else {
+                    Files.copy(from, to)
+                    copiedCount = 1
+                }
+                FsResult.Ok(buildJsonObject {
+                    put("success", true)
+                    put("from", fromAbsPath)
+                    put("to", toAbsPath)
+                    put("copiedEntries", copiedCount)
+                })
+            }.getOrElse { e -> FsResult.Err(e.message ?: "Error copiando") }
+        }
+
+    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+    actual suspend fun readFileBytes(absPath: String, maxBytes: Int): FsResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val path = Paths.get(absPath)
+                if (!path.isRegularFile()) {
+                    return@runCatching FsResult.Err("No es un archivo regular: $absPath")
+                }
+                val total = path.fileSize()
+                if (total > maxBytes) {
+                    return@runCatching FsResult.Err(
+                        "El archivo pesa $total bytes y supera el límite de $maxBytes para preview."
+                    )
+                }
+                val bytes = Files.readAllBytes(path)
+                FsResult.Ok(buildJsonObject {
+                    put("success", true)
+                    put("path", absPath)
+                    put("size", total)
+                    put("content", kotlin.io.encoding.Base64.encode(bytes))
+                })
+            }.getOrElse { e -> FsResult.Err(e.message ?: "Error leyendo archivo") }
+        }
+
     actual suspend fun runCommand(
         command: String,
         workingDir: String,
         timeoutSeconds: Int,
         background: Boolean,
-        startupCheckSeconds: Int
+        startupCheckSeconds: Int,
+        onOutput: ((String) -> Unit)?
     ): FsResult = withContext(Dispatchers.IO) {
         runCatching {
             val cwd = File(workingDir)
@@ -584,35 +673,19 @@ actual class FilesystemAgent {
                 .redirectErrorStream(false)
                 .start()
 
+            // Lectores concurrentes en daemon threads, en los dos modos. Además de habilitar
+            // el streaming a la terminal integrada, es lo correcto para el modo foreground:
+            // leer solo después de `waitFor` se cuelga si el proceso llena el buffer del pipe
+            // (salida grande) porque nadie lo vacía mientras esperamos a que termine.
+            val stdout = OutputSink()
+            val stderr = OutputSink()
+            val stdoutReader = pumpStream(proc.inputStream, stdout, onOutput)
+            val stderrReader = pumpStream(proc.errorStream, stderr, onOutput)
+
             if (background) {
-                // Modo background: lanza readers concurrentes en daemon threads para
-                // capturar output inicial, espera [startupCheckSeconds] y retorna con
-                // el PID dejando el proceso corriendo.
+                // Modo background: espera [startupCheckSeconds] para capturar la salida
+                // inicial y retorna con el PID dejando el proceso corriendo.
                 val checkMs = startupCheckSeconds.coerceIn(1, 30) * 1_000L
-                val stdoutBuf = java.io.ByteArrayOutputStream()
-                val stderrBuf = java.io.ByteArrayOutputStream()
-
-                // Readers en daemon threads — leen hasta MAX_OUTPUT_CHARS y luego
-                // descartan (evita deadlock por pipe lleno) hasta que el proceso muera.
-                fun startReader(input: java.io.InputStream, buf: java.io.ByteArrayOutputStream): Thread =
-                    Thread {
-                        try {
-                            val tmp = ByteArray(4_096)
-                            while (true) {
-                                val n = input.read(tmp)
-                                if (n <= 0) break
-                                synchronized(buf) {
-                                    if (buf.size() < MAX_OUTPUT_CHARS) buf.write(tmp, 0, n)
-                                    // Si ya está lleno seguimos leyendo y descartando para
-                                    // no bloquear el pipe del proceso.
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }.also { it.isDaemon = true; it.start() }
-
-                val stdoutReader = startReader(proc.inputStream, stdoutBuf)
-                val stderrReader = startReader(proc.errorStream, stderrBuf)
-
                 val exited = proc.waitFor(checkMs, TimeUnit.MILLISECONDS)
 
                 return@runCatching if (exited) {
@@ -621,8 +694,8 @@ actual class FilesystemAgent {
                     FsResult.Ok(buildJsonObject {
                         put("success", proc.exitValue() == 0)
                         put("exitCode", proc.exitValue())
-                        put("stdout", sanitize(stdoutBuf.toString(StandardCharsets.UTF_8.name())))
-                        put("stderr", sanitize(stderrBuf.toString(StandardCharsets.UTF_8.name())))
+                        put("stdout", sanitize(stdout.snapshot()))
+                        put("stderr", sanitize(stderr.snapshot()))
                         put("background", false)
                         put("command", command)
                         put("workingDir", workingDir)
@@ -634,8 +707,8 @@ actual class FilesystemAgent {
                         put("success", true)
                         put("background", true)
                         put("pid", proc.pid())
-                        put("initial_stdout", sanitize(stdoutBuf.toString(StandardCharsets.UTF_8.name())))
-                        put("initial_stderr", sanitize(stderrBuf.toString(StandardCharsets.UTF_8.name())))
+                        put("initial_stdout", sanitize(stdout.snapshot()))
+                        put("initial_stderr", sanitize(stderr.snapshot()))
                         put("command", command)
                         put("workingDir", workingDir)
                         put("note", "Process running in background. Use 'kill ${proc.pid()}' to stop it.")
@@ -652,17 +725,17 @@ actual class FilesystemAgent {
                     "Timeout: el comando excedió ${timeout}s y fue terminado"
                 )
             }
-
-            val stdout = proc.inputStream.readBytes().toString(StandardCharsets.UTF_8)
-            val stderr = proc.errorStream.readBytes().toString(StandardCharsets.UTF_8)
+            // Los readers ven el EOF un instante después de que el proceso muere.
+            stdoutReader.join(1_000)
+            stderrReader.join(1_000)
             val exitCode = proc.exitValue()
 
             FsResult.Ok(buildJsonObject {
                 put("success", exitCode == 0)
                 put("exitCode", exitCode)
-                put("stdout", sanitize(stdout.take(MAX_OUTPUT_CHARS)))
-                put("stderr", sanitize(stderr.take(MAX_OUTPUT_CHARS)))
-                put("truncated", stdout.length > MAX_OUTPUT_CHARS || stderr.length > MAX_OUTPUT_CHARS)
+                put("stdout", sanitize(stdout.snapshot()))
+                put("stderr", sanitize(stderr.snapshot()))
+                put("truncated", stdout.truncated || stderr.truncated)
                 put("background", false)
                 put("command", command)
                 put("workingDir", workingDir)
@@ -671,16 +744,57 @@ actual class FilesystemAgent {
     }
 
     /**
-     * Elimina códigos ANSI (colores, cursores, etc.) y caracteres de control
-     * ilegales en XML 1.0 del output de consola.
+     * Vuelca un stream del proceso en [sink] y, si hay [onOutput], lo va emitiendo por
+     * trozos. Sigue leyendo aunque [sink] esté lleno: dejar de leer bloquearía al proceso
+     * cuando se llene el pipe.
      *
-     * Motivo: `PropertiesSettings` persiste con `storeToXML()`. Los chars de
-     * control producen XML malformado → la escritura falla silenciosamente →
-     * la sesión no se guarda.
+     * Se decodifica con un `Reader` (no byte a byte) porque mantiene el estado del
+     * decodificador entre lecturas: un carácter multibyte partido entre dos trozos se
+     * reconstruye en vez de salir como interrogante.
      */
-    private fun sanitize(text: String): String =
-        ANSI_PATTERN.replace(text, "")
-            .replace(CONTROL_CHARS_PATTERN, "")
+    private fun pumpStream(
+        stream: java.io.InputStream,
+        sink: OutputSink,
+        onOutput: ((String) -> Unit)?
+    ): Thread = Thread {
+        try {
+            val reader = stream.reader(StandardCharsets.UTF_8)
+            val buffer = CharArray(4_096)
+            while (true) {
+                val n = reader.read(buffer)
+                if (n <= 0) break
+                val chunk = String(buffer, 0, n)
+                sink.append(chunk)
+                // Un observador que falle no puede tumbar la captura del comando.
+                if (onOutput != null) runCatching { onOutput(sanitize(chunk)) }
+            }
+        } catch (_: Exception) {
+        }
+    }.also { it.isDaemon = true; it.start() }
+
+    /** Buffer de salida con techo, escrito desde el hilo lector y leído desde la corutina. */
+    private class OutputSink {
+        private val builder = StringBuilder()
+
+        @Volatile
+        var truncated: Boolean = false
+            private set
+
+        fun append(chunk: String) {
+            synchronized(builder) {
+                if (builder.length < MAX_OUTPUT_CHARS) builder.append(chunk) else truncated = true
+            }
+        }
+
+        fun snapshot(): String = synchronized(builder) { builder.toString() }.take(MAX_OUTPUT_CHARS)
+    }
+
+    /**
+     * Elimina códigos ANSI y caracteres de control del output de consola. La
+     * implementación vive en [ConsoleText] porque la terminal integrada necesita
+     * exactamente el mismo filtrado (ver la nota de motivación allí).
+     */
+    private fun sanitize(text: String): String = ConsoleText.sanitize(text)
 
     private companion object {
         const val MAX_OUTPUT_CHARS = 50_000
@@ -697,12 +811,6 @@ actual class FilesystemAgent {
 
         /** Tope por línea al leer archivos: evita que una línea minificada infle el contexto. */
         const val MAX_LINE_CHARS = 2_000
-
-        /** Secuencias de escape ANSI: ESC [ … m , ESC ] … , ESC c, etc. */
-        val ANSI_PATTERN = Regex("""\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)""")
-
-        /** Caracteres de control ilegales en XML 1.0 (excepto \t \n \r). */
-        val CONTROL_CHARS_PATTERN = Regex("""[\x00-\x08\x0B\x0C\x0E-\x1F\x7F￾￿]""")
     }
 }
 

@@ -6,6 +6,7 @@ import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.QueuedMessageStore
 import com.localchatbot.core.storage.CheckpointStore
+import com.localchatbot.core.terminal.TerminalController
 import com.localchatbot.domain.model.SessionSummary
 import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.Project
@@ -66,7 +67,8 @@ class SessionsViewModel(
     private val createSessionUseCase: CreateSessionUseCase,
     private val projectRepository: ProjectRepository,
     private val checkpointStore: CheckpointStore? = null,
-    private val queuedMessageStore: QueuedMessageStore? = null
+    private val queuedMessageStore: QueuedMessageStore? = null,
+    private val terminalController: TerminalController? = null
 ) : ViewModel() {
 
     private val _local = MutableStateFlow(LocalState())
@@ -206,8 +208,13 @@ class SessionsViewModel(
         viewModelScope.launch {
             chatRepository.deleteSession(id)
             activeSessionStore.clearIfMatches(id)
+            // Idem para la última foto adjuntada en la sesión: es base64 en memoria.
+            activeSessionStore.clearSessionState(id)
             // Sin esto la cola de una sesión borrada quedaría colgada en memoria.
             queuedMessageStore?.clear(id)
+            // Idem para la terminal de la sesión: sin esto quedaría un proceso de shell vivo
+            // apuntando a una conversación que ya no existe.
+            terminalController?.dispose(id)
             checkpointStore?.deleteSession(id)
             projectRepository.detachSession(id)
             // Sin esto el corte de compactación quedaría huérfano en preferencias para

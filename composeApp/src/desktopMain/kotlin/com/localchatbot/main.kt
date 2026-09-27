@@ -69,6 +69,7 @@ fun main() {
                         c.chatRepository.flushPendingWrites()
                         SettingsFactory.flushPendingWrites()
                         c.remoteAccessServer.stop()
+                        c.terminalController.closeAll()
                         runBlocking { c.mcpToolProvider.closeAll() }
                     }
                 )

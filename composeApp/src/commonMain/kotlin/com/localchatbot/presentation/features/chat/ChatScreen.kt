@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -84,6 +85,8 @@ fun ChatScreen(
     onOpenEditor: () -> Unit = {},
     onOpenFileInEditor: ((String, Int?) -> Unit)? = null,
     onOpenMetrics: () -> Unit = {},
+    terminalOpen: Boolean = false,
+    onToggleTerminal: (() -> Unit)? = null,
     showMenuButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -160,6 +163,8 @@ fun ChatScreen(
             onToggleYolo = chatViewModel::toggleFsYoloMode,
             onTogglePreviewEdits = chatViewModel::toggleFsPreviewEdits,
             onToggleMode = chatViewModel::toggleAgentMode,
+            terminalOpen = terminalOpen,
+            onToggleTerminal = onToggleTerminal,
             onSelectSkill = chatViewModel::selectSkill,
             onClearSkill = chatViewModel::clearPendingSkill,
             pendingPrompt = pendingUserPrompt,
@@ -323,6 +328,8 @@ fun ChatContent(
     onToggleYolo: () -> Unit = {},
     onTogglePreviewEdits: () -> Unit = {},
     onToggleMode: () -> Unit = {},
+    terminalOpen: Boolean = false,
+    onToggleTerminal: (() -> Unit)? = null,
     onSelectSkill: (com.localchatbot.domain.model.SkillDefinition) -> Unit = {},
     onClearSkill: () -> Unit = {},
     pendingPrompt: com.localchatbot.core.state.PendingUserPrompt? = null,
@@ -357,8 +364,20 @@ fun ChatContent(
     // Solo auto-scrollear si el usuario ya estaba pegado al fondo (o si el mensaje
     // nuevo es suyo — acaba de enviar). Si subió a leer mientras el modelo escribe,
     // no arrastrarlo hacia abajo con cada mensaje nuevo de la ronda de tools.
+    //
+    // `firstVisibleItemIndex` NO alcanza como señal: la respuesta en streaming suele
+    // ser un único item (índice 0) que crece y ocupa de sobra el viewport, así que
+    // scrollear varios cientos de px hacia arriba DENTRO de esa misma burbuja para
+    // releer algo no cambia el índice — quedaba mal clasificado como "en el fondo" y,
+    // en la siguiente ronda de tools (nuevo item), te arrastraba de vuelta abajo sin
+    // avisar. Exigir además un offset chico dentro del item 0 detecta ese scroll.
+    val density = LocalDensity.current
+    val nearBottomOffsetPx = remember(density) { with(density) { NEAR_BOTTOM_THRESHOLD_DP.dp.toPx() } }
     val nearBottom by remember {
-        derivedStateOf { listState.firstVisibleItemIndex <= 1 }
+        derivedStateOf {
+            listState.firstVisibleItemIndex == 0 &&
+                listState.firstVisibleItemScrollOffset <= nearBottomOffsetPx
+        }
     }
     LaunchedEffect(messageCount) {
         if (messageCount == 0) return@LaunchedEffect
@@ -501,13 +520,14 @@ fun ChatContent(
                     modifier = Modifier.fillMaxSize().then(dismissKeyboardModifier)
                 )
                 // Botón flotante para volver al fondo cuando el usuario subió a leer.
-                val showJumpToBottom by remember {
-                    derivedStateOf { listState.firstVisibleItemIndex > 0 }
-                }
+                // Misma señal que el auto-scroll (nearBottom): si una no dispara, la otra
+                // tampoco debería — antes usaban condiciones distintas y el botón podía
+                // quedar oculto (índice todavía 0 dentro de una burbuja larga) justo en el
+                // caso en que el usuario más lo necesitaba.
                 // Llamada calificada: dentro de un Box anidado en Column, la
                 // resolución implícita elige la extensión de ColumnScope y falla.
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = showJumpToBottom,
+                    visible = !nearBottom,
                     enter = fadeIn(),
                     exit = fadeOut(),
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = Spacing.md)
@@ -576,7 +596,9 @@ fun ChatContent(
                         onToggleSandbox = onToggleSandbox,
                         onToggleYolo = onToggleYolo,
                         onTogglePreviewEdits = onTogglePreviewEdits,
-                        onToggleMode = onToggleMode
+                        onToggleMode = onToggleMode,
+                        terminalOpen = terminalOpen,
+                        onToggleTerminal = onToggleTerminal
                     )
                 }
             } else null
@@ -670,3 +692,6 @@ private fun ChatWithMessagesDarkPreview() = PreviewSurface(themeMode = ThemeMode
 
 /** Cuánto dura la marca del mensaje al que se salta desde la búsqueda global. */
 private const val JUMP_HIGHLIGHT_MS = 2500L
+
+/** Tolerancia (dp) dentro del item 0 para considerar que seguís "en el fondo". */
+private const val NEAR_BOTTOM_THRESHOLD_DP = 64

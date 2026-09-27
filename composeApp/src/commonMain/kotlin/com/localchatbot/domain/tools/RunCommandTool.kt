@@ -2,6 +2,9 @@ package com.localchatbot.domain.tools
 
 import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.fs.FilesystemAgent
+import com.localchatbot.core.fs.FsResult
+import com.localchatbot.core.state.TurnSessionContext
+import com.localchatbot.core.terminal.TerminalController
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
@@ -14,12 +17,19 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlin.coroutines.coroutineContext
 
 class RunCommandTool(
     private val agent: FilesystemAgent,
     private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
-    private val json: Json
+    private val json: Json,
+    /**
+     * Terminal integrada donde reflejar lo que ejecuta el agente. Es **solo un espejo**: el
+     * comando se sigue ejecutando en su propio proceso, con su confirmación y su timeout, y
+     * nunca pasa por el shell de la terminal. Null = sin espejo (móvil, tests).
+     */
+    private val terminal: TerminalController? = null
 ) : Tool {
 
     override val name: String = TOOL_NAME
@@ -125,10 +135,34 @@ class RunCommandTool(
         )
         if (!approved) return FsToolUtil.cancelledPayload(json)
 
-        return FsToolUtil.fsResultToJson(
-            json,
-            agent.runCommand(command, resolvedDir, timeout, background, startupCheck)
+        // La sesión sale de TurnSessionContext, no de la sesión visible: una tarea
+        // programada corre en paralelo al chat y su salida tiene que ir a la terminal de
+        // *su* conversación, no a la que el usuario tenga delante.
+        val sessionTerminal = terminal?.let { controller ->
+            coroutineContext[TurnSessionContext]?.sessionId?.let(controller::terminalFor)
+        }
+        sessionTerminal?.appendAgentCommand(command, resolvedDir)
+
+        val result = agent.runCommand(
+            command, resolvedDir, timeout, background, startupCheck,
+            onOutput = sessionTerminal?.let { term -> { chunk -> term.appendAgentOutput(chunk) } }
         )
+        sessionTerminal?.appendAgentResult(resultSummary(result))
+
+        return FsToolUtil.fsResultToJson(json, result)
+    }
+
+    /** Línea de cierre del espejo: lo que la terminal muestra tras la salida del comando. */
+    private fun resultSummary(result: FsResult): String = when (result) {
+        is FsResult.Err -> "error: ${result.message}"
+        is FsResult.Ok -> {
+            val payload = result.payload
+            if (payload["background"]?.jsonPrimitive?.booleanOrNull == true) {
+                "en segundo plano (pid ${payload["pid"]?.jsonPrimitive?.content ?: "?"})"
+            } else {
+                "exit ${payload["exitCode"]?.jsonPrimitive?.content ?: "?"}"
+            }
+        }
     }
 
     companion object {
