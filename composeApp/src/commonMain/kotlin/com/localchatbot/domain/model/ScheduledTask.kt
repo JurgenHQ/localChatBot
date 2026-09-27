@@ -34,7 +34,13 @@ data class ScheduledTask(
     /** Sólo para [KIND_DAILY]. Días ISO permitidos (1=lun … 7=dom); vacío = todos. */
     val daysOfWeek: List<Int> = emptyList(),
     /** Epoch ms del último disparo. Lo escribe el scheduler; evita re-disparos. */
-    val lastRunEpochMs: Long? = null
+    val lastRunEpochMs: Long? = null,
+    /**
+     * Perfil de conexión con el que correr esta tarea, o null para usar el perfil
+     * globalmente activo en ese momento. Si el perfil referenciado ya no existe
+     * (fue borrado) [AutomationScheduler] degrada silenciosamente al activo.
+     */
+    val connectionProfileId: String? = null
 ) {
     val isDaily: Boolean get() = scheduleKind == KIND_DAILY
     val isInterval: Boolean get() = scheduleKind == KIND_INTERVAL

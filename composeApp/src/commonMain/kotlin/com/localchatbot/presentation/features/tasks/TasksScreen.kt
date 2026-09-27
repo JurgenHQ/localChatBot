@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.automation.AutomationScheduler
 import com.localchatbot.core.theme.Spacing
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.presentation.components.atoms.SectionLabel
 import com.localchatbot.presentation.components.molecules.SectionCard
@@ -65,6 +66,8 @@ fun TasksScreen(
         if (state.showEditSheet) {
             TaskEditSheet(
                 editing = state.editingTask,
+                connectionProfiles = state.connectionProfiles,
+                activeConnectionProfileId = state.activeConnectionProfileId,
                 onDismiss = viewModel::closeSheet,
                 onSave = viewModel::saveTask
             )
@@ -126,6 +129,7 @@ private fun TasksContent(
                 state.tasks.forEachIndexed { index, item ->
                     TaskRow(
                         item = item,
+                        connectionProfiles = state.connectionProfiles,
                         onEdit = { onEdit(item.task) },
                         onDelete = { onDelete(item.task.id) },
                         onToggle = { onToggle(item.task.id, it) },
@@ -151,6 +155,7 @@ private fun TasksContent(
 @Composable
 private fun TaskRow(
     item: TaskUiItem,
+    connectionProfiles: List<ConnectionProfile>,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggle: (Boolean) -> Unit,
@@ -174,8 +179,10 @@ private fun TaskRow(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                val profileName = task.connectionProfileId
+                    ?.let { id -> connectionProfiles.firstOrNull { it.id == id }?.name }
                 Text(
-                    scheduleSummary(task),
+                    if (profileName != null) "${scheduleSummary(task)} · $profileName" else scheduleSummary(task),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

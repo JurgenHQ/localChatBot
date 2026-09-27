@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.util.newId
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.PrimaryButton
@@ -44,6 +45,8 @@ private val DAY_LABELS = listOf("L", "M", "M", "J", "V", "S", "D") // ISO 1..7 (
 @Composable
 fun TaskEditSheet(
     editing: ScheduledTask?,
+    connectionProfiles: List<ConnectionProfile> = emptyList(),
+    activeConnectionProfileId: String = "",
     onDismiss: () -> Unit,
     onSave: (ScheduledTask) -> Unit
 ) {
@@ -54,6 +57,7 @@ fun TaskEditSheet(
     var minuteText by remember { mutableStateOf((editing?.minute ?: 0).toString().padStart(2, '0')) }
     var intervalText by remember { mutableStateOf((editing?.intervalMinutes ?: 60).toString()) }
     val selectedDays = remember { mutableStateListOf<Int>().apply { editing?.daysOfWeek?.let { addAll(it) } } }
+    var selectedProfileId by remember { mutableStateOf(editing?.connectionProfileId) }
 
     Box(
         modifier = Modifier
@@ -155,6 +159,25 @@ fun TaskEditSheet(
                 }
             }
 
+            if (connectionProfiles.size > 1) {
+                FieldLabel("Perfil de conexión")
+                val activeName = connectionProfiles.firstOrNull { it.id == activeConnectionProfileId }?.name
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    Chip(
+                        label = if (activeName != null) "Activo ($activeName)" else "Activo",
+                        selected = selectedProfileId == null,
+                        onClick = { selectedProfileId = null }
+                    )
+                    connectionProfiles.forEach { profile ->
+                        Chip(
+                            label = profile.name,
+                            selected = selectedProfileId == profile.id,
+                            onClick = { selectedProfileId = profile.id }
+                        )
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 SecondaryButton(
                     text = "Cancelar",
@@ -177,7 +200,8 @@ fun TaskEditSheet(
                                 daysOfWeek = selectedDays.sorted().toList(),
                                 // Reset del último run al cambiar la programación desde el editor
                                 // para que el nuevo horario se evalúe limpio.
-                                lastRunEpochMs = editing?.lastRunEpochMs
+                                lastRunEpochMs = editing?.lastRunEpochMs,
+                                connectionProfileId = selectedProfileId
                             )
                         )
                     },

@@ -17,6 +17,7 @@ data class SettingsEditorUiState(
     val textDraft: String = "",
     val themeDraft: ThemeMode = ThemeMode.System,
     val accentDraft: Long = 0L,
+    val reasoningEffortDraft: String? = null,
     val availableModels: List<String> = emptyList(),
     val loadingModels: Boolean = false
 ) {
@@ -73,7 +74,8 @@ class SettingsEditorViewModel(
                         else -> ""
                     },
                     themeDraft = prefs.themeMode,
-                    accentDraft = prefs.accentSeed
+                    accentDraft = prefs.accentSeed,
+                    reasoningEffortDraft = p.reasoningEffort
                 )
             }
             if (editor == SettingsEditor.Model && listModels != null && prefs.connection.isValid()) {
@@ -86,6 +88,13 @@ class SettingsEditorViewModel(
     fun onThemeChange(mode: ThemeMode) = _state.update { it.copy(themeDraft = mode) }
     fun onAccentChange(seed: Long) = _state.update { it.copy(accentDraft = seed) }
     fun onModelSelected(name: String) = _state.update { it.copy(textDraft = name) }
+
+    /** Selección directa (como Theme/Accent): guarda y cierra el sheet en un solo tap. */
+    fun onReasoningEffortSelected(level: String?, onDone: () -> Unit) = viewModelScope.launch {
+        val cur = preferences.current().generationParams
+        preferences.updateGenerationParams(cur.copy(reasoningEffort = level))
+        onDone()
+    }
 
     fun fetchModels() {
         val fetch = listModels ?: return
@@ -144,6 +153,9 @@ class SettingsEditorViewModel(
                     }
                     preferences.updateGenerationParams(updated)
                 }
+                // Selección directa vía onReasoningEffortSelected (mismo patrón que
+                // Theme/Accent); este editor nunca llega a save().
+                SettingsEditor.ReasoningEffort -> Unit
             }
             onDone()
         }

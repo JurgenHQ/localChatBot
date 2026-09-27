@@ -111,8 +111,16 @@ class AutomationScheduler(
             chats.updateTitle(session.id, "⏰ ${task.name}")
             // Agrupa la sesión bajo la sección "Tareas automatizadas" del drawer.
             projects.assignSession(session.id, ProjectRepository.AUTOMATION_GROUP_ID)
+            // Si la tarea fija un perfil de conexión y aún existe, corre con él en vez
+            // del perfil globalmente activo — así no cambia de servidor/modelo/API key
+            // según lo que el usuario tenga seleccionado en el chat interactivo. Un
+            // perfil borrado degrada silenciosamente al activo (mismo criterio que
+            // `setConnectionProfiles` usa para `activeConnectionProfileId`).
+            val connectionOverride = task.connectionProfileId
+                ?.let { id -> prefs.current().connectionProfiles.firstOrNull { it.id == id } }
+                ?.config
             val result = withContext(AutoApproveConfirmations()) {
-                sendMessage(session.id, task.instructions)
+                sendMessage(session.id, task.instructions, connectionOverride = connectionOverride)
             }
             markRun(task.id, startedAt)
             _status.update {

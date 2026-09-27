@@ -36,13 +36,15 @@ class OpenAiApi(
 
     suspend fun chatCompletion(
         baseUrl: String,
-        request: ChatCompletionRequest
+        request: ChatCompletionRequest,
+        /** Si no-null, se usa en vez de [authTokenProvider] (perfil de conexión distinto al activo). */
+        apiKeyOverride: String? = null
     ): Result<ChatCompletionResponse> {
         val url = "$baseUrl/chat/completions"
         val finalRequest = request.copy(stream = false)
         val requestJson = runCatching { json.encodeToString(ChatCompletionRequest.serializer(), finalRequest) }.getOrNull()
         val start = Clock.System.now().toEpochMilliseconds()
-        val token = authTokenProvider()
+        val token = apiKeyOverride ?: authTokenProvider()
         return runCatching {
             val response = client.post(url) {
                 contentType(ContentType.Application.Json)
@@ -87,7 +89,9 @@ class OpenAiApi(
 
     fun streamChatCompletion(
         baseUrl: String,
-        request: ChatCompletionRequest
+        request: ChatCompletionRequest,
+        /** Si no-null, se usa en vez de [authTokenProvider] (perfil de conexión distinto al activo). */
+        apiKeyOverride: String? = null
     ): Flow<ChatCompletionChunk> = flow {
         val url = "$baseUrl/chat/completions"
         val finalRequest = request.copy(stream = true)
@@ -98,7 +102,7 @@ class OpenAiApi(
         var errorMessage: String? = null
         var parseErrorCount = 0
         var firstParseError: String? = null
-        val token = authTokenProvider()
+        val token = apiKeyOverride ?: authTokenProvider()
         try {
             client.preparePost(url) {
                 contentType(ContentType.Application.Json)

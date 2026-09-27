@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.automation.AutomationScheduler
 import com.localchatbot.core.util.newId
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ScheduledTask
 import com.localchatbot.domain.repository.PreferencesRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,7 +22,9 @@ data class TaskUiItem(
 data class TasksUiState(
     val tasks: List<TaskUiItem> = emptyList(),
     val showEditSheet: Boolean = false,
-    val editingTask: ScheduledTask? = null
+    val editingTask: ScheduledTask? = null,
+    val connectionProfiles: List<ConnectionProfile> = emptyList(),
+    val activeConnectionProfileId: String = ""
 )
 
 class TasksViewModel(
@@ -43,7 +46,9 @@ class TasksViewModel(
                 TaskUiItem(task = task, status = statuses[task.id] ?: AutomationScheduler.RunStatus())
             },
             showEditSheet = showEdit,
-            editingTask = editing
+            editingTask = editing,
+            connectionProfiles = prefs.connectionProfiles,
+            activeConnectionProfileId = prefs.activeConnectionProfileId
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, TasksUiState())
 

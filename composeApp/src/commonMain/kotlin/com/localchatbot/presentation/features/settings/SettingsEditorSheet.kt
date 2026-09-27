@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
+import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.PrimaryButton
 import com.localchatbot.presentation.components.atoms.SecondaryButton
@@ -48,6 +49,7 @@ fun SettingsEditorSheet(
         onThemeChange = { viewModel.onThemeChange(it); viewModel.save(onDismiss) },
         onAccentChange = { viewModel.onAccentChange(it); viewModel.save(onDismiss) },
         onModelSelected = viewModel::onModelSelected,
+        onReasoningEffortChange = { viewModel.onReasoningEffortSelected(it, onDismiss) },
         onSave = { viewModel.save(onDismiss) },
         onDismiss = onDismiss
     )
@@ -60,6 +62,7 @@ fun SettingsEditorSheetContent(
     onThemeChange: (ThemeMode) -> Unit,
     onAccentChange: (Long) -> Unit,
     onModelSelected: (String) -> Unit = {},
+    onReasoningEffortChange: (String?) -> Unit = {},
     onSave: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -228,6 +231,10 @@ fun SettingsEditorSheetContent(
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
+                SettingsEditor.ReasoningEffort -> ReasoningEffortEditorBody(
+                    current = state.reasoningEffortDraft,
+                    onSelect = onReasoningEffortChange
+                )
             }
             SecondaryButton(text = "Cancelar", onClick = onDismiss)
         }
@@ -274,6 +281,42 @@ private fun ThemeEditorBody(current: ThemeMode, onSelect: (ThemeMode) -> Unit) {
                         else MaterialTheme.colorScheme.surface
                     )
                     .clickable { onSelect(mode) }
+                    .padding(Spacing.lg)
+            ) {
+                Text(label, color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReasoningEffortEditorBody(current: String?, onSelect: (String?) -> Unit) {
+    Text(
+        "Esfuerzo de razonamiento",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground
+    )
+    Text(
+        "Solo lo respetan modelos con modo \"thinking\" (DeepSeek v4, OpenAI o-series y " +
+            "compatibles vía reasoning_effort). En otros backends no tiene efecto. Al elegir " +
+            "un nivel se dejan de enviar temperatura/top-p/penalties: DeepSeek los documenta " +
+            "como incompatibles con el modo thinking.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        val options = listOf(null as String? to "Automático (no enviar)") +
+            GenerationParams.REASONING_EFFORT_LEVELS.map { it to it }
+        options.forEach { (value, label) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(
+                        if (current == value) MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.surface
+                    )
+                    .clickable { onSelect(value) }
                     .padding(Spacing.lg)
             ) {
                 Text(label, color = MaterialTheme.colorScheme.onBackground)
