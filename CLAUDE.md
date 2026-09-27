@@ -122,6 +122,9 @@ Navigation is `MainScaffold` (`presentation/navigation/`): three bottom tabs (`B
 - `PendingUserPromptStore` — per-session question published by the `ask_user` tool, rendered by `ChatScreen`.
 - `QueuedMessageStore` — per-session messages typed *while a turn was running*, sent **merged into one** when it ends. See Message queue below.
 - `StreamingStateStore` — in-flight streams + current tool activity.
+- `TurnSessionContext` — a `CoroutineContext` marker (same pattern as `AutoApproveConfirmations`) carrying **the session the running turn belongs to**. `SendMessageUseCase.invoke` installs it around the *whole* turn and it propagates down the coroutine tree, including parallel tool execution.
+
+**Anything session-scoped inside a turn must resolve the session from `TurnSessionContext`, not from `ActiveSessionStore`.** The latter is the session *visible in the UI*; a turn runs in `applicationScope` and survives the user navigating away, and a scheduled task runs **concurrently** with the interactive chat (the scheduler's mutex serializes tasks against each other, not against the chat). The two diverge, and everything keyed off the visible session then wrote into the wrong conversation. Users of the marker: `ask_user`, `manage_todos`, `ProducedMediaSlot`, `ActiveSessionStore.lastUserImageForTurn`, `ActiveWorkspaceStore.current`/`currentAgentMode`, `set_agent_mode`. Its `workspaceSessionId` field differs from `sessionId` only for sub-agents (see below).
 
 ### Connection profiles
 
@@ -129,12 +132,14 @@ Navigation is `MainScaffold` (`presentation/navigation/`): three bottom tabs (`B
 
 ### Projects and per-session workspace
 
-`Project` (id, name, `workspaceDir`, `collapsed`) + `ProjectState.assignments` (`sessionId → projectId`), persisted by `ProjectRepositoryImpl` in settings. `ActiveWorkspaceStore` resolves, for the active session:
+`Project` (id, name, `workspaceDir`, `collapsed`) + `ProjectState.assignments` (`sessionId → projectId`), persisted by `ProjectRepositoryImpl` in settings. `ActiveWorkspaceStore` resolves, for a session:
 
 - **`effectiveWorkspace`** = assigned project's `workspaceDir`, else the global `prefs.fsWorkspaceDir` (orphan assignments fall back silently).
 - **`effectiveAgentMode`** = `prefs.sessionAgentModes[sessionId]` override, else the global `prefs.agentMode`.
 
 Both feed the fs tools (via `FsToolUtil.workspaceStore`) and the `<workspace>` block of the system prompt. Desktop-only in practice; with no projects and no overrides the behaviour is identical to the global-only setup. The drawer groups sessions under collapsible project sections.
+
+**The store has two access paths and they answer about different sessions.** The `StateFlow`s (`effectiveWorkspace`, `effectiveAgentMode`) track the *visible* session and exist for the UI (workspace chip, Plan/Build toggle). The **suspend** `current()` / `currentAgentMode()` track the *running turn* via `TurnSessionContext` (falling back to the visible session outside a turn) and are what tools and the system prompt must use. Before that split, a scheduled task running while you worked resolved its workspace and its Plan/Build gate against whatever chat you happened to be looking at.
 
 ### Tool-calling loop (`UseCases.kt`)
 
@@ -258,7 +263,7 @@ them open another overlay, and the other order would have `onDismiss` close what
 opened.
 
 Global shortcuts live in a single `onPreviewKeyEvent` on the `MainScaffold` root: **Ctrl+K**
-palette, **Ctrl+N** new chat, **Ctrl+,** settings, **Esc** closes the topmost overlay and only
+palette, **Ctrl+N** new chat, **Ctrl+,** settings, **Ctrl+`** terminal panel, **Esc** closes the topmost overlay and only
 stops the stream when there is nothing to close (with a dialog open, Esc means "close this"). The
 preview pass runs root→focused element, so these fire even while the caret is in the composer,
 which keeps Enter/Shift+Enter for itself. Ctrl+Enter already sent before this change (`AppTextField`
@@ -266,7 +271,11 @@ only treats Shift+Enter specially).
 
 ### Plan / Build mode
 
-`AgentMode.Plan | AgentMode.Build` (default **Build**) gates whether the agent can mutate the project. The effective mode is per-session (`prefs.sessionAgentModes[sessionId]`) with `prefs.agentMode` as the global default — resolved by `ActiveWorkspaceStore.effectiveAgentMode`. In **Plan** mode the project-mutating tools (`create_file`, `edit_file`, `multi_edit`, `delete_file`, `create_directory`, `save_image`) report `isAvailable=false` via `FsToolUtil.isWriteAvailable` (= `isAvailable` && mode==Build) and are **not sent to the model** — it physically can't call them. `run_command` stays available (the agent prompt instructs Plan mode to use it read-only). `buildAgentPrompt` prepends a PLAN-MODE block telling the model to investigate and propose a plan, then ask the user to switch to Build to apply it. Toggled from the `AgentControlsBar` chip, persisted via `PreferencesRepository.updateSessionAgentMode` / `updateAgentMode`. Read tools (`read_file`, `list_directory`, `search_files`) and non-fs tools are unaffected.
+`AgentMode.Plan | AgentMode.Build` (default **Build**) gates whether the agent can mutate the project. The effective mode is per-session (`prefs.sessionAgentModes[sessionId]`) with `prefs.agentMode` as the global default — resolved by `ActiveWorkspaceStore.effectiveAgentMode`. In **Plan** mode the project-mutating tools (`create_file`, `edit_file`, `multi_edit`, `delete_file`, `create_directory`, `save_image`) report `isAvailable=false` via `FsToolUtil.isWriteAvailable` (= `isAvailable` && mode==Build) and are **not sent to the model** — it physically can't call them. `run_command` stays available (the agent prompt instructs Plan mode to use it read-only). `buildAgentPrompt` prepends a PLAN-MODE block telling the model to investigate, propose a plan, and — if the user agrees — apply the switch itself with `set_agent_mode`. Toggled from the `AgentControlsBar` chip, persisted via `PreferencesRepository.updateSessionAgentMode` / `updateAgentMode`. Read tools (`read_file`, `list_directory`, `search_files`) and non-fs tools are unaffected.
+
+**`set_agent_mode` is how the model applies the switch.** The prompt used to tell it to ask the user to flip the chip by hand, which meant the user could agree and nothing would happen — there was no tool that wrote `agentMode`. It writes **only** `sessionAgentModes[sessionId]` for the turn's session, never the global default, and going **to Build always opens the confirmation dialog, even in YOLO** (`requestApproval(force = true)`, same treatment as the `run_command` denylist): Plan mode is a read-only guarantee and the model removing it unseen would void it. Going back to Plan asks nothing — it only restricts. An automated run (`AutoApproveConfirmations`) passes without a dialog like everything else it does; that's deliberate, since a scheduled task already auto-approves destructive `run_command`s.
+
+For the switch to be usable at all, **the tool definitions are now re-resolved on every round of the loop**, not once per turn — otherwise the model unlocks Build and then has to end its turn and wait for the user before it can touch a file. Only the definitions: the tool *instances* (`scriptTools`, `mcpTools`) are still resolved once, since reconnecting MCP servers per round would be expensive and nothing there changes mid-turn.
 
 ### Conversation branching (resend undo)
 
@@ -296,6 +305,7 @@ Registered in `AppContainer.toolRegistry`; `sk_*` and `mcp_*` tools are built dy
 | Tool | Requires | Notes |
 |---|---|---|
 | `ask_user` | — | Turn-ending question with optional chips (`endsTurn = true`). Publishes to `PendingUserPromptStore`; the answer arrives as the next user message. Backed by a deterministic nudge (see below) because local models routinely ignore the prompt rule. Note this is *not* the old "detect a question in the text" heuristic, which auto-answered itself in YOLO mode |
+| `set_agent_mode` | Desktop only | Switches the turn's session between Plan and Build (see Plan / Build mode). Writes only `sessionAgentModes`; → Build always shows the confirmation dialog, even in YOLO |
 | `search_web` | Tavily API key | HTTP call to Tavily; results shown as source chips |
 | `fetch_url` | — | Downloads a URL and returns its readable text. Closes the gap between "can search" and "can read": `search_web` returns snippets, this returns the document. No API key. HTML → text via `HtmlToText` (`core/web/`, hand-rolled — jsoup is JVM-only and this must compile for iOS native). Caps at 6k chars by default so the tool, not the generic 8k truncation, tells the model there is more page |
 | `git_status` / `git_diff` / `git_log` | Desktop only | Read-only, **no confirmation**, available in Plan mode — checking the repo state shouldn't need approval. Shell out to git through `agent.runCommand` |
@@ -309,7 +319,7 @@ Registered in `AppContainer.toolRegistry`; `sk_*` and `mcp_*` tools are built dy
 | `search_files` | Desktop only | Native recursive grep over the workspace (`FilesystemAgent.searchFiles`, `Files.walk`). `pattern` is regex by default with automatic literal fallback if it doesn't compile (`mode` in the payload says which ran); case-insensitive by default; optional `path`, `file_glob`, `literal`, `case_sensitive`, `max_results` (≤500). Skips binaries, files >1MB and heavy dirs (.git, build, node_modules…). Returns `path:line: text` hits relative to the workspace so chat links open the editor at that line. Read-only → no confirmation, available in Plan mode |
 | `search_code_semantic` | Desktop only + embeddings model | Semantic search over the workspace via an embeddings index (see Semantic search below). Answers "where is X handled?" without knowing the name. Read-only → no confirmation, available in Plan mode. Degrades with an explicit message pointing at `search_files` when no embeddings model is available |
 | `spawn_agent` | Desktop only | Runs a self-contained subtask in a **child session** with its own fresh context and returns only its final text (see Sub-agents below) |
-| `run_command` | Desktop only | Shell execution tool (foreground with timeout, or background with PID); destructive patterns (`DangerousCommands.kt`) force a confirmation dialog even in YOLO |
+| `run_command` | Desktop only | Shell execution tool (foreground with timeout, or background with PID); destructive patterns (`DangerousCommands.kt`) force a confirmation dialog even in YOLO. Its command and live output are mirrored into the session's integrated terminal (display only — see Integrated terminal) |
 | `manage_todos` | — | Session-scoped to-do list the model uses to plan multi-step tasks; shown in `TodoProgressPanel` |
 | `use_skill` | — | Loads the full instructions for an installed skill on demand (the skills index in the system prompt only lists each skill's short description) |
 | `read_tool_docs` | Desktop only | Lazily returns the tool guide (`~/.localchatbot/tools.md`). The model calls it when unsure how to use a tool or when one keeps failing; avoids bloating every request with tool docs. Default content shipped via `DEFAULT_TOOLS_MD` (`ToolDocsStore`), seeded to disk on first read; user can edit the file |
@@ -343,8 +353,13 @@ Same shape as `AutomationScheduler.runTask`: `createSession()` → `updateTitle(
   `ToolRegistry` that contains the tool. `AppContainer` passes a lazy provider (`{ sendMessage }`),
   and `sendMessage` needs an **explicit type annotation** or the inferencer recurses. `createSession`
   is declared above the tools block for the same ordering reason.
-- The child shares the parent's effective workspace and `TodoTool` list (both keyed by the *active*
-  session, which stays the parent's) — same as automation sessions already do.
+- **The child inherits the parent's workspace and Plan/Build mode, but not its per-session state.**
+  The inheritance is explicit — `sendMessage(…, workspaceSessionId = parentSessionId)`, which sets
+  `TurnSessionContext.workspaceSessionId` — and it has to be, because the child session is grouped
+  under `SUBAGENTS_GROUP_ID`, a pseudo-project, so resolving against the child would drop it to the
+  *global* workspace instead of the project it was asked to work in. Everything else keyed by
+  `TurnSessionContext.sessionId` (its `TodoTool` list, any out-of-band media it produces) belongs to
+  the child, so its intermediate plan doesn't pollute the parent's todo panel or chat.
 
 ### Semantic search (`search_code_semantic`)
 
@@ -385,6 +400,87 @@ tells the model which to reach for.
 ### Remote access (`RemoteAccessServer`)
 
 Desktop-only Ktor server (`ktor-server-cio` + websockets) that exposes the chats on the LAN/VPN so you can review and approve agent changes from another device. `expect fun createRemoteAccessServer(deps)`; mobile gets `NoopRemoteAccessServer`. Gated by `remoteAccessEnabled` / `remoteAccessPort` (7676) / `remoteAccessPin`, and started/stopped **reactively** from an `AppContainer.init` collector on those preferences; stopped in the desktop shutdown hook. `localIpAddresses()` (also `expect`) supplies the URLs to display. The consumer side is `RemoteViewerScreen` — an embedded `PlatformWebView` (`core/webview/`) pointed at another desktop's remote URL, remembered in `remoteViewerUrl`.
+
+### Integrated terminal (`TerminalController` / `TerminalPanel`)
+
+Desktop-only panel docked at the bottom of the window (chip in `AgentControlsBar`, **Ctrl+`**, or
+the command palette) where you type shell commands — and where the commands the agent runs are
+**mirrored live**, so you can watch a build it launched progress instead of waiting for the tool
+result.
+
+- **One terminal per chat session**, keyed like everything else session-scoped: the running turn's
+  session comes from `TurnSessionContext`, not from `ActiveSessionStore`. A scheduled task or a
+  sub-agent runs concurrently with the chat you have open, so a single global buffer would
+  interleave two unrelated jobs' output, and a single shell would let your command and an
+  automated one collide. The buffer for a session appears as soon as anything writes to it; the
+  **shell process** isn't spawned until you submit your first command, so sessions that only
+  mirror the agent cost nothing but a map entry.
+- **It does not require a conversation to exist.** With no active session (the new-chat screen)
+  the panel uses the *scratch* terminal (`SCRATCH_ID`, a reserved key, not a session id), and the
+  session **adopts** it when one is created — otherwise typing `npm run dev` before chatting and
+  then sending a message would swap in an empty terminal with the server still running in a
+  buffer nothing points at. With no workspace configured the shell opens in the user's home
+  rather than refusing to start.
+- **The input is never disabled**, not even while a command runs: a dev server never exits, and
+  disabling the field would kill the terminal in its most common use. Enter is what waits (one
+  shell, one command at a time) and the typed text is kept, so stopping the process and pressing
+  Enter sends it.
+- **Stopping** a running command: the ⏹ button, **Ctrl+C** / **Ctrl+X**, or typing `exit`. The
+  keys only interrupt *while something runs*, so an idle terminal keeps Ctrl+C for copying (Cmd+C
+  on macOS always copies). `exit` is remapped the same way because the command runs with stdin on
+  `/dev/null`, so typing it would otherwise do nothing at all; with the shell idle it stays a
+  normal command that ends the shell. `interrupt()` SIGTERMs the shell's descendants and a
+  daemon thread `destroyForcibly()`s whatever is still alive after a 2 s grace — measured:
+  a `trap "" TERM` process survives the SIGTERM and dies at 2.7 s with exit 137.
+- **The shell is warmed up when the panel opens** (`warmUp()`), not on the first command. Loading
+  the user's profile is not free — measured at 1.5 s on a `.zshrc` with cloud tooling in it — and
+  paying it on the first command reads as "the terminal hung". `ensureSession` is mutex-guarded
+  since warm-up and a fast first Enter can race.
+- **The mirror is display-only.** `RunCommandTool` publishes to the session's buffer, but the
+  agent's command still runs in its own process through `FilesystemAgent.runCommand`, with its own
+  confirmation dialog, denylist and timeout — it never enters the terminal's shell stdin. That's
+  why the two can never interleave or interrupt each other. Only `run_command` mirrors; `git_*`,
+  MCP and skill scripts shell out too but are not reflected.
+- **`FilesystemAgent.runCommand` gained an `onOutput` observer** and now reads both pipes from
+  daemon threads in *both* modes. Beyond enabling the mirror, that fixes a latent hang in the
+  foreground path: it used to read stdout only after `waitFor` returned, so a command that filled
+  the pipe buffer blocked forever with nobody draining it. The returned payload is unchanged.
+  In background mode the pumps keep feeding the terminal for as long as the process lives, which
+  is what makes a dev server the agent started actually watchable.
+- **The shell is persistent, not a PTY.** `ShellSession` (`core/terminal/`, `expect`/`actual`,
+  desktop-only) keeps one `$SHELL -l` alive over pipes so `cd` and `export` persist. Each command
+  is framed by **sentinel markers** carrying the exit code and `$PWD`, because without a terminal
+  there's no other way to know where one command's output ends or what it returned. Three
+  non-obvious details, all commented in `ShellSession.desktop.kt`: the command goes inside
+  `{ … }` **on its own line** (a trailing `&` or `#` would break a `;`-joined line) redirected
+  from `/dev/null` (a command that reads stdin would otherwise eat the marker lines and hang the
+  session); the markers carry a per-session random token so output can't impersonate them; and the
+  shell is **login but not interactive** — with `-i` the prompt is printed between the start
+  marker and the real output, which is exactly where it can't be filtered, so `.zshrc`/`.bashrc`
+  are instead sourced by hand at startup to inherit the nvm/fnm PATH. No PTY means no colors and
+  no interactive programs (`vim`, `top`); the escape hatch when a shell hangs (unterminated quote,
+  which `interrupt` can't fix because there's no child process) is the panel's restart button.
+- **`ConsoleText.sanitize`** (`core/text/`) is now shared by the terminal and `FilesystemAgent`.
+  Moving it fixed a real bug in its ANSI regex: the two-character-escape alternative came first
+  and its class covers `]`, so `ESC ]` matched as a complete escape and left the OSC body behind —
+  every command run under a shell with terminal integration (starship, fig, iTerm2) leaked
+  `697;OSCLock=` junk both into the panel *and* into the tool result the model reads.
+- Lines are **batched and flushed every 60 ms**, not published per line, for the same reason chat
+  streaming persists on an interval: a `./gradlew build` emits thousands of lines in seconds.
+  Buffers are capped (3.000 lines/session, 5.000 lines per command) and live only in memory —
+  nothing about the terminal is persisted.
+- **The `weight(1f)` for the output area goes on a wrapping `Box`, never on the `SelectionContainer`
+  itself.** Passing it to `SelectionContainer` compiles and looks right, but the weight doesn't
+  reach the `Column` as parent data, so the container is measured as a *fixed* child with all the
+  remaining space, its `fillMaxSize()` LazyColumn takes it, and the prompt row below is measured
+  with `maxHeight = 0`. The failure is nasty because the row still receives focus and keystrokes:
+  you type blind with no cursor and only see the command after pressing Enter.
+- No ViewModel, same rationale as `NetworkInspectorScreen`: everything with a lifetime of its own
+  (buffer, cwd, history, process) lives in `SessionTerminal` at application scope, because the
+  shell has to survive closing the panel. Deleting a session disposes its terminal
+  (`SessionsViewModel.deleteSession`), and the desktop shutdown hook calls `closeAll()`.
+- Esc deliberately does **not** close the panel: it's a dock, not an overlay, and stealing Esc
+  would break "Esc stops the stream" while the terminal is open.
 
 ### Workspace editor (`EditorScreen`)
 
@@ -557,5 +653,5 @@ Bounces the dock/taskbar icon and raises a native notification when a chat turn 
 - **`-Xexpect-actual-classes`** compiler flag is required (set in `build.gradle.kts`) because `expect`/`actual` classes are used across all four targets.
 - **iOS framework needs `linkerOpts += "-lsqlite3"`** — SQLDelight's native driver calls sqlite3 through cinterop; Gradle's intermediate link tolerates the unresolved symbols but Xcode's final link does not.
 - **Desktop distributions need `modules("java.sql")`** — the SQLite JDBC driver loads via `ServiceLoader`, so jdeps can't see it and jlink would strip the module. The failure only reproduces in the *installed* binary, never with `./gradlew run`.
-- Images/videos from the generation tools are stored **out-of-band** in a `StateFlow`, never in the chat context sent to the model, and never persisted to SQLite, to avoid inflating token counts and the DB with base64.
+- Images/videos from the generation tools are stored **out-of-band** in a `ProducedMediaSlot` **keyed by session**, never in the chat context sent to the model, and never persisted to SQLite, to avoid inflating token counts and the DB with base64. The key comes from `TurnSessionContext`, and it is not optional: tools are `ToolRegistry` singletons (and `McpToolProvider` caches its `McpTool`s per server), so a single slot was global state shared by every turn — with a scheduled task running alongside the chat, the end-of-turn drain in `SendMessageUseCase` took whichever image was there and attached the task's screenshot to the conversation the user had open.
 - MSI `upgradeUuid` must stay stable, or installers stop upgrading in place and install side by side.
