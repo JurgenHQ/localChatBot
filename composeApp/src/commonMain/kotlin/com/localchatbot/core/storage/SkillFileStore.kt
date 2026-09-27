@@ -13,6 +13,8 @@ expect class SkillFileStore {
     fun loadAll(): List<SkillDefinition>
     fun saveAll(skills: List<SkillDefinition>)
     fun importFromFolder(folderPath: String): FolderImportResult
+    /** Returns the absolute path to the skill's directory, or null if not available. */
+    fun skillDirPath(skillId: String): String?
 }
 
 expect fun createSkillFileStore(): SkillFileStore

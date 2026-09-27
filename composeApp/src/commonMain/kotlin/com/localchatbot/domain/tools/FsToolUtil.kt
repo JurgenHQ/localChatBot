@@ -5,6 +5,7 @@ import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.core.fs.FsResult
 import com.localchatbot.core.fs.SafePathResult
 import com.localchatbot.core.platform.PlatformCapabilities
+import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.domain.repository.PreferencesRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -24,8 +25,36 @@ import kotlinx.serialization.json.put
  */
 internal object FsToolUtil {
 
+    /**
+     * Fuente única del **workspace efectivo** de la sesión activa (carpeta del proyecto o el
+     * global). Se enlaza una vez en el arranque desde el DI. Si es null (p. ej. en tests o antes
+     * del enlace) se cae al `fsWorkspaceDir` global de preferences, preservando el comportamiento
+     * previo a la introducción de proyectos.
+     */
+    var workspaceStore: ActiveWorkspaceStore? = null
+
+    /**
+     * Workspace efectivo actual: el del proyecto de la sesión activa, o el global como fallback.
+     * Toda tool que necesite el workspace DEBE usar esto (no `prefs.fsWorkspaceDir` directo), o
+     * ignoraría el workspace del proyecto en chats asignados a uno.
+     */
+    suspend fun effectiveWorkspace(prefs: PreferencesRepository): String? =
+        workspaceStore?.current() ?: prefs.current().fsWorkspaceDir
+
     suspend fun isAvailable(prefs: PreferencesRepository): Boolean =
-        PlatformCapabilities.isDesktop && prefs.current().fsWorkspaceDir != null
+        PlatformCapabilities.isDesktop && effectiveWorkspace(prefs) != null
+
+    /**
+     * Como [isAvailable] pero además exige modo Build. Lo usan las tools que MUTAN el
+     * proyecto (create/edit/multi_edit/delete/create_dir/save_image): en modo Plan
+     * reportan no disponible y ni se envían al modelo, garantizando solo-lectura.
+     */
+    suspend fun isWriteAvailable(prefs: PreferencesRepository): Boolean =
+        isAvailable(prefs) && effectiveAgentMode(prefs) == com.localchatbot.domain.model.AgentMode.Build
+
+    /** Modo de agente efectivo de la sesión activa, con fallback al global de preferences. */
+    private suspend fun effectiveAgentMode(prefs: PreferencesRepository): com.localchatbot.domain.model.AgentMode =
+        workspaceStore?.currentAgentMode() ?: prefs.current().agentMode
 
     fun errorPayload(json: Json, message: String): String =
         json.encodeToString(
@@ -55,7 +84,7 @@ internal object FsToolUtil {
     ): Result<String> {
         val current = prefs.current()
         return when (val r = agent.resolveSafePath(
-            workspace = current.fsWorkspaceDir,
+            workspace = effectiveWorkspace(prefs),
             input = input,
             allowOutside = current.fsAllowOutsideWorkspace
         )) {

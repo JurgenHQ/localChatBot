@@ -8,6 +8,7 @@ actual class SkillFileStore {
     actual fun saveAll(skills: List<SkillDefinition>) = Unit
     actual fun importFromFolder(folderPath: String): FolderImportResult =
         FolderImportResult(emptyList(), 0, emptyList())
+    actual fun skillDirPath(skillId: String): String? = null
 }
 
 actual fun createSkillFileStore(): SkillFileStore = SkillFileStore()

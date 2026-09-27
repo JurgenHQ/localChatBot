@@ -5,4 +5,5 @@ actual object PlatformCapabilities {
     actual val voiceSupported: Boolean = false
     actual val isDesktop: Boolean = true
     actual val forceCloseHttpConnection: Boolean = true
+    actual val needsTextColorWorkaround: Boolean = false
 }

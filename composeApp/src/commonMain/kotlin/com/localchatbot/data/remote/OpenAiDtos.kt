@@ -14,9 +14,20 @@ data class ChatCompletionRequest(
     val messages: List<OpenAiMessage>,
     val stream: Boolean = false,
     val temperature: Double? = null,
+    @SerialName("top_p") val topP: Double? = null,
+    @SerialName("max_tokens") val maxTokens: Int? = null,
+    @SerialName("presence_penalty") val presencePenalty: Double? = null,
+    @SerialName("frequency_penalty") val frequencyPenalty: Double? = null,
+    val seed: Int? = null,
     val tools: List<ToolDefinition>? = null,
     @SerialName("tool_choice") val toolChoice: String? = null,
-    @SerialName("stream_options") val streamOptions: StreamOptions? = null
+    @SerialName("stream_options") val streamOptions: StreamOptions? = null,
+    /**
+     * `low`/`high`/`max` (estilo DeepSeek v4 / OpenAI o-series). Backends que no lo
+     * soportan lo ignoran como cualquier campo desconocido — `ignoreUnknownKeys` es
+     * simétrico: acá también hace que un campo no reconocido por el servidor no rompa nada.
+     */
+    @SerialName("reasoning_effort") val reasoningEffort: String? = null
 )
 
 @Serializable

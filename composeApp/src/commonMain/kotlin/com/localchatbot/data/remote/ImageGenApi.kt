@@ -73,6 +73,71 @@ class ImageGenApi(
         }
     }
 
+    suspend fun generateTextImage(baseUrl: String, request: TextImageGenRequest): Result<ImageGenResponse> =
+        post(baseUrl, "/generate-text-image", request, TextImageGenRequest.serializer(),
+            ImageGenResponse.serializer(), NetworkTransaction.Kind.TextImageGen)
+
+    suspend fun cartoon(baseUrl: String, request: CartoonRequest): Result<ImageGenResponse> =
+        post(baseUrl, "/cartoon", request, CartoonRequest.serializer(),
+            ImageGenResponse.serializer(), NetworkTransaction.Kind.Cartoon)
+
+    private suspend fun <Req, Res> post(
+        baseUrl: String,
+        path: String,
+        request: Req,
+        requestSerializer: kotlinx.serialization.KSerializer<Req>,
+        responseSerializer: kotlinx.serialization.KSerializer<Res>,
+        kind: NetworkTransaction.Kind
+    ): Result<Res> {
+        val url = "${baseUrl.removeSuffix("/")}$path"
+        val requestJson = runCatching { json.encodeToString(requestSerializer, request) }.getOrNull()
+        val start = Clock.System.now().toEpochMilliseconds()
+
+        return runCatching {
+            val bodyJson = requestJson ?: throw IllegalStateException("No se pudo serializar el request")
+            val response = client.post(url) {
+                contentType(ContentType.Application.Json)
+                setBody(bodyJson)
+            }
+            val raw = response.bodyAsText()
+
+            inspector?.record(
+                NetworkTransaction(
+                    id = inspector.newId(),
+                    timestampEpochMs = start,
+                    method = "POST",
+                    url = url,
+                    kind = kind,
+                    requestBody = requestJson,
+                    responseStatus = response.status.value,
+                    responseBody = truncateBase64InResponse(raw),
+                    durationMs = Clock.System.now().toEpochMilliseconds() - start
+                )
+            )
+
+            if (!response.status.isSuccess()) {
+                throw IllegalStateException("HTTP ${response.status.value}: ${response.status.description}")
+            }
+
+            json.decodeFromString(responseSerializer, raw)
+        }.onFailure { err ->
+            inspector?.record(
+                NetworkTransaction(
+                    id = inspector.newId(),
+                    timestampEpochMs = start,
+                    method = "POST",
+                    url = url,
+                    kind = kind,
+                    requestBody = requestJson,
+                    responseStatus = null,
+                    responseBody = null,
+                    durationMs = Clock.System.now().toEpochMilliseconds() - start,
+                    error = err.message
+                )
+            )
+        }
+    }
+
     private fun truncateBase64InResponse(raw: String): String =
         Regex("\"([^\"]{200,})\"").replace(raw) { m ->
             "\"...<truncado ${m.groupValues[1].length} chars>...\""

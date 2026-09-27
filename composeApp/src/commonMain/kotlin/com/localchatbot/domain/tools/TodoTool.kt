@@ -1,6 +1,7 @@
 package com.localchatbot.domain.tools
 
 import com.localchatbot.core.state.ActiveSessionStore
+import com.localchatbot.core.state.TurnSessionContext
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,14 +15,17 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.coroutineContext
 
 data class TodoItem(val id: String, val text: String, val done: Boolean = false)
 
 /**
  * Todos scoped per chat session — la lista de una sesión NUNCA aparece en otra.
- * Si no hay sesión activa cuando se llama la tool, se usa la clave "" como fallback.
+ * La sesión se resuelve por [TurnSessionContext] (la sesión del turno en curso); si la
+ * tool corre fuera de un turno se usa [ActiveSessionStore] y, en último caso, la clave "".
  */
 class TodoTool(
     private val activeSessionStore: ActiveSessionStore
@@ -40,17 +44,34 @@ class TodoTool(
     fun itemsFor(sessionId: String?): List<TodoItem> =
         if (sessionId == null) emptyList() else _state.value[sessionId].orEmpty()
 
-    private fun currentSessionKey(): String = activeSessionStore.activeSessionId.value ?: ""
+    // La sesión del turno en curso (ver TurnSessionContext), no la visible en la UI en
+    // este instante: un turno lanzado en background sigue corriendo aunque el usuario
+    // navegue a otra sesión. ActiveSessionStore queda como fallback si la tool corre
+    // fuera de un turno (no debería darse en producción).
+    private suspend fun currentSessionKey(): String =
+        coroutineContext[TurnSessionContext]?.sessionId ?: activeSessionStore.activeSessionId.value ?: ""
 
     private fun publish() {
         _state.value = items.mapValues { it.value.toList() }
+    }
+
+    /** Texto normalizado para detectar duplicados (trim + lowercase + colapsa espacios). */
+    private fun norm(s: String): String = s.trim().lowercase().replace(Regex("\\s+"), " ")
+
+    /** Fragmento JSON con los contadores de la sesión, para mantener al modelo consciente del progreso. */
+    private fun counts(list: List<TodoItem>): String {
+        val done = list.count { it.done }
+        val pending = list.size - done
+        return """"pending":$pending,"done":$done"""
     }
 
     override val definition: ToolDefinition = ToolDefinition(
         function = FunctionDefinition(
             name = TOOL_NAME,
             description = "Manage a to-do list for planning and tracking multi-step tasks in this chat session. " +
-                "Operations: add (create a task), complete (mark done — use the id returned by add), list, clear.",
+                "Operations: add (create one or more tasks), complete (mark done — use the id returned by add), list, clear. " +
+                "Mark each task complete as soon as that step finishes; do NOT batch completions at the end. " +
+                "Duplicate task texts are ignored automatically, so it is safe to plan the whole task up front.",
             parameters = buildJsonObject {
                 put("type", "object")
                 put("properties", buildJsonObject {
@@ -66,7 +87,12 @@ class TodoTool(
                     })
                     put("text", buildJsonObject {
                         put("type", "string")
-                        put("description", "Task description — required for 'add'")
+                        put("description", "Single task description for 'add' (use 'texts' to add several at once)")
+                    })
+                    put("texts", buildJsonObject {
+                        put("type", "array")
+                        put("description", "Several task descriptions to add in one call — preferred for planning a multi-step task up front")
+                        put("items", buildJsonObject { put("type", "string") })
                     })
                     put("id", buildJsonObject {
                         put("type", "string")
@@ -90,12 +116,35 @@ class TodoTool(
             val list = items.getOrPut(key) { mutableListOf() }
             when (op) {
                 "add" -> {
-                    val text = obj["text"]?.jsonPrimitive?.content
-                        ?: return@withLock """{"error":"'text' required for add"}"""
-                    val id = "todo-${Clock.System.now().toEpochMilliseconds()}-${counter++}"
-                    list.add(TodoItem(id, text))
+                    val texts = obj["texts"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content }
+                        ?: obj["text"]?.jsonPrimitive?.content?.let { listOf(it) }
+                        ?: return@withLock """{"error":"'text' or 'texts' required for add"}"""
+                    if (texts.isEmpty()) return@withLock """{"error":"'texts' must not be empty"}"""
+
+                    val added = texts.map { text ->
+                        // Dedup contra pendientes: si ya existe un todo no completado con
+                        // el mismo texto normalizado, reusamos su id en vez de duplicar.
+                        val existing = list.firstOrNull { !it.done && norm(it.text) == norm(text) }
+                        if (existing != null) {
+                            Triple(text, existing.id, true)
+                        } else {
+                            val id = "todo-${Clock.System.now().toEpochMilliseconds()}-${counter++}"
+                            list.add(TodoItem(id, text))
+                            Triple(text, id, false)
+                        }
+                    }
                     publish()
-                    """{"ok":true,"id":"$id"}"""
+
+                    // Compat: una sola tarea individual → forma plana con id directo.
+                    if (obj["texts"] == null && added.size == 1) {
+                        val (_, id, dup) = added.first()
+                        """{"ok":true,"id":"$id","duplicate":$dup,"reminder":"call complete with this id when the step is done",${counts(list)}}"""
+                    } else {
+                        val arr = added.joinToString(",") { (text, id, dup) ->
+                            """{"text":"${text.replace("\"", "'")}","id":"$id","duplicate":$dup}"""
+                        }
+                        """{"ok":true,"added":[$arr],"reminder":"call complete with each id when that step is done",${counts(list)}}"""
+                    }
                 }
                 "complete" -> {
                     val id = obj["id"]?.jsonPrimitive?.content
@@ -104,7 +153,7 @@ class TodoTool(
                     if (idx < 0) return@withLock """{"error":"Todo not found: $id"}"""
                     list[idx] = list[idx].copy(done = true)
                     publish()
-                    """{"ok":true}"""
+                    """{"ok":true,${counts(list)}}"""
                 }
                 "list" -> {
                     val sb = StringBuilder("[")

@@ -6,6 +6,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
+import com.localchatbot.domain.model.GenerationParams
 import com.localchatbot.presentation.components.atoms.AppTextField
 import com.localchatbot.presentation.components.atoms.PrimaryButton
 import com.localchatbot.presentation.components.atoms.SecondaryButton
@@ -46,6 +49,7 @@ fun SettingsEditorSheet(
         onThemeChange = { viewModel.onThemeChange(it); viewModel.save(onDismiss) },
         onAccentChange = { viewModel.onAccentChange(it); viewModel.save(onDismiss) },
         onModelSelected = viewModel::onModelSelected,
+        onReasoningEffortChange = { viewModel.onReasoningEffortSelected(it, onDismiss) },
         onSave = { viewModel.save(onDismiss) },
         onDismiss = onDismiss
     )
@@ -58,6 +62,7 @@ fun SettingsEditorSheetContent(
     onThemeChange: (ThemeMode) -> Unit,
     onAccentChange: (Long) -> Unit,
     onModelSelected: (String) -> Unit = {},
+    onReasoningEffortChange: (String?) -> Unit = {},
     onSave: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -163,6 +168,73 @@ fun SettingsEditorSheetContent(
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
+                SettingsEditor.EmbeddingsModel -> TextEditorBody(
+                    title = "Modelo de embeddings",
+                    value = state.textDraft,
+                    placeholder = "vacío = autodetectar (el primero que contenga \"embed\")",
+                    keyboardType = KeyboardType.Text,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.Temperature -> TextEditorBody(
+                    title = "Temperatura",
+                    value = state.textDraft,
+                    placeholder = "0.3  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.TopP -> TextEditorBody(
+                    title = "Top-P",
+                    value = state.textDraft,
+                    placeholder = "0.9  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.MaxTokens -> TextEditorBody(
+                    title = "Max tokens",
+                    value = state.textDraft,
+                    placeholder = "2048  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Number,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.PresencePenalty -> TextEditorBody(
+                    title = "Presence penalty",
+                    value = state.textDraft,
+                    placeholder = "0.0  (rango: -2.0 a 2.0)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.FrequencyPenalty -> TextEditorBody(
+                    title = "Frequency penalty",
+                    value = state.textDraft,
+                    placeholder = "0.0  (rango: -2.0 a 2.0)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.Seed -> TextEditorBody(
+                    title = "Seed",
+                    value = state.textDraft,
+                    placeholder = "42  (vacío = aleatorio)",
+                    keyboardType = KeyboardType.Number,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.ReasoningEffort -> ReasoningEffortEditorBody(
+                    current = state.reasoningEffortDraft,
+                    onSelect = onReasoningEffortChange
+                )
             }
             SecondaryButton(text = "Cancelar", onClick = onDismiss)
         }
@@ -218,13 +290,54 @@ private fun ThemeEditorBody(current: ThemeMode, onSelect: (ThemeMode) -> Unit) {
 }
 
 @Composable
+private fun ReasoningEffortEditorBody(current: String?, onSelect: (String?) -> Unit) {
+    Text(
+        "Esfuerzo de razonamiento",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onBackground
+    )
+    Text(
+        "Solo lo respetan modelos con modo \"thinking\" (DeepSeek v4, OpenAI o-series y " +
+            "compatibles vía reasoning_effort). En otros backends no tiene efecto. Al elegir " +
+            "un nivel se dejan de enviar temperatura/top-p/penalties: DeepSeek los documenta " +
+            "como incompatibles con el modo thinking.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        val options = listOf(null as String? to "Automático (no enviar)") +
+            GenerationParams.REASONING_EFFORT_LEVELS.map { it to it }
+        options.forEach { (value, label) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(
+                        if (current == value) MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.surface
+                    )
+                    .clickable { onSelect(value) }
+                    .padding(Spacing.lg)
+            ) {
+                Text(label, color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun AccentEditorBody(onSelect: (Long) -> Unit) {
     val colors = listOf(
         0xFF2C5AFFL, 0xFF7C4DFFL, 0xFF2EBD66L,
-        0xFFE84A4AL, 0xFFFF8A00L, 0xFF0F1115L
+        0xFFE84A4AL, 0xFFFF8A00L, 0xFFEC4899L, 0xFF0F1115L
     )
     Text("Color de acento", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onBackground)
-    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+    // FlowRow y no Row: con siete muestras la fila se pasa del ancho en pantallas angostas.
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(Spacing.md)
+    ) {
         colors.forEach { c ->
             Box(
                 modifier = Modifier

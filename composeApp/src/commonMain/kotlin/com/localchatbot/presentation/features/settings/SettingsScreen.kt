@@ -15,13 +15,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,11 +38,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localchatbot.core.platform.PlatformCapabilities
 import com.localchatbot.core.theme.Radius
 import com.localchatbot.core.theme.Spacing
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
+import com.localchatbot.domain.model.ConnectionProfile
 import com.localchatbot.domain.model.ConnectionStatus
 import com.localchatbot.presentation.components.atoms.SectionLabel
 import com.localchatbot.presentation.components.atoms.StatusDot
@@ -54,6 +65,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
+    onOpenRemoteViewer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -83,11 +95,22 @@ fun SettingsScreen(
             status = state.status,
             onOpenEditor = viewModel::open,
             onRetryConnection = viewModel::retryConnection,
+            onActivateProfile = viewModel::activateProfile,
+            onAddProfile = viewModel::addProfile,
+            onDeleteProfile = viewModel::deleteProfile,
+            onRenameProfile = viewModel::renameProfile,
             onClearHistory = viewModel::clearHistory,
             onToggleHttps = viewModel::toggleHttps,
             onOpenNetworkInspector = onOpenNetworkInspector,
             onExportSettings = viewModel::exportSettings,
-            onImportSettings = importer
+            onImportSettings = importer,
+            onOpenRemoteViewer = onOpenRemoteViewer,
+            remoteClients = state.remoteClients,
+            localIps = state.localIps,
+            onToggleRemoteAccess = viewModel::toggleRemoteAccess,
+            onRegenerateRemotePin = viewModel::regenerateRemotePin,
+            onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
+            onToggleCodeCompletion = viewModel::toggleCodeCompletion
         )
 
         state.openEditor?.let { editor ->
@@ -130,14 +153,26 @@ fun SettingsContent(
     status: ConnectionStatus,
     onOpenEditor: (SettingsEditor) -> Unit,
     onRetryConnection: () -> Unit,
+    onActivateProfile: (String) -> Unit = {},
+    onAddProfile: () -> Unit = {},
+    onDeleteProfile: (String) -> Unit = {},
+    onRenameProfile: (String, String) -> Unit = { _, _ -> },
     onClearHistory: () -> Unit,
     onToggleHttps: (Boolean) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
     onExportSettings: () -> Unit = {},
     onImportSettings: () -> Unit = {},
+    onOpenRemoteViewer: () -> Unit = {},
+    remoteClients: Int = 0,
+    localIps: List<String> = emptyList(),
+    onToggleRemoteAccess: (Boolean) -> Unit = {},
+    onRegenerateRemotePin: () -> Unit = {},
+    onToggleDesktopNotifications: (Boolean) -> Unit = {},
+    onToggleCodeCompletion: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
+    var renamingProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
 
     Column(
         modifier = modifier
@@ -152,6 +187,40 @@ fun SettingsContent(
             style = MaterialTheme.typography.headlineLarge,
             color = MaterialTheme.colorScheme.onBackground
         )
+
+        SectionLabel("Perfiles de conexión")
+        SectionCard {
+            preferences.connectionProfiles.forEachIndexed { idx, profile ->
+                SettingsRow(
+                    title = profile.name,
+                    onClick = { onActivateProfile(profile.id) },
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (profile.id == preferences.activeConnectionProfileId) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Activo",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            IconButton(onClick = { renamingProfile = profile }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Renombrar perfil")
+                            }
+                            if (preferences.connectionProfiles.size > 1) {
+                                IconButton(onClick = { onDeleteProfile(profile.id) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Borrar perfil")
+                                }
+                            }
+                        }
+                    }
+                )
+                if (idx < preferences.connectionProfiles.lastIndex) Divider()
+            }
+            if (preferences.connectionProfiles.size < 3) {
+                Divider()
+                SettingsRow(title = "+ Añadir perfil", onClick = onAddProfile, trailing = {})
+            }
+        }
 
         SectionLabel("Servidor")
         SectionCard {
@@ -252,9 +321,84 @@ fun SettingsContent(
                     )
                 }
             )
+            if (PlatformCapabilities.isDesktop) {
+                Divider()
+                SettingsRow(
+                    title = "Notificaciones",
+                    onClick = {
+                        onToggleDesktopNotifications(!preferences.desktopNotificationsEnabled)
+                    },
+                    trailing = {
+                        Switch(
+                            checked = preferences.desktopNotificationsEnabled,
+                            onCheckedChange = onToggleDesktopNotifications
+                        )
+                    }
+                )
+            }
+        }
+        if (PlatformCapabilities.isDesktop) {
+            Text(
+                "Muestra un aviso del sistema y rebota el icono del dock al terminar " +
+                    "una respuesta o una tarea programada.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         Text(
             "Instrucción inicial enviada como mensaje 'system' en cada conversación.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        SectionLabel("Parámetros de generación")
+        val gp = preferences.generationParams
+        SectionCard {
+            SettingsRow(
+                title = "Temperatura",
+                onClick = { onOpenEditor(SettingsEditor.Temperature) },
+                trailing = { MonoValue(gp.temperature?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Top-P",
+                onClick = { onOpenEditor(SettingsEditor.TopP) },
+                trailing = { MonoValue(gp.topP?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Max tokens",
+                onClick = { onOpenEditor(SettingsEditor.MaxTokens) },
+                trailing = { MonoValue(gp.maxTokens?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Presence penalty",
+                onClick = { onOpenEditor(SettingsEditor.PresencePenalty) },
+                trailing = { MonoValue(gp.presencePenalty?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Frequency penalty",
+                onClick = { onOpenEditor(SettingsEditor.FrequencyPenalty) },
+                trailing = { MonoValue(gp.frequencyPenalty?.toString() ?: "por defecto") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Seed",
+                onClick = { onOpenEditor(SettingsEditor.Seed) },
+                trailing = { MonoValue(gp.seed?.toString() ?: "aleatorio") }
+            )
+            Divider()
+            SettingsRow(
+                title = "Esfuerzo de razonamiento",
+                onClick = { onOpenEditor(SettingsEditor.ReasoningEffort) },
+                trailing = { MonoValue(gp.reasoningEffort ?: "automático") }
+            )
+        }
+        Text(
+            "Se envían en cada request. Vacío = el servidor usa su valor por defecto. " +
+                "La temperatura del agente (0.3) se aplica solo cuando no hay un valor configurado aquí.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -305,6 +449,116 @@ fun SettingsContent(
                 }
                 append("Obtén una key gratis en https://app.tavily.com")
             },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        if (PlatformCapabilities.isDesktop) {
+            SectionLabel("Búsqueda semántica (opcional)")
+            SectionCard {
+                SettingsRow(
+                    title = "Modelo de embeddings",
+                    onClick = { onOpenEditor(SettingsEditor.EmbeddingsModel) },
+                    trailing = {
+                        MonoValue(preferences.embeddingsModel.ifBlank { "Autodetectar" }, maxChars = 22)
+                    }
+                )
+            }
+            Text(
+                "Lo usa la tool search_code_semantic para indexar el workspace vía /v1/embeddings. " +
+                    "Vacío = se usa el primer modelo del servidor cuyo nombre contenga \"embed\". " +
+                    "Ojo: en LM Studio el modelo de embeddings ocupa memoria junto al de chat.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (PlatformCapabilities.isDesktop) {
+            SectionLabel("Editor")
+            SectionCard {
+                SettingsRow(
+                    title = "Autocompletado de código",
+                    onClick = { onToggleCodeCompletion(!preferences.codeCompletionEnabled) },
+                    trailing = {
+                        Switch(
+                            checked = preferences.codeCompletionEnabled,
+                            onCheckedChange = onToggleCodeCompletion
+                        )
+                    }
+                )
+            }
+            Text(
+                "En el editor, al dejar de escribir sugiere cómo continuar el código y lo " +
+                    "muestra atenuado: Tab lo acepta, Esc lo descarta, Ctrl+Espacio lo pide a " +
+                    "mano. Usa el modelo del chat, así que la sugerencia tarda lo que tarde tu " +
+                    "modelo local en responder.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (PlatformCapabilities.isDesktop) {
+            val remote = preferences
+            SectionLabel("Acceso remoto")
+            SectionCard {
+                SettingsRow(
+                    title = "Activar servidor",
+                    onClick = { onToggleRemoteAccess(!remote.remoteAccessEnabled) },
+                    trailing = {
+                        Switch(
+                            checked = remote.remoteAccessEnabled,
+                            onCheckedChange = onToggleRemoteAccess
+                        )
+                    }
+                )
+                if (remote.remoteAccessEnabled) {
+                    Divider()
+                    SettingsRow(
+                        title = "PIN",
+                        onClick = onRegenerateRemotePin,
+                        trailing = { MonoValue(remote.remoteAccessPin.ifBlank { "—" }) }
+                    )
+                    Divider()
+                    SettingsRow(
+                        title = "Conectados",
+                        onClick = {},
+                        trailing = { MonoValue(remoteClients.toString()) }
+                    )
+                    Divider()
+                    Column(modifier = Modifier.fillMaxWidth().padding(Spacing.lg)) {
+                        Text(
+                            "Abre desde otro dispositivo en la misma red/VPN:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val urls = localIps.map { "http://$it:${remote.remoteAccessPort}" }
+                        if (urls.isEmpty()) {
+                            MonoValue("http://<ip-de-este-pc>:${remote.remoteAccessPort}", maxChars = 60)
+                        } else {
+                            urls.forEach { MonoValue(it, maxChars = 60) }
+                        }
+                    }
+                }
+            }
+            Text(
+                "Revisa y aprueba cambios desde otro dispositivo. Aprobar comandos en remoto es " +
+                    "potente: mantenlo sólo en redes/VPN de confianza.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        SectionLabel("Visor remoto")
+        SectionCard {
+            SettingsRow(
+                title = "Abrir visor remoto",
+                onClick = onOpenRemoteViewer,
+                trailing = { MonoValue("Ver →", maxChars = 6) }
+            )
+        }
+        Text(
+            "Conecta con otro equipo que tenga el acceso remoto activo y revisa/aprueba sus " +
+                "cambios desde aquí, sin abrir el navegador.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -361,6 +615,33 @@ fun SettingsContent(
             )
         }
     }
+
+    renamingProfile?.let { profile ->
+        var value by remember(profile.id) { mutableStateOf(profile.name) }
+        AlertDialog(
+            onDismissRequest = { renamingProfile = null },
+            title = { Text("Renombrar perfil") },
+            text = {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = value.isNotBlank(),
+                    onClick = {
+                        onRenameProfile(profile.id, value)
+                        renamingProfile = null
+                    }
+                ) { Text("Guardar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingProfile = null }) { Text("Cancelar") }
+            }
+        )
+    }
 }
 
 private fun String.maskKey(): String {
@@ -416,19 +697,33 @@ private fun Divider() {
 }
 
 private val SamplePrefs = AppPreferences(
-    connection = ConnectionConfig(ip = "192.168.1.42", port = "1234", model = "llama-3.1-8b-instruct"),
+    connectionProfiles = listOf(
+        ConnectionProfile(
+            id = "p1",
+            name = "Perfil 1",
+            config = ConnectionConfig(ip = "192.168.1.42", port = "1234", model = "llama-3.1-8b-instruct")
+        )
+    ),
+    activeConnectionProfileId = "p1",
     themeMode = ThemeMode.System,
     accentSeed = 0L,
     onboardingDone = true
 )
 
 private val SamplePrefsUrl = AppPreferences(
-    connection = ConnectionConfig(
-        ip = "abc.trycloudflare.com",
-        port = "",
-        useHttps = true,
-        model = "llama-3.1-8b-instruct"
+    connectionProfiles = listOf(
+        ConnectionProfile(
+            id = "p1",
+            name = "Perfil 1",
+            config = ConnectionConfig(
+                ip = "abc.trycloudflare.com",
+                port = "",
+                useHttps = true,
+                model = "llama-3.1-8b-instruct"
+            )
+        )
     ),
+    activeConnectionProfileId = "p1",
     themeMode = ThemeMode.System,
     accentSeed = 0L,
     onboardingDone = true

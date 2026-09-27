@@ -1,6 +1,5 @@
 package com.localchatbot.domain.tools
 
-import com.localchatbot.core.confirm.ToolConfirmationController
 import com.localchatbot.core.fs.FilesystemAgent
 import com.localchatbot.data.remote.FunctionDefinition
 import com.localchatbot.data.remote.ToolDefinition
@@ -9,20 +8,28 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/** Tool que lee un archivo de texto. Trunca a 200 KB para no inflar el contexto. */
+/**
+ * Tool que lee un archivo de texto paginado por líneas. Devuelve cada línea
+ * prefijada con su número, de modo que el modelo puede leer archivos grandes en
+ * ventanas (offset/limit) en vez de tragar todo el archivo de golpe.
+ */
 class ReadFileTool(
     private val agent: FilesystemAgent,
-    private val confirm: ToolConfirmationController,
     private val preferences: PreferencesRepository,
     private val json: Json
 ) : Tool {
 
     override val name: String = TOOL_NAME
-    override val requiresConfirmation: Boolean = true
+    // Leer es inofensivo (no muta nada) y el sandbox de paths se aplica igual en
+    // execute(). Pedir confirmación por cada lectura rompía la autonomía del agente:
+    // una tarea de varios pasos forzaba decenas de diálogos. Sin confirmación el
+    // modelo explora libremente; solo las escrituras/shell siguen gateadas.
+    override val requiresConfirmation: Boolean = false
 
     override val activityLabel: String = "Leyendo archivo…"
 
@@ -36,16 +43,27 @@ class ReadFileTool(
         type = "function",
         function = FunctionDefinition(
             name = TOOL_NAME,
-            description = "Reads a UTF-8 text file. Path can be absolute or relative to the workspace. " +
-                "Truncated at 200 KB; the response includes `truncated=true` if the file is larger — " +
-                "use `run_command` with `head`/`tail` for slices of bigger files. The user is asked " +
-                "to approve every call (unless YOLO) — files may contain sensitive data.",
+            description = "Reads a UTF-8 text file, paginated by lines. Path can be absolute or " +
+                "relative to the workspace. Each returned line is prefixed with its line number " +
+                "(e.g. `42: code`). Reads up to `limit` lines (default 2000) starting at line " +
+                "`offset` (1-based, default 1). The response includes `totalLines`, `startLine`, " +
+                "`endLine` and `truncated=true` when more lines follow the window — call again with " +
+                "a higher `offset` to continue. IMPORTANT: the `N: ` line-number prefix is a " +
+                "navigation aid only; do NOT include it in `old_string` when calling edit_file.",
             parameters = buildJsonObject {
                 put("type", "object")
                 put("properties", buildJsonObject {
                     put("path", buildJsonObject {
                         put("type", "string")
                         put("description", "Target file path.")
+                    })
+                    put("offset", buildJsonObject {
+                        put("type", "integer")
+                        put("description", "1-based line number to start reading from. Defaults to 1.")
+                    })
+                    put("limit", buildJsonObject {
+                        put("type", "integer")
+                        put("description", "Maximum number of lines to return. Defaults to 2000.")
                     })
                 })
                 put("required", buildJsonArray { add(JsonPrimitive("path")) })
@@ -60,21 +78,18 @@ class ReadFileTool(
 
         val path = args["path"]?.jsonPrimitive?.content
             ?: return FsToolUtil.errorPayload(json, "Argumento 'path' faltante")
+        val offset = args["offset"]?.jsonPrimitive?.intOrNull?.coerceAtLeast(1) ?: 1
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull?.coerceAtLeast(1) ?: DEFAULT_LINE_LIMIT
 
         val abs = FsToolUtil.resolvePath(agent, preferences, json, path).getOrElse { e ->
             return FsToolUtil.errorPayload(json, e.message ?: "Path inválido")
         }
 
-        val approved = confirm.requestApproval(
-            title = "Leer archivo",
-            detail = abs
-        )
-        if (!approved) return FsToolUtil.cancelledPayload(json)
-
-        return FsToolUtil.fsResultToJson(json, agent.readFile(abs))
+        return FsToolUtil.fsResultToJson(json, agent.readFile(abs, offset, limit))
     }
 
     companion object {
         const val TOOL_NAME = "read_file"
+        private const val DEFAULT_LINE_LIMIT = 2000
     }
 }
