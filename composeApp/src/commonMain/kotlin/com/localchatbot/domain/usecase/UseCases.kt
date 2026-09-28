@@ -376,10 +376,11 @@ class SendMessageUseCase(
                     return newAssistantId
                 }
 
-                val (messagesForApi, discarded) = buildMessagesForApi(
+                val (messagesForApi, discarded, estimatedRequestTokens) = buildMessagesForApi(
                     sessionId, currentMessages, tools != null, systemPromptOverride, pendingNudge,
                     workspaceContext, contextSummary, memoryContext,
-                    compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId
+                    compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId,
+                    calibrationKey = cfg.model
                 )
                 pendingNudge = null
 
@@ -480,6 +481,12 @@ class SendMessageUseCase(
                                     sumInputTokens += it
                                     lastContextTokens = it // la última ronda gana → contexto actual
                                     hasMetrics = true
+                                    // `prompt_tokens` siempre viene del servidor (lo estimado
+                                    // es solo el output), así que sirve para calibrar.
+                                    tokenFactors.update { factors ->
+                                        val next = TokenCalibration.update(factors[cfg.model], it, estimatedRequestTokens)
+                                        if (next == null) factors else factors + (cfg.model to next)
+                                    }
                                 }
                                 event.outputTokens?.let { sumOutputTokens += it; hasMetrics = true }
                                 event.generationMs?.let { sumGenerationMs += it }
@@ -912,8 +919,10 @@ class SendMessageUseCase(
          * anteriores no se envían al modelo — pero **siguen visibles en el chat**, que es
          * la diferencia con truncar la conversación.
          */
-        compactedThroughId: String? = null
-    ): Pair<List<ChatMessage>, List<ChatMessage>> {
+        compactedThroughId: String? = null,
+        /** Modelo al que va la petición: el factor de [TokenCalibration] es por tokenizer. */
+        calibrationKey: String? = null
+    ): BuiltRequest {
         val cfg = prefs.current()
         val userSystem = cfg.defaultSystemPrompt.trim()
         val yolo = cfg.fsYoloMode
@@ -947,10 +956,15 @@ class SendMessageUseCase(
         // número de mensajes: un mensaje con un archivo de 50 KB pesa lo que
         // pesa, no "1 mensaje". Reservamos una fracción del contexto para la
         // respuesta del modelo y descontamos todo lo que no es historial.
+        // El presupuesto real se pasa a unidades estimadas con el factor medido
+        // contra el servidor (TokenCalibration), si ya hay uno para este modelo.
         val overhead = estimateTokens(stableSystem) +
             (turnContext?.let { estimateTokens(it) } ?: 0) +
             (nudge?.let { estimateTokens(it) } ?: 0)
-        val budget = (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt() - overhead
+        val factor = calibrationKey?.let { tokenFactors.value[it] }
+        val budget = TokenCalibration.estimatedBudget(
+            (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt(), factor
+        ) - overhead
         val window = ContextWindow.window(
             history = history,
             budget = budget,
@@ -985,8 +999,29 @@ class SendMessageUseCase(
             turnContext = turnContext,
             nudge = nudge
         )
-        return apiMessages to discarded
+        // Lo que se estimó para ESTA petición (sin factor), con lo que se compara el
+        // `prompt_tokens` real al terminar la ronda.
+        val estimatedTokens = estimateTokens(systemContent) +
+            (turnContext?.let { estimateTokens(it) } ?: 0) +
+            (nudge?.let { estimateTokens(it) } ?: 0) +
+            windowed.sumOf { estimateMessageTokens(it) }
+        return BuiltRequest(apiMessages, discarded, estimatedTokens)
     }
+
+    /** Resultado de [buildMessagesForApi]. */
+    private data class BuiltRequest(
+        val messages: List<ChatMessage>,
+        /** Mensajes que la ventana dejó fuera, para el resumen rodante. */
+        val discarded: List<ChatMessage>,
+        /** Tokens estimados de la petición, sin calibrar (ver [TokenCalibration]). */
+        val estimatedTokens: Int
+    )
+
+    /**
+     * Factor de [TokenCalibration] por modelo. En memoria y compartido por todas las
+     * sesiones: el tokenizer es del modelo, no de la conversación.
+     */
+    private val tokenFactors = MutableStateFlow<Map<String, Double>>(emptyMap())
 
     /**
      * Inicio de la ventana deslizante por sesión (id del primer mensaje enviado), para
@@ -1366,11 +1401,14 @@ class SendMessageUseCase(
         /**
          * Tokens estimados de un mensaje: contenido + coste fijo si es un
          * adjunto de usuario (viaja multimodal) + overhead de formato
-         * (role, separadores).
+         * (role, separadores). Incluye los argumentos de los tool_calls, que viajan
+         * en cada petición y en un agente pesan mucho (el `content` entero de cada
+         * `create_file`/`edit_file`): antes no se contaban.
          */
         private fun estimateMessageTokens(msg: ChatMessage): Int =
             estimateTokens(msg.content) +
                 (msg.attachments?.sumOf { estimateTokens(it.name) + estimateTokens(it.content) + 6 } ?: 0) +
+                (msg.toolCalls?.sumOf { estimateTokens(it.name) + estimateTokens(it.argumentsJson) + 8 } ?: 0) +
                 (if (msg.role == Role.User && msg.imageDataUrl != null) USER_IMAGE_TOKEN_ESTIMATE else 0) +
                 4
 
