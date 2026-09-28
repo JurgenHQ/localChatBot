@@ -14,12 +14,15 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,7 +42,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 actual fun createRemoteAccessServer(deps: RemoteAccessDeps): RemoteAccessServer =
@@ -70,8 +72,102 @@ private class DesktopRemoteAccessServer(
     private var server: EmbeddedServer<*, *>? = null
     private var pin: String = ""
 
-    /** Tokens válidos emitidos tras un login con PIN correcto. */
-    private val tokens = ConcurrentHashMap.newKeySet<String>()
+    /**
+     * Tokens válidos emitidos tras un login con PIN correcto → instante de emisión. Caducan a
+     * las [TOKEN_TTL_MS]: con un token se pueden aprobar confirmaciones y mandar órdenes al
+     * agente (en YOLO, ejecutar comandos en esta máquina), así que uno filtrado no puede
+     * servir para siempre.
+     */
+    private val tokens = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Fallos de PIN por IP remota. El PIN es de 6 dígitos: sin límite de intentos se prueba
+     * entero en minutos desde la misma red.
+     */
+    private val authFailures = ConcurrentHashMap<String, AuthFailures>()
+
+    /** Fallos recientes de todas las IPs juntas, contra un ataque repartido entre muchas. */
+    private val globalFailures = java.util.concurrent.ConcurrentLinkedDeque<Long>()
+
+    private class AuthFailures {
+        var count = 0
+        var windowStartMs = 0L
+        var lockedUntilMs = 0L
+        /** Bloqueos ya sufridos: cada uno dobla la duración del siguiente. */
+        var lockouts = 0
+    }
+
+    private fun now() = System.currentTimeMillis()
+
+    private fun isTokenValid(token: String): Boolean {
+        val issuedAt = tokens[token] ?: return false
+        if (now() - issuedAt > TOKEN_TTL_MS) {
+            tokens.remove(token)
+            return false
+        }
+        return true
+    }
+
+    private fun issueToken(): String {
+        val cutoff = now() - TOKEN_TTL_MS
+        tokens.entries.removeIf { it.value < cutoff }
+        // Tope de sesiones remotas simultáneas: descartar las más viejas.
+        while (tokens.size >= MAX_TOKENS) {
+            val oldest = tokens.entries.minByOrNull { it.value }?.key ?: break
+            tokens.remove(oldest)
+        }
+        val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        val token = bytes.joinToString("") { ((it.toInt() and 0xff) + 0x100).toString(16).substring(1) }
+        tokens[token] = now()
+        return token
+    }
+
+    /** Ms que le quedan de bloqueo a [ip] (o a todos, si saltó el límite global); 0 si puede intentar. */
+    private fun lockRemainingMs(ip: String): Long {
+        val t = now()
+        while (true) {
+            val head = globalFailures.peekFirst() ?: break
+            if (t - head > GLOBAL_WINDOW_MS) globalFailures.pollFirst() else break
+        }
+        if (globalFailures.size >= GLOBAL_MAX_FAILURES) {
+            val oldest = globalFailures.peekFirst() ?: t
+            return (oldest + GLOBAL_WINDOW_MS - t).coerceAtLeast(1)
+        }
+        val f = authFailures[ip] ?: return 0
+        synchronized(f) { return (f.lockedUntilMs - t).coerceAtLeast(0) }
+    }
+
+    private fun registerFailure(ip: String) {
+        val t = now()
+        globalFailures.addLast(t)
+        val f = authFailures.computeIfAbsent(ip) { AuthFailures() }
+        synchronized(f) {
+            if (t - f.windowStartMs > FAILURE_WINDOW_MS) {
+                f.count = 0
+                f.windowStartMs = t
+            }
+            f.count++
+            if (f.count >= MAX_FAILURES_PER_IP) {
+                val lock = (BASE_LOCKOUT_MS shl f.lockouts.coerceAtMost(4)).coerceAtMost(MAX_LOCKOUT_MS)
+                f.lockedUntilMs = t + lock
+                f.lockouts++
+                f.count = 0
+            }
+        }
+    }
+
+    /**
+     * Comparación en tiempo constante: `==` sobre String corta en el primer carácter
+     * distinto, y el tiempo de respuesta filtraría cuántos dígitos del PIN son correctos.
+     */
+    private fun pinMatches(sent: String): Boolean {
+        val expected = pin
+        if (expected.isEmpty()) return false
+        return java.security.MessageDigest.isEqual(
+            sent.toByteArray(Charsets.UTF_8),
+            expected.toByteArray(Charsets.UTF_8)
+        )
+    }
 
     /** Job del stream activo, para poder cancelarlo desde el remoto. */
     private var activeStreamJob: Job? = null
@@ -162,6 +258,8 @@ private class DesktopRemoteAccessServer(
         if (_running.value) stop()
         this.pin = pin
         tokens.clear()
+        authFailures.clear()
+        globalFailures.clear()
         server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
             install(WebSockets)
             routing {
@@ -169,13 +267,29 @@ private class DesktopRemoteAccessServer(
                     call.respondText(indexHtml(), ContentType.Text.Html)
                 }
                 post("/auth") {
+                    // remoteAddress y no remoteHost: este último puede hacer DNS inverso.
+                    val ip = call.request.local.remoteAddress
+                    val locked = lockRemainingMs(ip)
+                    if (locked > 0) {
+                        val secs = (locked + 999) / 1000
+                        call.response.headers.append(HttpHeaders.RetryAfter, secs.toString())
+                        call.respondText(
+                            """{"error":"Demasiados intentos. Prueba de nuevo en $secs s"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.TooManyRequests
+                        )
+                        return@post
+                    }
                     val body = runCatching { json.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
                     val sentPin = body?.get("pin")?.jsonPrimitive?.content
-                    if (sentPin != null && sentPin == this@DesktopRemoteAccessServer.pin) {
-                        val token = UUID.randomUUID().toString().replace("-", "")
-                        tokens.add(token)
+                    if (sentPin != null && pinMatches(sentPin)) {
+                        authFailures.remove(ip)
+                        val token = issueToken()
                         call.respondText("""{"token":"$token"}""", ContentType.Application.Json)
                     } else {
+                        registerFailure(ip)
+                        // Frena la fuerza bruta incluso antes de llegar al bloqueo.
+                        delay(FAILURE_DELAY_MS)
                         call.respondText(
                             """{"error":"PIN incorrecto"}""",
                             ContentType.Application.Json,
@@ -187,7 +301,7 @@ private class DesktopRemoteAccessServer(
                 // en el snapshot del WebSocket para no reenviar el base64 en cada token.
                 get("/image") {
                     val token = call.request.queryParameters["token"]
-                    if (token == null || token !in tokens) {
+                    if (token == null || !isTokenValid(token)) {
                         call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
                         return@get
                     }
@@ -208,13 +322,21 @@ private class DesktopRemoteAccessServer(
                 }
                 webSocket("/ws") {
                     val token = call.request.queryParameters["token"]
-                    if (token == null || token !in tokens) {
-                        close()
+                    if (token == null || !isTokenValid(token)) {
+                        // 1008: el cliente lo distingue de un corte de red y vuelve al login
+                        // en vez de reintentar para siempre con un token muerto.
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "token"))
                         return@webSocket
                     }
                     _clients.update { it + 1 }
                     val pushJob = launch {
                         snapshotFlow.collect { outgoing.send(Frame.Text(it)) }
+                    }
+                    // Una conexión abierta no sobrevive a su token: al caducar se cierra.
+                    val expiryJob = launch {
+                        val issuedAt = tokens[token] ?: now()
+                        delay((issuedAt + TOKEN_TTL_MS - now()).coerceAtLeast(0))
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "token"))
                     }
                     try {
                         for (frame in incoming) {
@@ -222,6 +344,7 @@ private class DesktopRemoteAccessServer(
                         }
                     } finally {
                         pushJob.cancel()
+                        expiryJob.cancel()
                         _clients.update { (it - 1).coerceAtLeast(0) }
                     }
                 }
@@ -314,4 +437,23 @@ private class DesktopRemoteAccessServer(
         this::class.java.classLoader?.getResourceAsStream("remote/index.html")
             ?.bufferedReader()?.use { it.readText() }
             ?: "<html><body>Cliente remoto no encontrado.</body></html>"
+
+    private companion object {
+        /** Vida de un token de sesión remota. Suficiente para una jornada sin re-login. */
+        const val TOKEN_TTL_MS = 12L * 60 * 60 * 1000
+        const val MAX_TOKENS = 16
+
+        /** Fallos permitidos por IP dentro de [FAILURE_WINDOW_MS] antes de bloquearla. */
+        const val MAX_FAILURES_PER_IP = 5
+        const val FAILURE_WINDOW_MS = 10L * 60 * 1000
+        /** Primer bloqueo; cada bloqueo siguiente de la misma IP dobla, hasta [MAX_LOCKOUT_MS]. */
+        const val BASE_LOCKOUT_MS = 60L * 1000
+        const val MAX_LOCKOUT_MS = 60L * 60 * 1000
+
+        /** Tope de fallos de todas las IPs en [GLOBAL_WINDOW_MS]; al pasarlo, /auth se cierra para todos. */
+        const val GLOBAL_MAX_FAILURES = 30
+        const val GLOBAL_WINDOW_MS = 10L * 60 * 1000
+
+        const val FAILURE_DELAY_MS = 750L
+    }
 }
