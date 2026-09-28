@@ -403,9 +403,7 @@ class SendMessageUseCase(
                     val prevSummary = contextSummary
                     val transcript = buildSummaryTranscript(prevSummary, discarded)
                     scope.launch {
-                        withAuxiliaryModel(currentPrefs.auxiliaryConnection, cfg) { c ->
-                            model.summarize(c.baseUrl(), c.model, transcript, c.apiKeyOrNull())
-                        }
+                        model.summarize(cfg.baseUrl(), cfg.model, transcript, cfgApiKey)
                             ?.let { newSummary ->
                                 chats.updateContextSummary(sessionId, newSummary)
                                 contextSummary = newSummary
@@ -893,9 +891,8 @@ class SendMessageUseCase(
                     ?.content
                 if (!assistantText.isNullOrBlank()) {
                     scope.launch {
-                        withAuxiliaryModel(currentPrefs.auxiliaryConnection, cfg) { c ->
-                            model.generateTitle(c.baseUrl(), c.model, text, assistantText, c.apiKeyOrNull()).getOrNull()
-                        }
+                        model.generateTitle(cfg.baseUrl(), cfg.model, text, assistantText, cfgApiKey)
+                            .getOrNull()
                             ?.let { title -> chats.updateTitle(sessionId, title) }
                     }
                 }

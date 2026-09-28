@@ -73,7 +73,6 @@ kotlin {
         // corre CI); kotlin("test") resuelve el runner de cada target por su cuenta.
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.test)
         }
 
         androidMain.dependencies {

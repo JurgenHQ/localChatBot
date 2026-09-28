@@ -116,7 +116,6 @@ fun SettingsScreen(
             onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
             onToggleCodeCompletion = viewModel::toggleCodeCompletion,
             onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout,
-            onCycleAuxiliaryProfile = viewModel::cycleAuxiliaryProfile,
             paramsForProfile = paramsForProfile,
             onToggleParamsScope = { paramsForProfile = !paramsForProfile }
         )
@@ -180,7 +179,6 @@ fun SettingsContent(
     onToggleDesktopNotifications: (Boolean) -> Unit = {},
     onToggleCodeCompletion: (Boolean) -> Unit = {},
     onCycleStreamIdleTimeout: () -> Unit = {},
-    onCycleAuxiliaryProfile: () -> Unit = {},
     paramsForProfile: Boolean = false,
     onToggleParamsScope: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -234,22 +232,7 @@ fun SettingsContent(
                 Divider()
                 SettingsRow(title = "+ Añadir perfil", onClick = onAddProfile, trailing = {})
             }
-            Divider()
-            val auxName = preferences.connectionProfiles
-                .firstOrNull { it.id == preferences.auxiliaryProfileId }?.name
-            SettingsRow(
-                title = "Modelo auxiliar",
-                onClick = onCycleAuxiliaryProfile,
-                trailing = { MonoValue(auxName ?: "El del chat", maxChars = 18) }
-            )
         }
-        Text(
-            "El modelo auxiliar genera los títulos, el resumen del historial, /compact y el " +
-                "autocompletado del editor. Un modelo chico ahí deja libre al grande para responder. " +
-                "Si falla, títulos y resúmenes se reintentan con el del chat.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
 
         SectionLabel("Servidor")
         SectionCard {

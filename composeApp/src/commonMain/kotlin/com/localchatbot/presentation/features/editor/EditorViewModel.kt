@@ -439,10 +439,7 @@ class EditorViewModel(
 
         val prefs = preferences.current()
         if (!prefs.codeCompletionEnabled) return
-        // El autocompletado es la tarea que más se beneficia de un modelo chico: se pide
-        // en cada pausa al teclear. Sin fallback al principal: "sin sugerencia" es la
-        // respuesta normal, y reintentar con el grande duplicaría cada petición.
-        val cfg = prefs.auxiliaryConnection ?: prefs.connection
+        val cfg = prefs.connection
         if (!cfg.isValid()) return
 
         _state.update { it.copy(suggestionLoading = true) }
@@ -452,8 +449,7 @@ class EditorViewModel(
                 model = cfg.model,
                 prefix = prefix,
                 suffix = suffix,
-                fileName = name,
-                apiKeyOverride = cfg.apiKey.takeIf { it.isNotBlank() }
+                fileName = name
             )
         }.getOrNull()
 
