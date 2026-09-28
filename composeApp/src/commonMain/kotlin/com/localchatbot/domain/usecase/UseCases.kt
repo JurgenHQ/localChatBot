@@ -38,7 +38,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.localchatbot.core.state.TurnSessionContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.onEach
 import kotlinx.datetime.Clock
 import kotlinx.serialization.json.Json
@@ -79,7 +81,7 @@ class SendMessageUseCase(
     /**
      * Agente de filesystem usado SOLO para construir el bloque de contexto del
      * workspace (cwd, árbol de archivos, git status, AGENTS.md/CLAUDE.md) que se
-     * inyecta en el system prompt. Real solo en desktop; en móvil no se usa.
+     * antepone al último mensaje del usuario. Real solo en desktop; en móvil no se usa.
      */
     private val filesystemAgent: FilesystemAgent? = null,
     /**
@@ -215,9 +217,10 @@ class SendMessageUseCase(
         var tools = resolveToolDefinitions()
 
         // Contexto del workspace (cwd, árbol de archivos, git status, AGENTS.md/CLAUDE.md).
-        // Se calcula UNA vez por turno y se reinyecta en el system prompt de cada ronda,
-        // para que el modelo sepa dónde está y qué archivos existen sin tener que
-        // explorarlos a ciegas. Solo desktop con workspace configurado.
+        // Se calcula UNA vez por turno y se reinyecta en cada ronda como prefijo efímero
+        // del último mensaje del usuario (no en el system: ver buildMessagesForApi), para
+        // que el modelo sepa dónde está y qué archivos existen sin tener que explorarlos
+        // a ciegas. Solo desktop con workspace configurado.
         val workspaceContext = buildWorkspaceContext()
 
         // Resumen de la memoria de preferencias del usuario (memory.md). Se inyecta
@@ -353,16 +356,21 @@ class SendMessageUseCase(
                 }
 
                 val (messagesForApi, discarded) = buildMessagesForApi(
-                    currentMessages, tools != null, systemPromptOverride, pendingNudge,
+                    sessionId, currentMessages, tools != null, systemPromptOverride, pendingNudge,
                     workspaceContext, contextSummary, memoryContext,
                     compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId
                 )
                 pendingNudge = null
 
                 // Resumen rodante: solo en la primera iteración del turno para no
-                // lanzar una llamada al modelo por cada ronda de tool_calls.
-                if (!summarizeFired && discarded.isNotEmpty()) {
+                // lanzar una llamada al modelo por cada ronda de tool_calls, y solo si el
+                // corte se movió desde el último resumen (ver summarizedThrough).
+                val lastDiscardedId = discarded.lastOrNull()?.id
+                if (!summarizeFired && lastDiscardedId != null &&
+                    (summarizedThrough.value[sessionId] != lastDiscardedId || contextSummary.isNullOrBlank())
+                ) {
                     summarizeFired = true
+                    summarizedThrough.update { it + (sessionId to lastDiscardedId) }
                     val prevSummary = contextSummary
                     val transcript = buildSummaryTranscript(prevSummary, discarded)
                     scope.launch {
@@ -867,6 +875,7 @@ class SendMessageUseCase(
      * disparar el resumen rodante en background.
      */
     private suspend fun buildMessagesForApi(
+        sessionId: String,
         currentMessages: List<ChatMessage>,
         hasTools: Boolean,
         systemPromptOverride: String? = null,
@@ -891,16 +900,16 @@ class SendMessageUseCase(
         val agentMode = activeWorkspaceStore?.currentAgentMode() ?: cfg.agentMode
         val toolPrompt = if (hasTools) buildAgentPrompt(yolo, skillsIndex, agentMode) else ""
         val suffix = buildModelSuffix(model)
-        // Orden pensado para el KV-cache de llama.cpp/LM Studio: las partes ESTABLES
-        // entre turnos (system del usuario, prompt de agente, suffix de modelo) van
-        // primero para que su prefill se reuse desde cache. El contexto del workspace
-        // (git status, archivos — cambia entre turnos) va al FINAL del bloque system:
-        // así, cuando cambia, solo invalida el cache de lo que viene después de él, no
-        // del prompt de agente ni de las definiciones de tools.
-        // memoryContext va junto al toolPrompt (parte estable, cache-friendly) y ANTES
-        // del workspaceContext (volátil). Las preferencias cambian rara vez.
-        val combined = listOf(userSystem, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim(), workspaceContext?.trim())
+        // El system (posición 0) lleva SOLO lo estable entre turnos: system del usuario,
+        // prompt de agente, suffix de modelo y memoria. Cualquier cambio aquí obliga a
+        // llama.cpp/LM Studio a reprocesar la conversación ENTERA (todo va después).
+        // El bloque `<workspace>` (git status, árbol — cambia en cuanto el agente edita
+        // algo) ya NO va aquí: viaja como prefijo efímero del último `user` (ver
+        // ContextWindow.assemble), así que al cambiar solo invalida el turno en curso.
+        val stableSystem = listOf(userSystem, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim())
             .filterNot { it.isNullOrBlank() }.joinToString("\n\n")
+        val turnContext = workspaceContext?.trim()?.takeIf { it.isNotEmpty() }
+        val nudge = ephemeralNudge?.trim()?.takeIf { it.isNotEmpty() }
 
         // Strip leading system message before windowing — it's re-injected below.
         val fullHistory = if (currentMessages.firstOrNull()?.role == Role.System) {
@@ -909,106 +918,68 @@ class SendMessageUseCase(
             currentMessages
         }
 
-        // Compactación manual: descartar todo hasta el corte inclusive. Si el id ya no
-        // existe (el usuario reenvió un mensaje anterior y truncó la sesión) el corte se
-        // ignora y se usa el historial completo — degradar a "no compactado" es seguro,
-        // enviar de menos no lo sería.
-        val boundaryIdx = compactedThroughId?.let { id -> fullHistory.indexOfFirst { it.id == id } } ?: -1
-        val compacted = boundaryIdx >= 0
-        val history = if (compacted) {
-            // dropWhile Tool: si el corte cae entre un assistant que anunció tools y sus
-            // resultados, la ventana arrancaría con `role=tool` huérfanos y el servidor
-            // rechaza la request.
-            fullHistory.drop(boundaryIdx + 1).dropWhile { it.role == Role.Tool }
-        } else {
-            fullHistory
-        }
+        val (history, compacted) = ContextWindow.applyCompaction(fullHistory, compactedThroughId)
 
         // Ventana por presupuesto de tokens estimados (~4 chars/token), no por
         // número de mensajes: un mensaje con un archivo de 50 KB pesa lo que
         // pesa, no "1 mensaje". Reservamos una fracción del contexto para la
-        // respuesta del modelo y descontamos el system prompt.
-        val budget = (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt() -
-            estimateTokens(combined)
-        var used = 0
-        var keptCount = 0
-        for (msg in history.asReversed()) {
-            val t = estimateMessageTokens(msg)
-            // El mensaje más reciente entra siempre, aunque reviente el presupuesto —
-            // sin él la petición no tiene sentido.
-            if (used + t > budget && keptCount > 0) break
-            used += t
-            keptCount++
+        // respuesta del modelo y descontamos todo lo que no es historial.
+        val overhead = estimateTokens(stableSystem) +
+            (turnContext?.let { estimateTokens(it) } ?: 0) +
+            (nudge?.let { estimateTokens(it) } ?: 0)
+        val budget = (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt() - overhead
+        val window = ContextWindow.window(
+            history = history,
+            budget = budget,
+            previousStartId = windowStarts.value[sessionId],
+            estimate = { estimateMessageTokens(it) }
+        )
+        // Recordar el corte para el turno siguiente (histéresis). Un mapa atómico porque
+        // una tarea programada y el chat interactivo usan esta instancia a la vez.
+        windowStarts.update { current ->
+            val start = window.startId
+            if (start == null) current - sessionId else current + (sessionId to start)
         }
-        val discarded: List<ChatMessage>
-        val windowed: List<ChatMessage>
-        if (keptCount < history.size) {
-            // No empezar la ventana con resultados de tool huérfanos (su mensaje
-            // assistant "anunciador" quedó fuera del corte).
-            val rawWindowed = history.takeLast(keptCount).dropWhile { it.role == Role.Tool }
-            val windowedIds = rawWindowed.map { it.id }.toSet()
-            discarded = history.filter { it.id !in windowedIds }
-            windowed = rawWindowed
-        } else {
-            discarded = emptyList()
-            windowed = history
-        }
+        val windowed = window.windowed
+        val discarded = window.discarded
         // También cuando hubo compactación manual: ahí no hay `discarded` (los mensajes se
         // sacaron antes de la ventana), pero el resumen igual tiene que inyectarse o el
         // modelo perdería el hilo de golpe.
         val truncated = discarded.isNotEmpty() || compacted
-
-        // Compactación: si hay resumen previo (generado por el modelo), lo inyectamos
-        // como system message — da al modelo contexto real del historial descartado.
-        // Si no hay resumen aún, anclamos la tarea original (sin llamada al modelo).
-        val truncationNoticeText = if (truncated) {
-            if (!contextSummary.isNullOrBlank()) {
-                "Resumen del historial anterior:\n$contextSummary"
-            } else {
-                val firstUserTask = history.firstOrNull { it.role == Role.User }
-                    ?.takeIf { task -> windowed.none { it.id == task.id } }
-                    ?.content?.trim()?.take(500)
-                buildString {
-                    append("Nota: El historial anterior fue recortado por límite de contexto.")
-                    if (!firstUserTask.isNullOrBlank()) {
-                        append(" La petición original del usuario fue: \"")
-                        append(firstUserTask)
-                        append("\"")
-                    }
-                }
-            }
-        } else null
+        val truncationNoticeText = ContextWindow.truncationNotice(history, windowed, truncated, contextSummary)
 
         // Los adjuntos del usuario viven en un campo aparte (no se muestran crudos en
         // la burbuja). Aquí, SOLO para la petición al modelo, se expanden a bloques
         // fenced al inicio del contenido. La copia es efímera: no se persiste.
         val windowedForApi = windowed.map(::expandAttachmentsForApi)
 
-        // Algunos chat templates Jinja (LM Studio/llama.cpp) exigen que el system sea
-        // el ÚNICO mensaje de ese rol y esté en la posición 0. Por eso truncationNotice
-        // y la instrucción efímera (nudge) se pliegan dentro del mismo system message
-        // en vez de ir como mensajes `role=system` separados — el nudge iba al FINAL de
-        // la lista y rompía ese contrato. Se agrega último dentro del bloque para
-        // conservar su efecto de "última instrucción leída" antes de generar.
-        val finalSystemContent = listOfNotNull(
-            combined.takeIf { it.isNotBlank() },
-            truncationNoticeText,
-            ephemeralNudge?.trim()?.takeIf { it.isNotBlank() }
-        ).joinToString("\n\n")
-
-        val apiMessages = if (finalSystemContent.isBlank()) {
-            windowedForApi
-        } else {
-            val systemMsg = ChatMessage(
-                id = SYSTEM_PROMPT_ID,
-                role = Role.System,
-                content = finalSystemContent,
-                timestampEpochMs = 0L
-            )
-            listOf(systemMsg) + windowedForApi
-        }
+        val systemContent = listOfNotNull(stableSystem.takeIf { it.isNotBlank() }, truncationNoticeText)
+            .joinToString("\n\n")
+        val apiMessages = ContextWindow.assemble(
+            systemContent = systemContent,
+            windowed = windowedForApi,
+            systemPromptId = SYSTEM_PROMPT_ID,
+            turnContext = turnContext,
+            nudge = nudge
+        )
         return apiMessages to discarded
     }
+
+    /**
+     * Inicio de la ventana deslizante por sesión (id del primer mensaje enviado), para
+     * que [ContextWindow.window] mantenga el mismo corte entre turnos. Solo en memoria:
+     * tras reiniciar la app el primer turno recalcula el corte, que es un único
+     * reprocesado del cache.
+     */
+    private val windowStarts = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Último mensaje descartado que ya se mandó a resumir, por sesión. Con la ventana
+     * con histéresis `discarded` sigue igual durante muchos turnos; re-resumir lo mismo
+     * en cada uno cuesta una llamada al modelo y, peor, cambia el resumen del system
+     * (= cache invalidado) sin que haya cambiado nada.
+     */
+    private val summarizedThrough = MutableStateFlow<Map<String, String>>(emptyMap())
 
     /**
      * Expande los adjuntos de un mensaje del usuario a bloques fenced antepuestos al
@@ -1031,7 +1002,7 @@ class SendMessageUseCase(
     }
 
     /**
-     * Construye el bloque `<workspace>` que se inyecta en el system prompt: cwd,
+     * Construye el bloque `<workspace>` que se antepone al último mensaje del usuario: cwd,
      * árbol de archivos (un nivel), git status y el contenido de los archivos de
      * reglas del proyecto (AGENTS.md / CLAUDE.md / .cursorrules) si existen. Da al
      * modelo orientación inmediata del proyecto sin gastar rondas de tool calls
@@ -1459,7 +1430,8 @@ class SendMessageUseCase(
                 "as text: call `ask_user` with the FIRST question, wait for the answer, then call " +
                 "`ask_user` again with the next one. One question per call.\n" +
                 "=====================================================\n\n" +
-                "If a `<workspace>` block is present in this prompt, it already gives you the cwd, " +
+                "If a `<workspace>` block is present (at the start of the latest user message), it " +
+                "already gives you the current cwd, " +
                 "the file tree, git status, and any project rules — use it instead of re-listing " +
                 "the directory, and follow the project rules it contains.\n\n" +
                 "When to reach for each tool:\n" +
