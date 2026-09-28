@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -86,24 +87,32 @@ fun ChatMessageList(
     // Mirrors the visibility rules in MessageBubble. All "working" state below is derived from
     // this same filtered list so the typing indicator never pops up under a reasoning bubble for
     // an invisible announcer message (that produced spurious vertical gaps between rounds).
-    val visibleMessages = allMessages.filter { msg ->
-        when (msg.role) {
-            Role.User -> true
-            Role.Assistant, Role.System ->
-                msg.content.isNotBlank() ||
-                !msg.sources.isNullOrEmpty() ||
-                msg.imageDataUrl != null ||
-                !msg.reasoning.isNullOrBlank() ||
-                // El anunciador de tool_calls con checkpoint se muestra: renderiza
-                // (solo) el chip "revertir este turno".
-                (msg.checkpointId != null && onRevertTurn != null)
-            Role.Tool -> msg.toolName in RENDERED_TOOL_NAMES
+    //
+    // Todo lo derivado de la lista va en `remember`: esta función se recompone en cada tick
+    // del streaming (y con cada cambio de estado de la pantalla), y filtrar, invertir e
+    // indexar el historial entero cada vez era trabajo O(sesión) que casi nunca cambia.
+    val revertEnabled = onRevertTurn != null
+    val visibleMessages = remember(allMessages, revertEnabled) {
+        allMessages.filter { msg ->
+            when (msg.role) {
+                Role.User -> true
+                Role.Assistant, Role.System ->
+                    msg.content.isNotBlank() ||
+                    !msg.sources.isNullOrEmpty() ||
+                    msg.imageDataUrl != null ||
+                    !msg.reasoning.isNullOrBlank() ||
+                    // El anunciador de tool_calls con checkpoint se muestra: renderiza
+                    // (solo) el chip "revertir este turno".
+                    (msg.checkpointId != null && revertEnabled)
+                Role.Tool -> msg.toolName in RENDERED_TOOL_NAMES
+            }
         }
     }
-    val lastAssistantId = visibleMessages
-        .lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }
-        ?.id
-    val lastVisible = visibleMessages.lastOrNull { it.role != Role.Tool }
+    val lastAssistantId = remember(visibleMessages) {
+        visibleMessages.lastOrNull { it.role == Role.Assistant && it.content.isNotBlank() }?.id
+    }
+    val lastVisible = remember(visibleMessages) { visibleMessages.lastOrNull { it.role != Role.Tool } }
+    val reversedMessages = remember(visibleMessages) { visibleMessages.reversed() }
     val streamingMessageId = if (sending && lastVisible?.role == Role.Assistant) lastVisible.id else null
     val showTyping = sending && toolActivity == null && (
         lastVisible == null ||
@@ -112,7 +121,7 @@ fun ChatMessageList(
     )
     // Map back to absolute indices in the full list so search highlighting (matchIndices in
     // ChatScreen are full-list indices) stays aligned despite the filtering above.
-    val absoluteIndexById = allMessages.withIndex().associate { (i, m) -> m.id to i }
+    val absoluteIndexById = remember(allMessages) { allMessages.withIndex().associate { (i, m) -> m.id to i } }
 
     // Items que van ANTES de los mensajes en la LazyColumn (con reverseLayout ocupan las
     // posiciones más bajas). Hay que sumarlos al índice o el scroll se queda corto.
@@ -159,7 +168,7 @@ fun ChatMessageList(
             item(key = "typing") { AssistantTypingRow() }
         }
 
-        itemsIndexed(visibleMessages.reversed(), key = { _, msg -> msg.id }) { _, msg ->
+        itemsIndexed(reversedMessages, key = { _, msg -> msg.id }) { _, msg ->
             val originalIdx = absoluteIndexById[msg.id] ?: -1
             MessageBubble(
                 message = msg,
