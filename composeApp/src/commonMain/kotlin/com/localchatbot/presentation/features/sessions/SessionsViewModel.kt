@@ -240,6 +240,10 @@ class SessionsViewModel(
         viewModelScope.launch { projectRepository.createProject(cleaned, workspaceDir) }
     }
 
+    fun updateProjectInstructions(id: String, instructions: String) {
+        viewModelScope.launch { projectRepository.updateInstructions(id, instructions.trim()) }
+    }
+
     fun renameProject(id: String, name: String) {
         val cleaned = name.trim().ifBlank { return }
         viewModelScope.launch { projectRepository.renameProject(id, cleaned) }

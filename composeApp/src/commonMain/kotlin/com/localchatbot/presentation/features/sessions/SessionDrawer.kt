@@ -125,6 +125,7 @@ fun SessionDrawer(
         onCreateProject = viewModel::createProject,
         onRenameProject = viewModel::renameProject,
         onChangeProjectWorkspace = viewModel::updateProjectWorkspace,
+        onEditProjectInstructions = viewModel::updateProjectInstructions,
         onDeleteProject = viewModel::deleteProject,
         onToggleCollapsed = viewModel::toggleProjectCollapsed,
         onOpenTasks = onOpenTasks?.let {
@@ -162,6 +163,7 @@ fun SessionDrawerContent(
     onCreateProject: (String, String) -> Unit = { _, _ -> },
     onRenameProject: (String, String) -> Unit = { _, _ -> },
     onChangeProjectWorkspace: (String, String) -> Unit = { _, _ -> },
+    onEditProjectInstructions: (String, String) -> Unit = { _, _ -> },
     onDeleteProject: (String) -> Unit = {},
     onToggleCollapsed: (String) -> Unit = {},
     onOpenTasks: (() -> Unit)? = null,
@@ -298,6 +300,8 @@ fun SessionDrawerContent(
                             onNewSession = { onNewInProject(group.project.id) },
                             onRename = { onRenameProject(group.project.id, it) },
                             onChangeWorkspace = { onChangeProjectWorkspace(group.project.id, it) },
+                            instructions = group.project.instructions,
+                            onEditInstructions = { onEditProjectInstructions(group.project.id, it) },
                             onDelete = { onDeleteProject(group.project.id) }
                         )
                     }
@@ -809,11 +813,14 @@ private fun ProjectHeader(
     onRename: (String) -> Unit,
     onChangeWorkspace: (String) -> Unit,
     onDelete: () -> Unit,
+    instructions: String = "",
+    onEditInstructions: (String) -> Unit = {},
     isDropTarget: Boolean = false,
     onBounds: ((ClosedFloatingPointRange<Float>) -> Unit)? = null
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
+    var instructionsOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
     val folderPicker = rememberDirectoryPicker(onResult = onChangeWorkspace)
 
@@ -885,6 +892,10 @@ private fun ProjectHeader(
                     onClick = { menuOpen = false; folderPicker.launch() }
                 )
                 DropdownMenuItem(
+                    text = { Text(if (instructions.isBlank()) "Añadir instrucciones" else "Editar instrucciones") },
+                    onClick = { menuOpen = false; instructionsOpen = true }
+                )
+                DropdownMenuItem(
                     text = { Text("Borrar proyecto") },
                     onClick = { menuOpen = false; deleteOpen = true }
                 )
@@ -899,6 +910,20 @@ private fun ProjectHeader(
             confirmLabel = "Guardar",
             onConfirm = { renameOpen = false; onRename(it) },
             onDismiss = { renameOpen = false }
+        )
+    }
+
+    if (instructionsOpen) {
+        // Vacío es válido: es la forma de quitarlas.
+        TextInputDialog(
+            title = "Instrucciones del proyecto",
+            initial = instructions,
+            confirmLabel = "Guardar",
+            singleLine = false,
+            allowBlank = true,
+            supportingText = "Se añaden al system prompt de todas las conversaciones de \"$name\".",
+            onConfirm = { instructionsOpen = false; onEditInstructions(it) },
+            onDismiss = { instructionsOpen = false }
         )
     }
 
@@ -1003,17 +1028,27 @@ private fun TextInputDialog(
     initial: String,
     confirmLabel: String,
     onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    singleLine: Boolean = true,
+    allowBlank: Boolean = false,
+    supportingText: String? = null
 ) {
     var value by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(value = value, onValueChange = { value = it }, singleLine = true)
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                singleLine = singleLine,
+                minLines = if (singleLine) 1 else 5,
+                maxLines = if (singleLine) 1 else 12,
+                supportingText = supportingText?.let { { Text(it) } }
+            )
         },
         confirmButton = {
-            TextButton(enabled = value.isNotBlank(), onClick = { onConfirm(value) }) { Text(confirmLabel) }
+            TextButton(enabled = allowBlank || value.isNotBlank(), onClick = { onConfirm(value) }) { Text(confirmLabel) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancelar") }

@@ -938,8 +938,13 @@ class SendMessageUseCase(
         // El bloque `<workspace>` (git status, árbol — cambia en cuanto el agente edita
         // algo) ya NO va aquí: viaja como prefijo efímero del último `user` (ver
         // ContextWindow.assemble), así que al cambiar solo invalida el turno en curso.
-        val stableSystem = listOf(userSystem, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim())
-            .filterNot { it.isNullOrBlank() }.joinToString("\n\n")
+        // Instrucciones del proyecto: cambian solo cuando el usuario las edita, así que van
+        // en el system estable, justo detrás del system global al que complementan.
+        val projectInstructions = activeWorkspaceStore?.currentProjectInstructions()
+            ?.let { "<project-instructions>\n${it.trim()}\n</project-instructions>" }
+        val stableSystem = listOf(
+            userSystem, projectInstructions, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim()
+        ).filterNot { it.isNullOrBlank() }.joinToString("\n\n")
         val turnContext = workspaceContext?.trim()?.takeIf { it.isNotEmpty() }
         val nudge = ephemeralNudge?.trim()?.takeIf { it.isNotEmpty() }
 

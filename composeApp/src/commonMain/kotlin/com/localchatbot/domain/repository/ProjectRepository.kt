@@ -18,6 +18,7 @@ interface ProjectRepository {
     suspend fun createProject(name: String, workspaceDir: String): Project
     suspend fun renameProject(id: String, name: String)
     suspend fun updateWorkspace(id: String, workspaceDir: String)
+    suspend fun updateInstructions(id: String, instructions: String)
     suspend fun updateCollapsed(id: String, collapsed: Boolean)
     /** Borra el proyecto; sus sesiones quedan sin proyecto (no se borran). */
     suspend fun deleteProject(id: String)

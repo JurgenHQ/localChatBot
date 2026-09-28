@@ -14,7 +14,13 @@ data class Project(
     val workspaceDir: String,
     /** Estado de la sección colapsable en el drawer (persistido). */
     val collapsed: Boolean = false,
-    val createdAtEpochMs: Long
+    val createdAtEpochMs: Long,
+    /**
+     * Instrucciones propias del proyecto (convenciones, stack, qué no tocar). Van al system
+     * prompt de todas sus conversaciones, detrás del system prompt global. A diferencia de
+     * AGENTS.md/CLAUDE.md no viven en el repo: son para lo que no quieres commitear.
+     */
+    val instructions: String = ""
 )
 
 /**
