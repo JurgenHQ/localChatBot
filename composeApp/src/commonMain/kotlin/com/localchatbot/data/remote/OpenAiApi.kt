@@ -15,6 +15,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import io.ktor.http.content.TextContent
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
@@ -49,7 +50,11 @@ class OpenAiApi(
             val response = client.post(url) {
                 contentType(ContentType.Application.Json)
                 token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-                setBody(finalRequest)
+                if (requestJson != null) {
+                    setBody(TextContent(requestJson, ContentType.Application.Json))
+                } else {
+                    setBody(finalRequest)
+                }
             }
             val raw = response.bodyAsText()
             inspector?.record(
@@ -119,7 +124,14 @@ class OpenAiApi(
                 if (PlatformCapabilities.forceCloseHttpConnection) {
                     header(HttpHeaders.Connection, "close")
                 }
-                setBody(finalRequest)
+                // Se manda el JSON ya serializado para el inspector en vez de dejar que
+                // ContentNegotiation lo serialice otra vez: con 60k tokens de historial
+                // son varios MB de trabajo repetido en cada ronda del loop de tools.
+                if (requestJson != null) {
+                    setBody(TextContent(requestJson, ContentType.Application.Json))
+                } else {
+                    setBody(finalRequest)
+                }
             }.execute { response ->
                 responseStatus = response.status.value
                 if (!response.status.isSuccess()) {

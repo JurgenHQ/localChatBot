@@ -69,6 +69,12 @@ kotlin {
             implementation(libs.sqldelight.coroutines.extensions)
         }
 
+        // Tests de lógica pura de commonMain. Se ejecutan en JVM con `desktopTest` (lo que
+        // corre CI); kotlin("test") resuelve el runner de cada target por su cuenta.
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+
         androidMain.dependencies {
             implementation(compose.preview)
             implementation(libs.androidx.activityCompose)

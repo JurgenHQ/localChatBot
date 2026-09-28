@@ -30,6 +30,10 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      # Tests de commonMain en JVM. Antes del empaquetado: si fallan, no hay MSI.
+      - name: Unit tests
+        run: ./gradlew :composeApp:desktopTest --no-daemon
+
       - name: Package MSI
         run: ./gradlew :composeApp:packageMsi --no-daemon
 
