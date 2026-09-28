@@ -161,6 +161,16 @@ class SettingsViewModel(
         viewModelScope.launch { preferences.updateCodeCompletionEnabled(value) }
     }
 
+    /** Recorre el perfil auxiliar: ninguno (el del chat) → cada perfil → ninguno. */
+    fun cycleAuxiliaryProfile() {
+        viewModelScope.launch {
+            val prefs = preferences.current()
+            val options = listOf<String?>(null) + prefs.connectionProfiles.map { it.id }
+            val current = options.indexOf(prefs.auxiliaryProfileId).coerceAtLeast(0)
+            preferences.updateAuxiliaryProfile(options[(current + 1) % options.size])
+        }
+    }
+
     /** Pasa a la siguiente opción de [AppPreferences.STREAM_IDLE_TIMEOUT_OPTIONS_SEC]. */
     fun cycleStreamIdleTimeout() {
         viewModelScope.launch {

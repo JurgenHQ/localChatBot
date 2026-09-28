@@ -54,6 +54,7 @@ interface PreferencesRepository {
     suspend fun updateRemoteViewerUrl(value: String)
     suspend fun updateDesktopNotifications(value: Boolean)
     suspend fun updateStreamIdleTimeout(seconds: Int)
+    suspend fun updateAuxiliaryProfile(profileId: String?)
     suspend fun updateCodeCompletionEnabled(value: Boolean)
     suspend fun updateGenerationParams(params: GenerationParams)
     suspend fun reset()

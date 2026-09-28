@@ -71,12 +71,14 @@ class CompactContextUseCase(
             )
         }
 
-        val cfg = prefs.current().connection
+        val currentPrefs = prefs.current()
+        val cfg = currentPrefs.connection
         if (!cfg.isValid()) return Result.failure(IllegalStateException("Sin conexión configurada"))
 
         val transcript = capTranscript(buildSummaryTranscript(session.contextSummary, compactable))
-        val summary = model.summarize(cfg.baseUrl(), cfg.model, transcript)
-            ?: return Result.failure(IllegalStateException("El modelo no devolvió un resumen"))
+        val summary = withAuxiliaryModel(currentPrefs.auxiliaryConnection, cfg) { c ->
+            model.summarize(c.baseUrl(), c.model, transcript, c.apiKeyOrNull())
+        } ?: return Result.failure(IllegalStateException("El modelo no devolvió un resumen"))
 
         return Result.success(
             Preview(

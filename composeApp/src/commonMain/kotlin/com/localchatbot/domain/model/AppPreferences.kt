@@ -149,12 +149,28 @@ data class AppPreferences(
      * manda nada hasta el primer token, así que no puede ser muy corto. Antes era un fijo
      * de 10 min, y un servidor colgado tardaba eso en detectarse.
      */
-    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC
+    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
+    /**
+     * Perfil que hace las tareas auxiliares: títulos, resumen rodante, `/compact` y el
+     * autocompletado del editor. Null = el mismo modelo del chat. Un modelo chico ahí
+     * libera al grande: con un único servidor local, generar el título competía por la
+     * GPU con la respuesta siguiente.
+     */
+    val auxiliaryProfileId: String? = null
 ) {
     /** Config de conexión del perfil activo. Nunca vacía: [Default] ya trae un perfil. */
     val connection: ConnectionConfig
         get() = connectionProfiles.firstOrNull { it.id == activeConnectionProfileId }?.config
             ?: ConnectionConfig()
+
+    /**
+     * Conexión del perfil auxiliar, o null si no hay uno elegido, ya no existe (se borró el
+     * perfil) o no está completo. Con null, quien lo use cae a [connection].
+     */
+    val auxiliaryConnection: ConnectionConfig?
+        get() = auxiliaryProfileId
+            ?.let { id -> connectionProfiles.firstOrNull { it.id == id }?.config }
+            ?.takeIf { it.isValid() }
 
     /** La búsqueda web está activa cuando hay una API key configurada. */
     val webSearchEnabled: Boolean get() = tavilyApiKey.isNotBlank()

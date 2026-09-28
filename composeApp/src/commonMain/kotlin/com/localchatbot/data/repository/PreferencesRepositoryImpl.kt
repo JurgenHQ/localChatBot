@@ -359,6 +359,11 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(desktopNotificationsEnabled = value)
     }
 
+    override suspend fun updateAuxiliaryProfile(profileId: String?) {
+        if (profileId == null) settings.remove(KEY_AUXILIARY_PROFILE) else settings.putString(KEY_AUXILIARY_PROFILE, profileId)
+        _state.value = _state.value.copy(auxiliaryProfileId = profileId)
+    }
+
     override suspend fun updateStreamIdleTimeout(seconds: Int) {
         settings.putInt(KEY_STREAM_IDLE_TIMEOUT, seconds)
         _state.value = _state.value.copy(streamIdleTimeoutSec = seconds)
@@ -384,7 +389,8 @@ class PreferencesRepositoryImpl(
             KEY_SESSION_AGENT_MODES, KEY_SESSION_COMPACT_BOUNDARIES,
             KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
             KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_BIND_HOST, KEY_REMOTE_VIEWER_URL,
-            KEY_DESKTOP_NOTIFICATIONS, KEY_CODE_COMPLETION, KEY_GEN_PARAMS, KEY_STREAM_IDLE_TIMEOUT
+            KEY_DESKTOP_NOTIFICATIONS, KEY_CODE_COMPLETION, KEY_GEN_PARAMS, KEY_STREAM_IDLE_TIMEOUT,
+            KEY_AUXILIARY_PROFILE
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
     }
@@ -456,7 +462,8 @@ class PreferencesRepositoryImpl(
                 val raw = settings.getStringOrNull(KEY_GEN_PARAMS) ?: return@runCatching GenerationParams()
                 templatesJson.decodeFromString(GenerationParams.serializer(), raw)
             }.getOrDefault(GenerationParams()),
-            streamIdleTimeoutSec = settings.getInt(KEY_STREAM_IDLE_TIMEOUT, default.streamIdleTimeoutSec)
+            streamIdleTimeoutSec = settings.getInt(KEY_STREAM_IDLE_TIMEOUT, default.streamIdleTimeoutSec),
+            auxiliaryProfileId = settings.getStringOrNull(KEY_AUXILIARY_PROFILE)
         )
     }
 
@@ -583,6 +590,7 @@ class PreferencesRepositoryImpl(
         const val KEY_REMOTE_VIEWER_URL = "remote_viewer_url"
         const val KEY_DESKTOP_NOTIFICATIONS = "desktop_notifications_enabled"
         const val KEY_STREAM_IDLE_TIMEOUT = "stream_idle_timeout_sec"
+        const val KEY_AUXILIARY_PROFILE = "auxiliary_profile_id"
         const val KEY_CODE_COMPLETION = "code_completion_enabled"
         const val KEY_GEN_PARAMS = "generation_params"
     }
