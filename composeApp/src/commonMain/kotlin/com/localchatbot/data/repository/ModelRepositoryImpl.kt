@@ -4,6 +4,7 @@ import com.localchatbot.core.util.newId
 import com.localchatbot.data.remote.ChatCompletionRequest
 import com.localchatbot.data.remote.FunctionCall
 import com.localchatbot.data.remote.LlamaCppApi
+import com.localchatbot.data.remote.OllamaApi
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.OpenAiMessage
@@ -33,7 +34,8 @@ import kotlinx.serialization.json.jsonPrimitive
 class ModelRepositoryImpl(
     private val api: OpenAiApi,
     private val lmStudioApi: LmStudioApi,
-    private val llamaCppApi: LlamaCppApi
+    private val llamaCppApi: LlamaCppApi,
+    private val ollamaApi: OllamaApi? = null
 ) : ModelRepository {
 
     override suspend fun sendChat(
@@ -234,6 +236,7 @@ class ModelRepositoryImpl(
     override suspend fun fetchContextLength(baseUrl: String, modelId: String): Int? =
         lmStudioApi.fetchContextLength(baseUrl, modelId)
             ?: llamaCppApi.fetchContextLength(baseUrl, modelId)
+            ?: ollamaApi?.fetchContextLength(baseUrl, modelId)
 
     override suspend fun isModelLoaded(baseUrl: String, modelId: String): Boolean? {
         lmStudioApi.listModelsV1(baseUrl)?.let { v1 ->
