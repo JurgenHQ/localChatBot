@@ -150,7 +150,13 @@ class SendMessageUseCase(
         // corre en `applicationScope` y sobrevive a que el usuario cambie de conversación, y
         // además una tarea programada corre en paralelo al chat interactivo — así que ambas
         // divergen y el turno terminaba escribiendo en la conversación equivocada.
-        runTurn(sessionId, text, imageDataUrl, systemPromptOverride, attachments, connectionOverride)
+        try {
+            runTurn(sessionId, text, imageDataUrl, systemPromptOverride, attachments, connectionOverride)
+        } finally {
+            // Todo lo del preview ya está en la BD (cada intento vuelca en su finally y las
+            // escrituras posteriores lo mantienen sincronizado); solo queda liberar memoria.
+            chats.clearStreamingPreviews(sessionId)
+        }
     }
 
     private suspend fun runTurn(
@@ -287,19 +293,22 @@ class SendMessageUseCase(
                 var finishReason: String? = null
                 var finalToolCalls: List<ToolCall> = emptyList()
 
-                // Persistencia THROTTLEADA del streaming: como mucho una escritura cada
-                // STREAM_PERSIST_INTERVAL_MS, con flush garantizado al cerrar el intento.
+                // Persistencia del streaming en dos niveles:
+                //  - cada STREAM_PERSIST_INTERVAL_MS (120 ms) el texto se publica como
+                //    preview EN MEMORIA (ChatRepository.setStreamingPreview): la UI lo ve
+                //    fluir sin tocar SQLite;
+                //  - cada STREAM_DB_PERSIST_INTERVAL_MS (1,5 s) baja de verdad a la BD, y
+                //    siempre al cerrar el intento (flush en el finally).
                 //
-                // Cada UPDATE invalida la tabla y SQLDelight reejecuta las consultas que
-                // dependen de ella. Eso hoy cuesta lo que ocupa la sesión ACTIVA
-                // (selectMessagesBySession) más un seek por sesión para el preview del
-                // drawer; antes releía TODOS los mensajes de TODAS las sesiones y
-                // reconstruía el grafo de dominio entero, así que a 60 tokens/s era
-                // O(historial completo) 60 veces por segundo. El throttle sigue mereciendo
-                // la pena de todas formas: reduce las escrituras a disco y los repintados.
+                // Cada UPDATE invalida la tabla: SQLDelight reejecuta selectMessagesBySession
+                // de la sesión activa (deserializando las columnas JSON de TODOS sus
+                // mensajes), el preview del drawer, y el trigger FTS5 borra y reindexa el
+                // texto entero del mensaje. En una sesión larga de agente eso, 8 veces por
+                // segundo, era el grueso del coste del streaming en el cliente.
                 var contentDirty = false
                 var reasoningDirty = false
-                var lastPersistMs = 0L
+                var lastPreviewMs = 0L
+                var lastDbPersistMs = 0L
 
                 /**
                  * Vuelca a la BD lo acumulado en los buffers. En [NonCancellable] porque
@@ -323,15 +332,27 @@ class SendMessageUseCase(
                 }
 
                 /**
-                 * Vuelca si ya pasó el intervalo desde la última escritura. El primer
-                 * delta siempre escribe (lastPersistMs = 0), así que el texto aparece
-                 * al instante y sólo se agrupa el resto de la ráfaga.
+                 * Refresca el preview en memoria si pasaron STREAM_PERSIST_INTERVAL_MS, y
+                 * además escribe en la BD si pasaron STREAM_DB_PERSIST_INTERVAL_MS. El
+                 * primer delta siempre escribe (lastDbPersistMs = 0), así que el texto
+                 * aparece al instante y la fila ya tiene contenido si la app muere.
                  */
                 suspend fun maybePersist() {
+                    val id = assistantId ?: return
                     val now = Clock.System.now().toEpochMilliseconds()
-                    if (now - lastPersistMs < STREAM_PERSIST_INTERVAL_MS) return
-                    lastPersistMs = now
-                    flushStreamBuffers()
+                    if (now - lastPreviewMs < STREAM_PERSIST_INTERVAL_MS) return
+                    lastPreviewMs = now
+                    if (now - lastDbPersistMs >= STREAM_DB_PERSIST_INTERVAL_MS) {
+                        lastDbPersistMs = now
+                        flushStreamBuffers()
+                    } else {
+                        chats.setStreamingPreview(
+                            sessionId,
+                            id,
+                            content = buffer.takeIf { it.isNotEmpty() }?.toString(),
+                            reasoning = reasoningBuffer.takeIf { it.isNotEmpty() }?.toString()
+                        )
+                    }
                 }
 
                 // Crea (lazy) el mensaje assistant la primera vez que llega algo
@@ -476,6 +497,8 @@ class SendMessageUseCase(
                     // que volcar: basta con descartar lo pendiente.
                     contentDirty = false
                     reasoningDirty = false
+                    // Que el primer delta del reintento vuelva a escribir la fila nueva.
+                    lastDbPersistMs = 0L
                     // ¿La app pasó por background durante este intento? En móvil el
                     // SO suspende el proceso (iOS mata además el socket) — no es un
                     // fallo del servidor, así que no consume presupuesto de retries:
@@ -1298,12 +1321,18 @@ class SendMessageUseCase(
         }
 
         /**
-         * Cada cuánto baja a SQLite el texto que va llegando por streaming. Un UPDATE
-         * por delta hacía que el flujo `sessions` releyese la BD entera decenas de veces
-         * por segundo (ver flushStreamBuffers). 120 ms mantiene el texto fluido a la
-         * vista (~8 refrescos/s) recortando el trabajo casi un orden de magnitud.
+         * Cada cuánto se refresca el preview en memoria del texto que va llegando por
+         * streaming (ver maybePersist). 120 ms mantiene el texto fluido a la vista
+         * (~8 refrescos/s) sin recomponer por cada token.
          */
         private const val STREAM_PERSIST_INTERVAL_MS = 120L
+
+        /**
+         * Cada cuánto baja ese texto a SQLite durante el streaming. Solo acota lo que se
+         * perdería si el proceso muere a mitad de respuesta: parar, fallar o terminar el
+         * intento siempre vuelca lo pendiente (flushStreamBuffers en el finally).
+         */
+        private const val STREAM_DB_PERSIST_INTERVAL_MS = 1_500L
 
         /**
          * Default cuando el servidor no expone el context length (ver
