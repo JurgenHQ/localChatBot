@@ -39,8 +39,13 @@ jobs:
 
       # 1.0.<run_number>: crece con cada build y se mantiene por encima de la base 1.0.6
       # de los builds locales. MSI admite hasta 65535 en el tercer campo.
+      # Va por ORG_GRADLE_PROJECT_appVersion (Gradle lo lee como -PappVersion) y no por la
+      # línea de comandos: PowerShell parte `-PappVersion=1.0.30` en `-PappVersion=1` y
+      # `.0.30`, y el MSI salía con la versión inválida "1".
       - name: Package MSI
-        run: ./gradlew :composeApp:packageMsi --no-daemon -PappVersion=1.0.${{ github.run_number }}
+        env:
+          ORG_GRADLE_PROJECT_appVersion: 1.0.${{ github.run_number }}
+        run: ./gradlew :composeApp:packageMsi --no-daemon
 
       # Firma opcional: solo corre si el repo tiene el certificado en los secrets
       # WINDOWS_CERT_PFX_BASE64 (el .pfx en base64) y WINDOWS_CERT_PASSWORD. Sin ellos el MSI
