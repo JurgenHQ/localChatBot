@@ -255,6 +255,11 @@ class SendMessageUseCase(
             // Reintentos para reconvertir una pregunta escrita en prosa en una
             // llamada real a `ask_user` (ver ASK_USER_NUDGE).
             var askUserNudges = 0
+            // Veces que un hook `after_turn` falló y se le devolvió al modelo en este turno.
+            var afterTurnNudges = 0
+            // Tools que mutaron el workspace en el turno: los hooks `after_turn` solo corren
+            // si hubo alguna (no tiene sentido pasar los tests tras una respuesta de texto).
+            val mutatingToolsUsed = mutableSetOf<String>()
             // True en cuanto el modelo llama `ask_user` en este turno: si ya preguntó
             // formalmente, no volvemos a empujarle aunque el texto lleve interrogantes.
             var askUserCalled = false
@@ -683,6 +688,10 @@ class SendMessageUseCase(
 
                     // El TurnSessionContext ya viene instalado desde `invoke` y se propaga por
                     // el árbol de corutinas, incluida la ejecución paralela de abajo.
+                    // Se anota antes de ejecutar y fuera de executeCall: las tools pueden correr
+                    // en paralelo y el set no es thread-safe.
+                    finalToolCalls.map { it.function.name }
+                        .filterTo(mutatingToolsUsed) { it in MUTATING_FS_TOOLS || isOpaqueMutatingTool(it) }
                     val results: List<Pair<ToolCall, String>> = if (needsSequential) {
                         finalToolCalls.map { executeCall(it) }
                     } else {
@@ -770,6 +779,29 @@ class SendMessageUseCase(
                         pendingNudge = PENDING_TODOS_NUDGE_PREFIX + listed
                         iter++
                         continue
+                    }
+                }
+
+                // Hooks `after_turn` (tests, lint…): si fallan, el modelo recibe la salida y
+                // sigue trabajando en vez de dar por terminado algo que no pasa. Tope de
+                // MAX_AFTER_TURN_NUDGES; agotado, el fallo se anota en el mensaje final para
+                // que el usuario no crea que quedó verde.
+                if (tools != null && mutatingToolsUsed.isNotEmpty()) {
+                    val failure = runAfterTurnHooks(sessionId, mutatingToolsUsed)
+                    if (failure != null) {
+                        if (afterTurnNudges < MAX_AFTER_TURN_NUDGES) {
+                            afterTurnNudges++
+                            pendingNudge = AFTER_TURN_NUDGE_PREFIX + failure
+                            iter++
+                            continue
+                        }
+                        assistantId?.let { id ->
+                            chats.updateMessageContent(
+                                sessionId, id,
+                                buffer.toString().trimEnd() + "\n\n> ⚠️ Los hooks de fin de turno siguen fallando:\n" +
+                                    failure.lines().joinToString("\n") { "> $it" }
+                            )
+                        }
                     }
                 }
 
@@ -1174,6 +1206,42 @@ class SendMessageUseCase(
      *
      * Nada de esto puede tumbar el turno: si un hook peta, se ignora.
      */
+    /**
+     * Corre los hooks `after_turn` que aplican a un turno que usó [toolsUsed]. Devuelve el
+     * resumen de los que fallaron (nombre + cola de la salida, que es donde un runner de tests
+     * deja el resumen), o null si todos pasaron o no había ninguno.
+     */
+    private suspend fun runAfterTurnHooks(sessionId: String, toolsUsed: Set<String>): String? {
+        val store = hooksStore ?: return null
+        val agent = filesystemAgent ?: return null
+        if (!store.isAvailable) return null
+        val hooks = runCatching { store.load() }.getOrDefault(emptyList()).filter { it.firesAfterTurn(toolsUsed) }
+        if (hooks.isEmpty()) return null
+        val workspace = activeWorkspaceStore?.current() ?: prefs.current().fsWorkspaceDir ?: return null
+
+        val failures = hooks.mapNotNull { hook ->
+            val name = hook.name.ifBlank { hook.command }
+            // Unos tests pueden tardar minutos: que la UI diga qué está pasando.
+            streamingStateStore.markActivity(sessionId, "Ejecutando hook de fin de turno", name)
+            runCatching {
+                val res = agent.runCommand(hook.command, workspace, hook.timeoutSeconds, background = false)
+                val payload = (res as? FsResult.Ok)?.payload
+                val exit = payload?.get("exitCode")?.jsonPrimitive?.content?.toIntOrNull()
+                val failed = res is FsResult.Err || (exit != null && exit != 0)
+                if (!failed) return@runCatching null
+                val out = listOfNotNull(
+                    payload?.get("stdout")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                    payload?.get("stderr")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                    (res as? FsResult.Err)?.message
+                ).joinToString("\n").trim()
+                "[hook] $name — FALLÓ" + (exit?.let { " (exit $it)" } ?: "") +
+                    if (out.isNotEmpty()) "\n" + out.takeLast(HOOK_OUTPUT_CAP) else ""
+            }.getOrNull()
+        }
+        streamingStateStore.clearActivity(sessionId)
+        return failures.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+    }
+
     private suspend fun runHooksFor(toolName: String, toolResult: String): String {
         val store = hooksStore ?: return toolResult
         val agent = filesystemAgent ?: return toolResult
@@ -1323,6 +1391,19 @@ class SendMessageUseCase(
          * niega a completar o limpiar.
          */
         private const val MAX_TODO_NUDGES = 2
+
+        /**
+         * Veces por turno que un hook `after_turn` fallido se le devuelve al modelo. Dos
+         * intentos de arreglo bastan para lo que se arregla solo; más, y un test roto por
+         * otra cosa lo tendría girando en círculos hasta MAX_TOOL_ITERATIONS.
+         */
+        private const val MAX_AFTER_TURN_NUDGES = 2
+
+        private const val AFTER_TURN_NUDGE_PREFIX =
+            "Al cerrar tu turno se ejecutaron las verificaciones que configuró el usuario " +
+                "(hooks de fin de turno) y fallaron. Corrige la causa y vuelve a terminar. No " +
+                "desactives, saltes ni borres tests o verificaciones para que pasen; si el fallo " +
+                "no tiene que ver con tus cambios, dilo en tu respuesta en vez de tocar nada.\n\n"
 
         private const val PENDING_TODOS_NUDGE_PREFIX =
             "Aún quedan tareas marcadas como pendientes. Si ya están hechas, llama " +
