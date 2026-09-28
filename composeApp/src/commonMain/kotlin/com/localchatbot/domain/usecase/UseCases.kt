@@ -38,7 +38,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.localchatbot.core.state.TurnSessionContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.onEach
 import kotlinx.datetime.Clock
 import kotlinx.serialization.json.Json
@@ -79,7 +81,7 @@ class SendMessageUseCase(
     /**
      * Agente de filesystem usado SOLO para construir el bloque de contexto del
      * workspace (cwd, árbol de archivos, git status, AGENTS.md/CLAUDE.md) que se
-     * inyecta en el system prompt. Real solo en desktop; en móvil no se usa.
+     * antepone al último mensaje del usuario. Real solo en desktop; en móvil no se usa.
      */
     private val filesystemAgent: FilesystemAgent? = null,
     /**
@@ -148,7 +150,13 @@ class SendMessageUseCase(
         // corre en `applicationScope` y sobrevive a que el usuario cambie de conversación, y
         // además una tarea programada corre en paralelo al chat interactivo — así que ambas
         // divergen y el turno terminaba escribiendo en la conversación equivocada.
-        runTurn(sessionId, text, imageDataUrl, systemPromptOverride, attachments, connectionOverride)
+        try {
+            runTurn(sessionId, text, imageDataUrl, systemPromptOverride, attachments, connectionOverride)
+        } finally {
+            // Todo lo del preview ya está en la BD (cada intento vuelca en su finally y las
+            // escrituras posteriores lo mantienen sincronizado); solo queda liberar memoria.
+            chats.clearStreamingPreviews(sessionId)
+        }
     }
 
     private suspend fun runTurn(
@@ -190,11 +198,13 @@ class SendMessageUseCase(
         }
         val cfgApiKey = cfg.apiKey.takeIf { it.isNotBlank() }
 
-        // Parámetros de generación: override sesión ?: global ?: default (AGENT_TEMPERATURE para agente).
-        // Se calculan aquí una vez y se usan en cada ronda del loop de streaming.
+        // Parámetros de generación: override sesión ?: perfil (campo a campo sobre el global)
+        // ?: default (AGENT_TEMPERATURE para agente). Se calculan aquí una vez y se usan en
+        // cada ronda del loop de streaming. `cfg` es el perfil del turno, así que una tarea
+        // programada con su propio perfil usa también sus parámetros.
         val globalParams = currentPrefs.generationParams
         val sessionParams = initialSession.generationParams
-        val baseParams = sessionParams ?: globalParams
+        val baseParams = sessionParams ?: cfg.generationParams.orElse(globalParams)
 
         // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool
@@ -215,9 +225,10 @@ class SendMessageUseCase(
         var tools = resolveToolDefinitions()
 
         // Contexto del workspace (cwd, árbol de archivos, git status, AGENTS.md/CLAUDE.md).
-        // Se calcula UNA vez por turno y se reinyecta en el system prompt de cada ronda,
-        // para que el modelo sepa dónde está y qué archivos existen sin tener que
-        // explorarlos a ciegas. Solo desktop con workspace configurado.
+        // Se calcula UNA vez por turno y se reinyecta en cada ronda como prefijo efímero
+        // del último mensaje del usuario (no en el system: ver buildMessagesForApi), para
+        // que el modelo sepa dónde está y qué archivos existen sin tener que explorarlos
+        // a ciegas. Solo desktop con workspace configurado.
         val workspaceContext = buildWorkspaceContext()
 
         // Resumen de la memoria de preferencias del usuario (memory.md). Se inyecta
@@ -244,6 +255,11 @@ class SendMessageUseCase(
             // Reintentos para reconvertir una pregunta escrita en prosa en una
             // llamada real a `ask_user` (ver ASK_USER_NUDGE).
             var askUserNudges = 0
+            // Veces que un hook `after_turn` falló y se le devolvió al modelo en este turno.
+            var afterTurnNudges = 0
+            // Tools que mutaron el workspace en el turno: los hooks `after_turn` solo corren
+            // si hubo alguna (no tiene sentido pasar los tests tras una respuesta de texto).
+            val mutatingToolsUsed = mutableSetOf<String>()
             // True en cuanto el modelo llama `ask_user` en este turno: si ya preguntó
             // formalmente, no volvemos a empujarle aunque el texto lleve interrogantes.
             var askUserCalled = false
@@ -284,19 +300,22 @@ class SendMessageUseCase(
                 var finishReason: String? = null
                 var finalToolCalls: List<ToolCall> = emptyList()
 
-                // Persistencia THROTTLEADA del streaming: como mucho una escritura cada
-                // STREAM_PERSIST_INTERVAL_MS, con flush garantizado al cerrar el intento.
+                // Persistencia del streaming en dos niveles:
+                //  - cada STREAM_PERSIST_INTERVAL_MS (120 ms) el texto se publica como
+                //    preview EN MEMORIA (ChatRepository.setStreamingPreview): la UI lo ve
+                //    fluir sin tocar SQLite;
+                //  - cada STREAM_DB_PERSIST_INTERVAL_MS (1,5 s) baja de verdad a la BD, y
+                //    siempre al cerrar el intento (flush en el finally).
                 //
-                // Cada UPDATE invalida la tabla y SQLDelight reejecuta las consultas que
-                // dependen de ella. Eso hoy cuesta lo que ocupa la sesión ACTIVA
-                // (selectMessagesBySession) más un seek por sesión para el preview del
-                // drawer; antes releía TODOS los mensajes de TODAS las sesiones y
-                // reconstruía el grafo de dominio entero, así que a 60 tokens/s era
-                // O(historial completo) 60 veces por segundo. El throttle sigue mereciendo
-                // la pena de todas formas: reduce las escrituras a disco y los repintados.
+                // Cada UPDATE invalida la tabla: SQLDelight reejecuta selectMessagesBySession
+                // de la sesión activa (deserializando las columnas JSON de TODOS sus
+                // mensajes), el preview del drawer, y el trigger FTS5 borra y reindexa el
+                // texto entero del mensaje. En una sesión larga de agente eso, 8 veces por
+                // segundo, era el grueso del coste del streaming en el cliente.
                 var contentDirty = false
                 var reasoningDirty = false
-                var lastPersistMs = 0L
+                var lastPreviewMs = 0L
+                var lastDbPersistMs = 0L
 
                 /**
                  * Vuelca a la BD lo acumulado en los buffers. En [NonCancellable] porque
@@ -320,15 +339,27 @@ class SendMessageUseCase(
                 }
 
                 /**
-                 * Vuelca si ya pasó el intervalo desde la última escritura. El primer
-                 * delta siempre escribe (lastPersistMs = 0), así que el texto aparece
-                 * al instante y sólo se agrupa el resto de la ráfaga.
+                 * Refresca el preview en memoria si pasaron STREAM_PERSIST_INTERVAL_MS, y
+                 * además escribe en la BD si pasaron STREAM_DB_PERSIST_INTERVAL_MS. El
+                 * primer delta siempre escribe (lastDbPersistMs = 0), así que el texto
+                 * aparece al instante y la fila ya tiene contenido si la app muere.
                  */
                 suspend fun maybePersist() {
+                    val id = assistantId ?: return
                     val now = Clock.System.now().toEpochMilliseconds()
-                    if (now - lastPersistMs < STREAM_PERSIST_INTERVAL_MS) return
-                    lastPersistMs = now
-                    flushStreamBuffers()
+                    if (now - lastPreviewMs < STREAM_PERSIST_INTERVAL_MS) return
+                    lastPreviewMs = now
+                    if (now - lastDbPersistMs >= STREAM_DB_PERSIST_INTERVAL_MS) {
+                        lastDbPersistMs = now
+                        flushStreamBuffers()
+                    } else {
+                        chats.setStreamingPreview(
+                            sessionId,
+                            id,
+                            content = buffer.takeIf { it.isNotEmpty() }?.toString(),
+                            reasoning = reasoningBuffer.takeIf { it.isNotEmpty() }?.toString()
+                        )
+                    }
                 }
 
                 // Crea (lazy) el mensaje assistant la primera vez que llega algo
@@ -352,17 +383,23 @@ class SendMessageUseCase(
                     return newAssistantId
                 }
 
-                val (messagesForApi, discarded) = buildMessagesForApi(
-                    currentMessages, tools != null, systemPromptOverride, pendingNudge,
+                val (messagesForApi, discarded, estimatedRequestTokens) = buildMessagesForApi(
+                    sessionId, currentMessages, tools != null, systemPromptOverride, pendingNudge,
                     workspaceContext, contextSummary, memoryContext,
-                    compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId
+                    compactedThroughId = prefs.current().sessionCompactBoundaries[sessionId]?.messageId,
+                    calibrationKey = cfg.model
                 )
                 pendingNudge = null
 
                 // Resumen rodante: solo en la primera iteración del turno para no
-                // lanzar una llamada al modelo por cada ronda de tool_calls.
-                if (!summarizeFired && discarded.isNotEmpty()) {
+                // lanzar una llamada al modelo por cada ronda de tool_calls, y solo si el
+                // corte se movió desde el último resumen (ver summarizedThrough).
+                val lastDiscardedId = discarded.lastOrNull()?.id
+                if (!summarizeFired && lastDiscardedId != null &&
+                    (summarizedThrough.value[sessionId] != lastDiscardedId || contextSummary.isNullOrBlank())
+                ) {
                     summarizeFired = true
+                    summarizedThrough.update { it + (sessionId to lastDiscardedId) }
                     val prevSummary = contextSummary
                     val transcript = buildSummaryTranscript(prevSummary, discarded)
                     scope.launch {
@@ -451,6 +488,12 @@ class SendMessageUseCase(
                                     sumInputTokens += it
                                     lastContextTokens = it // la última ronda gana → contexto actual
                                     hasMetrics = true
+                                    // `prompt_tokens` siempre viene del servidor (lo estimado
+                                    // es solo el output), así que sirve para calibrar.
+                                    tokenFactors.update { factors ->
+                                        val next = TokenCalibration.update(factors[cfg.model], it, estimatedRequestTokens)
+                                        if (next == null) factors else factors + (cfg.model to next)
+                                    }
                                 }
                                 event.outputTokens?.let { sumOutputTokens += it; hasMetrics = true }
                                 event.generationMs?.let { sumGenerationMs += it }
@@ -468,6 +511,8 @@ class SendMessageUseCase(
                     // que volcar: basta con descartar lo pendiente.
                     contentDirty = false
                     reasoningDirty = false
+                    // Que el primer delta del reintento vuelva a escribir la fila nueva.
+                    lastDbPersistMs = 0L
                     // ¿La app pasó por background durante este intento? En móvil el
                     // SO suspende el proceso (iOS mata además el socket) — no es un
                     // fallo del servidor, así que no consume presupuesto de retries:
@@ -641,6 +686,10 @@ class SendMessageUseCase(
 
                     // El TurnSessionContext ya viene instalado desde `invoke` y se propaga por
                     // el árbol de corutinas, incluida la ejecución paralela de abajo.
+                    // Se anota antes de ejecutar y fuera de executeCall: las tools pueden correr
+                    // en paralelo y el set no es thread-safe.
+                    finalToolCalls.map { it.function.name }
+                        .filterTo(mutatingToolsUsed) { it in MUTATING_FS_TOOLS || isOpaqueMutatingTool(it) }
                     val results: List<Pair<ToolCall, String>> = if (needsSequential) {
                         finalToolCalls.map { executeCall(it) }
                     } else {
@@ -728,6 +777,29 @@ class SendMessageUseCase(
                         pendingNudge = PENDING_TODOS_NUDGE_PREFIX + listed
                         iter++
                         continue
+                    }
+                }
+
+                // Hooks `after_turn` (tests, lint…): si fallan, el modelo recibe la salida y
+                // sigue trabajando en vez de dar por terminado algo que no pasa. Tope de
+                // MAX_AFTER_TURN_NUDGES; agotado, el fallo se anota en el mensaje final para
+                // que el usuario no crea que quedó verde.
+                if (tools != null && mutatingToolsUsed.isNotEmpty()) {
+                    val failure = runAfterTurnHooks(sessionId, mutatingToolsUsed)
+                    if (failure != null) {
+                        if (afterTurnNudges < MAX_AFTER_TURN_NUDGES) {
+                            afterTurnNudges++
+                            pendingNudge = AFTER_TURN_NUDGE_PREFIX + failure
+                            iter++
+                            continue
+                        }
+                        assistantId?.let { id ->
+                            chats.updateMessageContent(
+                                sessionId, id,
+                                buffer.toString().trimEnd() + "\n\n> ⚠️ Los hooks de fin de turno siguen fallando:\n" +
+                                    failure.lines().joinToString("\n") { "> $it" }
+                            )
+                        }
                     }
                 }
 
@@ -867,6 +939,7 @@ class SendMessageUseCase(
      * disparar el resumen rodante en background.
      */
     private suspend fun buildMessagesForApi(
+        sessionId: String,
         currentMessages: List<ChatMessage>,
         hasTools: Boolean,
         systemPromptOverride: String? = null,
@@ -880,8 +953,10 @@ class SendMessageUseCase(
          * anteriores no se envían al modelo — pero **siguen visibles en el chat**, que es
          * la diferencia con truncar la conversación.
          */
-        compactedThroughId: String? = null
-    ): Pair<List<ChatMessage>, List<ChatMessage>> {
+        compactedThroughId: String? = null,
+        /** Modelo al que va la petición: el factor de [TokenCalibration] es por tokenizer. */
+        calibrationKey: String? = null
+    ): BuiltRequest {
         val cfg = prefs.current()
         val userSystem = cfg.defaultSystemPrompt.trim()
         val yolo = cfg.fsYoloMode
@@ -891,16 +966,21 @@ class SendMessageUseCase(
         val agentMode = activeWorkspaceStore?.currentAgentMode() ?: cfg.agentMode
         val toolPrompt = if (hasTools) buildAgentPrompt(yolo, skillsIndex, agentMode) else ""
         val suffix = buildModelSuffix(model)
-        // Orden pensado para el KV-cache de llama.cpp/LM Studio: las partes ESTABLES
-        // entre turnos (system del usuario, prompt de agente, suffix de modelo) van
-        // primero para que su prefill se reuse desde cache. El contexto del workspace
-        // (git status, archivos — cambia entre turnos) va al FINAL del bloque system:
-        // así, cuando cambia, solo invalida el cache de lo que viene después de él, no
-        // del prompt de agente ni de las definiciones de tools.
-        // memoryContext va junto al toolPrompt (parte estable, cache-friendly) y ANTES
-        // del workspaceContext (volátil). Las preferencias cambian rara vez.
-        val combined = listOf(userSystem, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim(), workspaceContext?.trim())
-            .filterNot { it.isNullOrBlank() }.joinToString("\n\n")
+        // El system (posición 0) lleva SOLO lo estable entre turnos: system del usuario,
+        // prompt de agente, suffix de modelo y memoria. Cualquier cambio aquí obliga a
+        // llama.cpp/LM Studio a reprocesar la conversación ENTERA (todo va después).
+        // El bloque `<workspace>` (git status, árbol — cambia en cuanto el agente edita
+        // algo) ya NO va aquí: viaja como prefijo efímero del último `user` (ver
+        // ContextWindow.assemble), así que al cambiar solo invalida el turno en curso.
+        // Instrucciones del proyecto: cambian solo cuando el usuario las edita, así que van
+        // en el system estable, justo detrás del system global al que complementan.
+        val projectInstructions = activeWorkspaceStore?.currentProjectInstructions()
+            ?.let { "<project-instructions>\n${it.trim()}\n</project-instructions>" }
+        val stableSystem = listOf(
+            userSystem, projectInstructions, systemPromptOverride?.trim(), toolPrompt, suffix, memoryContext?.trim()
+        ).filterNot { it.isNullOrBlank() }.joinToString("\n\n")
+        val turnContext = workspaceContext?.trim()?.takeIf { it.isNotEmpty() }
+        val nudge = ephemeralNudge?.trim()?.takeIf { it.isNotEmpty() }
 
         // Strip leading system message before windowing — it's re-injected below.
         val fullHistory = if (currentMessages.firstOrNull()?.role == Role.System) {
@@ -909,106 +989,94 @@ class SendMessageUseCase(
             currentMessages
         }
 
-        // Compactación manual: descartar todo hasta el corte inclusive. Si el id ya no
-        // existe (el usuario reenvió un mensaje anterior y truncó la sesión) el corte se
-        // ignora y se usa el historial completo — degradar a "no compactado" es seguro,
-        // enviar de menos no lo sería.
-        val boundaryIdx = compactedThroughId?.let { id -> fullHistory.indexOfFirst { it.id == id } } ?: -1
-        val compacted = boundaryIdx >= 0
-        val history = if (compacted) {
-            // dropWhile Tool: si el corte cae entre un assistant que anunció tools y sus
-            // resultados, la ventana arrancaría con `role=tool` huérfanos y el servidor
-            // rechaza la request.
-            fullHistory.drop(boundaryIdx + 1).dropWhile { it.role == Role.Tool }
-        } else {
-            fullHistory
-        }
+        val (history, compacted) = ContextWindow.applyCompaction(fullHistory, compactedThroughId)
 
         // Ventana por presupuesto de tokens estimados (~4 chars/token), no por
         // número de mensajes: un mensaje con un archivo de 50 KB pesa lo que
         // pesa, no "1 mensaje". Reservamos una fracción del contexto para la
-        // respuesta del modelo y descontamos el system prompt.
-        val budget = (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt() -
-            estimateTokens(combined)
-        var used = 0
-        var keptCount = 0
-        for (msg in history.asReversed()) {
-            val t = estimateMessageTokens(msg)
-            // El mensaje más reciente entra siempre, aunque reviente el presupuesto —
-            // sin él la petición no tiene sentido.
-            if (used + t > budget && keptCount > 0) break
-            used += t
-            keptCount++
+        // respuesta del modelo y descontamos todo lo que no es historial.
+        // El presupuesto real se pasa a unidades estimadas con el factor medido
+        // contra el servidor (TokenCalibration), si ya hay uno para este modelo.
+        val overhead = estimateTokens(stableSystem) +
+            (turnContext?.let { estimateTokens(it) } ?: 0) +
+            (nudge?.let { estimateTokens(it) } ?: 0)
+        val factor = calibrationKey?.let { tokenFactors.value[it] }
+        val budget = TokenCalibration.estimatedBudget(
+            (contextLengthTokens() * HISTORY_BUDGET_FRACTION).toInt(), factor
+        ) - overhead
+        val window = ContextWindow.window(
+            history = history,
+            budget = budget,
+            previousStartId = windowStarts.value[sessionId],
+            estimate = { estimateMessageTokens(it) }
+        )
+        // Recordar el corte para el turno siguiente (histéresis). Un mapa atómico porque
+        // una tarea programada y el chat interactivo usan esta instancia a la vez.
+        windowStarts.update { current ->
+            val start = window.startId
+            if (start == null) current - sessionId else current + (sessionId to start)
         }
-        val discarded: List<ChatMessage>
-        val windowed: List<ChatMessage>
-        if (keptCount < history.size) {
-            // No empezar la ventana con resultados de tool huérfanos (su mensaje
-            // assistant "anunciador" quedó fuera del corte).
-            val rawWindowed = history.takeLast(keptCount).dropWhile { it.role == Role.Tool }
-            val windowedIds = rawWindowed.map { it.id }.toSet()
-            discarded = history.filter { it.id !in windowedIds }
-            windowed = rawWindowed
-        } else {
-            discarded = emptyList()
-            windowed = history
-        }
+        val windowed = window.windowed
+        val discarded = window.discarded
         // También cuando hubo compactación manual: ahí no hay `discarded` (los mensajes se
         // sacaron antes de la ventana), pero el resumen igual tiene que inyectarse o el
         // modelo perdería el hilo de golpe.
         val truncated = discarded.isNotEmpty() || compacted
-
-        // Compactación: si hay resumen previo (generado por el modelo), lo inyectamos
-        // como system message — da al modelo contexto real del historial descartado.
-        // Si no hay resumen aún, anclamos la tarea original (sin llamada al modelo).
-        val truncationNoticeText = if (truncated) {
-            if (!contextSummary.isNullOrBlank()) {
-                "Resumen del historial anterior:\n$contextSummary"
-            } else {
-                val firstUserTask = history.firstOrNull { it.role == Role.User }
-                    ?.takeIf { task -> windowed.none { it.id == task.id } }
-                    ?.content?.trim()?.take(500)
-                buildString {
-                    append("Nota: El historial anterior fue recortado por límite de contexto.")
-                    if (!firstUserTask.isNullOrBlank()) {
-                        append(" La petición original del usuario fue: \"")
-                        append(firstUserTask)
-                        append("\"")
-                    }
-                }
-            }
-        } else null
+        val truncationNoticeText = ContextWindow.truncationNotice(history, windowed, truncated, contextSummary)
 
         // Los adjuntos del usuario viven en un campo aparte (no se muestran crudos en
         // la burbuja). Aquí, SOLO para la petición al modelo, se expanden a bloques
         // fenced al inicio del contenido. La copia es efímera: no se persiste.
         val windowedForApi = windowed.map(::expandAttachmentsForApi)
 
-        // Algunos chat templates Jinja (LM Studio/llama.cpp) exigen que el system sea
-        // el ÚNICO mensaje de ese rol y esté en la posición 0. Por eso truncationNotice
-        // y la instrucción efímera (nudge) se pliegan dentro del mismo system message
-        // en vez de ir como mensajes `role=system` separados — el nudge iba al FINAL de
-        // la lista y rompía ese contrato. Se agrega último dentro del bloque para
-        // conservar su efecto de "última instrucción leída" antes de generar.
-        val finalSystemContent = listOfNotNull(
-            combined.takeIf { it.isNotBlank() },
-            truncationNoticeText,
-            ephemeralNudge?.trim()?.takeIf { it.isNotBlank() }
-        ).joinToString("\n\n")
-
-        val apiMessages = if (finalSystemContent.isBlank()) {
-            windowedForApi
-        } else {
-            val systemMsg = ChatMessage(
-                id = SYSTEM_PROMPT_ID,
-                role = Role.System,
-                content = finalSystemContent,
-                timestampEpochMs = 0L
-            )
-            listOf(systemMsg) + windowedForApi
-        }
-        return apiMessages to discarded
+        val systemContent = listOfNotNull(stableSystem.takeIf { it.isNotBlank() }, truncationNoticeText)
+            .joinToString("\n\n")
+        val apiMessages = ContextWindow.assemble(
+            systemContent = systemContent,
+            windowed = windowedForApi,
+            systemPromptId = SYSTEM_PROMPT_ID,
+            turnContext = turnContext,
+            nudge = nudge
+        )
+        // Lo que se estimó para ESTA petición (sin factor), con lo que se compara el
+        // `prompt_tokens` real al terminar la ronda.
+        val estimatedTokens = estimateTokens(systemContent) +
+            (turnContext?.let { estimateTokens(it) } ?: 0) +
+            (nudge?.let { estimateTokens(it) } ?: 0) +
+            windowed.sumOf { estimateMessageTokens(it) }
+        return BuiltRequest(apiMessages, discarded, estimatedTokens)
     }
+
+    /** Resultado de [buildMessagesForApi]. */
+    private data class BuiltRequest(
+        val messages: List<ChatMessage>,
+        /** Mensajes que la ventana dejó fuera, para el resumen rodante. */
+        val discarded: List<ChatMessage>,
+        /** Tokens estimados de la petición, sin calibrar (ver [TokenCalibration]). */
+        val estimatedTokens: Int
+    )
+
+    /**
+     * Factor de [TokenCalibration] por modelo. En memoria y compartido por todas las
+     * sesiones: el tokenizer es del modelo, no de la conversación.
+     */
+    private val tokenFactors = MutableStateFlow<Map<String, Double>>(emptyMap())
+
+    /**
+     * Inicio de la ventana deslizante por sesión (id del primer mensaje enviado), para
+     * que [ContextWindow.window] mantenga el mismo corte entre turnos. Solo en memoria:
+     * tras reiniciar la app el primer turno recalcula el corte, que es un único
+     * reprocesado del cache.
+     */
+    private val windowStarts = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Último mensaje descartado que ya se mandó a resumir, por sesión. Con la ventana
+     * con histéresis `discarded` sigue igual durante muchos turnos; re-resumir lo mismo
+     * en cada uno cuesta una llamada al modelo y, peor, cambia el resumen del system
+     * (= cache invalidado) sin que haya cambiado nada.
+     */
+    private val summarizedThrough = MutableStateFlow<Map<String, String>>(emptyMap())
 
     /**
      * Expande los adjuntos de un mensaje del usuario a bloques fenced antepuestos al
@@ -1031,7 +1099,7 @@ class SendMessageUseCase(
     }
 
     /**
-     * Construye el bloque `<workspace>` que se inyecta en el system prompt: cwd,
+     * Construye el bloque `<workspace>` que se antepone al último mensaje del usuario: cwd,
      * árbol de archivos (un nivel), git status y el contenido de los archivos de
      * reglas del proyecto (AGENTS.md / CLAUDE.md / .cursorrules) si existen. Da al
      * modelo orientación inmediata del proyecto sin gastar rondas de tool calls
@@ -1135,6 +1203,42 @@ class SendMessageUseCase(
      *
      * Nada de esto puede tumbar el turno: si un hook peta, se ignora.
      */
+    /**
+     * Corre los hooks `after_turn` que aplican a un turno que usó [toolsUsed]. Devuelve el
+     * resumen de los que fallaron (nombre + cola de la salida, que es donde un runner de tests
+     * deja el resumen), o null si todos pasaron o no había ninguno.
+     */
+    private suspend fun runAfterTurnHooks(sessionId: String, toolsUsed: Set<String>): String? {
+        val store = hooksStore ?: return null
+        val agent = filesystemAgent ?: return null
+        if (!store.isAvailable) return null
+        val hooks = runCatching { store.load() }.getOrDefault(emptyList()).filter { it.firesAfterTurn(toolsUsed) }
+        if (hooks.isEmpty()) return null
+        val workspace = activeWorkspaceStore?.current() ?: prefs.current().fsWorkspaceDir ?: return null
+
+        val failures = hooks.mapNotNull { hook ->
+            val name = hook.name.ifBlank { hook.command }
+            // Unos tests pueden tardar minutos: que la UI diga qué está pasando.
+            streamingStateStore.markActivity(sessionId, "Ejecutando hook de fin de turno", name)
+            runCatching {
+                val res = agent.runCommand(hook.command, workspace, hook.timeoutSeconds, background = false)
+                val payload = (res as? FsResult.Ok)?.payload
+                val exit = payload?.get("exitCode")?.jsonPrimitive?.content?.toIntOrNull()
+                val failed = res is FsResult.Err || (exit != null && exit != 0)
+                if (!failed) return@runCatching null
+                val out = listOfNotNull(
+                    payload?.get("stdout")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                    payload?.get("stderr")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                    (res as? FsResult.Err)?.message
+                ).joinToString("\n").trim()
+                "[hook] $name — FALLÓ" + (exit?.let { " (exit $it)" } ?: "") +
+                    if (out.isNotEmpty()) "\n" + out.takeLast(HOOK_OUTPUT_CAP) else ""
+            }.getOrNull()
+        }
+        streamingStateStore.clearActivity(sessionId)
+        return failures.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+    }
+
     private suspend fun runHooksFor(toolName: String, toolResult: String): String {
         val store = hooksStore ?: return toolResult
         val agent = filesystemAgent ?: return toolResult
@@ -1285,6 +1389,19 @@ class SendMessageUseCase(
          */
         private const val MAX_TODO_NUDGES = 2
 
+        /**
+         * Veces por turno que un hook `after_turn` fallido se le devuelve al modelo. Dos
+         * intentos de arreglo bastan para lo que se arregla solo; más, y un test roto por
+         * otra cosa lo tendría girando en círculos hasta MAX_TOOL_ITERATIONS.
+         */
+        private const val MAX_AFTER_TURN_NUDGES = 2
+
+        private const val AFTER_TURN_NUDGE_PREFIX =
+            "Al cerrar tu turno se ejecutaron las verificaciones que configuró el usuario " +
+                "(hooks de fin de turno) y fallaron. Corrige la causa y vuelve a terminar. No " +
+                "desactives, saltes ni borres tests o verificaciones para que pasen; si el fallo " +
+                "no tiene que ver con tus cambios, dilo en tu respuesta en vez de tocar nada.\n\n"
+
         private const val PENDING_TODOS_NUDGE_PREFIX =
             "Aún quedan tareas marcadas como pendientes. Si ya están hechas, llama " +
                 "`manage_todos` operation=complete con cada id. Si las abandonaste, llama " +
@@ -1327,12 +1444,18 @@ class SendMessageUseCase(
         }
 
         /**
-         * Cada cuánto baja a SQLite el texto que va llegando por streaming. Un UPDATE
-         * por delta hacía que el flujo `sessions` releyese la BD entera decenas de veces
-         * por segundo (ver flushStreamBuffers). 120 ms mantiene el texto fluido a la
-         * vista (~8 refrescos/s) recortando el trabajo casi un orden de magnitud.
+         * Cada cuánto se refresca el preview en memoria del texto que va llegando por
+         * streaming (ver maybePersist). 120 ms mantiene el texto fluido a la vista
+         * (~8 refrescos/s) sin recomponer por cada token.
          */
         private const val STREAM_PERSIST_INTERVAL_MS = 120L
+
+        /**
+         * Cada cuánto baja ese texto a SQLite durante el streaming. Solo acota lo que se
+         * perdería si el proceso muere a mitad de respuesta: parar, fallar o terminar el
+         * intento siempre vuelca lo pendiente (flushStreamBuffers en el finally).
+         */
+        private const val STREAM_DB_PERSIST_INTERVAL_MS = 1_500L
 
         /**
          * Default cuando el servidor no expone el context length (ver
@@ -1366,11 +1489,14 @@ class SendMessageUseCase(
         /**
          * Tokens estimados de un mensaje: contenido + coste fijo si es un
          * adjunto de usuario (viaja multimodal) + overhead de formato
-         * (role, separadores).
+         * (role, separadores). Incluye los argumentos de los tool_calls, que viajan
+         * en cada petición y en un agente pesan mucho (el `content` entero de cada
+         * `create_file`/`edit_file`): antes no se contaban.
          */
         private fun estimateMessageTokens(msg: ChatMessage): Int =
             estimateTokens(msg.content) +
                 (msg.attachments?.sumOf { estimateTokens(it.name) + estimateTokens(it.content) + 6 } ?: 0) +
+                (msg.toolCalls?.sumOf { estimateTokens(it.name) + estimateTokens(it.argumentsJson) + 8 } ?: 0) +
                 (if (msg.role == Role.User && msg.imageDataUrl != null) USER_IMAGE_TOKEN_ESTIMATE else 0) +
                 4
 
@@ -1459,7 +1585,8 @@ class SendMessageUseCase(
                 "as text: call `ask_user` with the FIRST question, wait for the answer, then call " +
                 "`ask_user` again with the next one. One question per call.\n" +
                 "=====================================================\n\n" +
-                "If a `<workspace>` block is present in this prompt, it already gives you the cwd, " +
+                "If a `<workspace>` block is present (at the start of the latest user message), it " +
+                "already gives you the current cwd, " +
                 "the file tree, git status, and any project rules — use it instead of re-listing " +
                 "the directory, and follow the project rules it contains.\n\n" +
                 "When to reach for each tool:\n" +

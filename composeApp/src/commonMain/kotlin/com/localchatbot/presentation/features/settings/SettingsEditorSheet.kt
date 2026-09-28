@@ -231,6 +231,24 @@ fun SettingsEditorSheetContent(
                     canSave = state.canSaveText,
                     onSave = onSave
                 )
+                SettingsEditor.MinP -> TextEditorBody(
+                    title = "Min-P",
+                    value = state.textDraft,
+                    placeholder = "0.05  (vacío = por defecto del servidor)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
+                SettingsEditor.RepeatPenalty -> TextEditorBody(
+                    title = "Repeat penalty",
+                    value = state.textDraft,
+                    placeholder = "1.1  (1.0 = sin penalización)",
+                    keyboardType = KeyboardType.Decimal,
+                    onChange = onTextChange,
+                    canSave = state.canSaveText,
+                    onSave = onSave
+                )
                 SettingsEditor.ReasoningEffort -> ReasoningEffortEditorBody(
                     current = state.reasoningEffortDraft,
                     onSelect = onReasoningEffortChange

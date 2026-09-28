@@ -35,7 +35,9 @@ class RemoteAccessDeps(
 interface RemoteAccessServer {
     val running: StateFlow<Boolean>
     val connectedClients: StateFlow<Int>
-    fun start(port: Int, pin: String)
+
+    /** [host] es la IP local donde escuchar; vacío = todas las interfaces. */
+    fun start(port: Int, pin: String, host: String = "")
     fun stop()
 }
 
@@ -49,6 +51,6 @@ expect fun localIpAddresses(): List<String>
 class NoopRemoteAccessServer : RemoteAccessServer {
     override val running = kotlinx.coroutines.flow.MutableStateFlow(false)
     override val connectedClients = kotlinx.coroutines.flow.MutableStateFlow(0)
-    override fun start(port: Int, pin: String) {}
+    override fun start(port: Int, pin: String, host: String) {}
     override fun stop() {}
 }

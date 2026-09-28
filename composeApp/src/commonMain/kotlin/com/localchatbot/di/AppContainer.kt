@@ -16,6 +16,9 @@ import com.localchatbot.core.network.HttpClientFactory
 import com.localchatbot.core.remote.RemoteAccessDeps
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.createRemoteAccessServer
+import com.localchatbot.core.security.createSecretCipher
+import com.localchatbot.core.update.AppUpdater
+import com.localchatbot.core.update.createAppUpdater
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
@@ -42,6 +45,7 @@ import com.localchatbot.core.voice.VoiceConversationController
 import com.localchatbot.data.remote.DiagramRenderApi
 import com.localchatbot.data.remote.ImageGenApi
 import com.localchatbot.data.remote.LlamaCppApi
+import com.localchatbot.data.remote.OllamaApi
 import com.localchatbot.data.remote.LmStudioApi
 import com.localchatbot.data.remote.OpenAiApi
 import com.localchatbot.data.remote.TavilyApi
@@ -107,6 +111,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -134,10 +139,15 @@ class AppContainer {
     val imageSaver: ImageSaver = createImageSaver()
     private val openAiApi = OpenAiApi(
         httpClient, json, networkInspector,
-        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } },
+        streamIdleTimeoutMsProvider = { preferencesRepository.current().streamIdleTimeoutSec * 1_000L }
     )
     private val lmStudioApi = LmStudioApi(
         httpClient, json, networkInspector,
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+    )
+    private val ollamaApi = OllamaApi(
+        httpClient,
         authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
     )
     private val llamaCppApi = LlamaCppApi(
@@ -168,15 +178,19 @@ class AppContainer {
      */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** Actualización desde el pre-release `latest` (solo el MSI de Windows; inerte en el resto). */
+    val appUpdater: AppUpdater = createAppUpdater(applicationScope, httpClient)
+
     val skillFileStore: SkillFileStore = createSkillFileStore()
     val toolDocsStore: ToolDocsStore = createToolDocsStore()
     val memoryStore: MemoryStore = createMemoryStore()
     val hooksStore: HooksStore = createHooksStore()
     val checkpointStore: CheckpointStore = CheckpointStore()
-    val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
+    val preferencesRepository: PreferencesRepository =
+        PreferencesRepositoryImpl(settings, skillFileStore, cipher = createSecretCipher())
     val projectRepository: ProjectRepository = ProjectRepositoryImpl(settings, json)
     val chatRepository: ChatRepository = ChatRepositoryImpl(database, json)
-    val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi, llamaCppApi)
+    val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi, llamaCppApi, ollamaApi)
 
     val activeSessionStore = ActiveSessionStore()
     val streamingStateStore = StreamingStateStore()
@@ -509,16 +523,22 @@ class AppContainer {
         if (PlatformCapabilities.isDesktop) {
             automationScheduler.start()
         }
+        // Comprobación de actualizaciones al arrancar, con retraso: no compite con la carga
+        // inicial, y si no hay red solo queda un error visible en Ajustes.
+        applicationScope.launch {
+            delay(UPDATE_CHECK_DELAY_MS)
+            if (preferencesRepository.current().autoCheckUpdates) appUpdater.check()
+        }
     }
 
     init {
-        // Reacciona al toggle/puerto/PIN de acceso remoto.
+        // Reacciona al toggle/puerto/PIN/interfaz de acceso remoto.
         applicationScope.launch {
             preferencesRepository.preferences
-                .map { Triple(it.remoteAccessEnabled, it.remoteAccessPort, it.remoteAccessPin) }
+                .map { RemoteAccessConfig(it.remoteAccessEnabled, it.remoteAccessPort, it.remoteAccessPin, it.remoteAccessBindHost) }
                 .distinctUntilChanged()
-                .collect { (enabled, port, pin) ->
-                    if (enabled && pin.isNotBlank()) remoteAccessServer.start(port, pin)
+                .collect { cfg ->
+                    if (cfg.enabled && cfg.pin.isNotBlank()) remoteAccessServer.start(cfg.port, cfg.pin, cfg.host)
                     else remoteAccessServer.stop()
                 }
         }
@@ -526,3 +546,7 @@ class AppContainer {
 }
 
 private const val KEY_CHAT_MIGRATED_TO_SQLDELIGHT_V1 = "chat_migrated_to_sqldelight_v1"
+private const val UPDATE_CHECK_DELAY_MS = 15_000L
+
+/** Lo que reinicia el servidor de acceso remoto al cambiar. */
+private data class RemoteAccessConfig(val enabled: Boolean, val port: Int, val pin: String, val host: String)

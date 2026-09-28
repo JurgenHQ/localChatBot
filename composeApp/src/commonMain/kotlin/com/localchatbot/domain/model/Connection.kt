@@ -20,7 +20,13 @@ data class ConnectionConfig(
      * header `Authorization: Bearer <apiKey>`. Útil para LM Studio con autenticación
      * activada o para proveedores cloud (OpenAI, DeepSeek, etc.). Vacío = sin header.
      */
-    val apiKey: String = ""
+    val apiKey: String = "",
+    /**
+     * Parámetros de generación propios del perfil. Cada campo null hereda el global
+     * ([AppPreferences.generationParams]), ver [GenerationParams.orElse]: un modelo local y
+     * uno en la nube rara vez quieren la misma temperatura ni el mismo `min_p`.
+     */
+    val generationParams: GenerationParams = GenerationParams()
 ) {
     fun baseUrl(): String {
         val scheme = if (useHttps) "https" else "http"

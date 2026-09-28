@@ -95,16 +95,16 @@ ver 1.1), con los vectores **cuantizados a int8** para que el archivo pese ~2 MB
 compite por memoria con el de chat en LM Studio. Sin modelo de embeddings la tool degrada con
 un mensaje que apunta a `search_files`. Detalle en `CLAUDE.md`, sección *Semantic search*.
 
-### 2.6 Hooks — ✅ HECHO (post-tool)
+### 2.6 Hooks — ✅ HECHO (post-tool y `after_turn`)
 
 Hooks **post-tool** en `~/.localchatbot/hooks.json` (mismo patrón de archivo que `tools.md`
 y `memory.md`: se edita a mano, sin pantalla de ajustes ni clave en settings). La salida del
 hook se añade al resultado de la tool, así que el modelo la ve en la misma ronda: si el
 formateador reescribió el archivo o el compilador falló, se entera antes de seguir encima.
 
-**Falta el evento `after_turn`** (correr los tests al cerrar el turno). Lo interesante ahí es
-engancharlo al mecanismo de *nudge* que ya existe, para que un fallo re-prompte al modelo con
-la salida en vez de solo mostrarla. Es un cambio en el bucle, no en el store.
+**`after_turn` — ✅ HECHO.** `"event": "after_turn"` corre el hook al cerrar el turno (si se
+tocó el workspace) y, si falla, se lo devuelve al modelo por el mecanismo de *nudge* (hasta 2
+veces); agotados los intentos, el fallo queda anotado en el mensaje final.
 
 ---
 
@@ -163,7 +163,10 @@ de este cambio: `AppTextField` solo trata distinto a Shift+Enter.
 Hoy esperás al timeout y recibís todo junto. Verla en vivo cambia la sensación de control
 cuando el agente corre un build.
 
-### 3.5 System prompt por proyecto
+### 3.5 System prompt por proyecto — ✅ HECHO
+
+`Project.instructions`, editable desde el menú del proyecto en el drawer, va al system estable
+de todas sus conversaciones.
 
 `Project` ya lleva `workspaceDir`, y el modo agente ya es por sesión; falta que el proyecto
 lleve sus propias instrucciones. Un campo en `Project` y una línea en el system prompt.
@@ -210,9 +213,12 @@ precio, el total se marca como parcial. Detalle en `CLAUDE.md`, sección *Sessio
 
 ## 5. Distribución
 
-- **5.1 Auto-update** en desktop (hoy hay que bajar el MSI a mano del pre-release `latest`).
+- **5.1 Auto-update** en desktop — ✅ HECHO para Windows (`AppUpdater`): el CI versiona cada
+  MSI con el número de build y la app instala el más nuevo del pre-release `latest`.
 - **5.2 CI para macOS y Linux** — hoy solo se compila el MSI en Windows.
-- **5.3 Firma y notarización** — sin eso, cada instalación pasa por "app no reconocida".
+- **5.3 Firma y notarización** — preparada para Windows: el CI firma el MSI en cuanto el repo
+  tenga el certificado en los secrets `WINDOWS_CERT_PFX_BASE64`/`WINDOWS_CERT_PASSWORD`. Falta el
+  certificado, y la notarización de macOS (no hay build de macOS en el CI).
 
 ---
 

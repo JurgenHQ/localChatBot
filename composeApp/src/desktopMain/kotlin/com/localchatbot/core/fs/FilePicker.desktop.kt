@@ -32,7 +32,7 @@ actual fun rememberFilePicker(
             override fun launch() {
                 scope.launch(Dispatchers.IO) {
                     val file = chooseFile() ?: return@launch
-                    val result = runCatching { parseFile(file) }
+                    val result = runCatching { parseAttachmentFile(file) }
                     withContext(Dispatchers.Main) {
                         result.fold(
                             onSuccess = { text ->
@@ -48,8 +48,11 @@ actual fun rememberFilePicker(
     }
 }
 
-/** null = formato reconocido pero no soportado (p. ej. .doc legado). */
-private fun parseFile(file: File): String? {
+/**
+ * Texto de un archivo adjuntado (también de uno arrastrado, ver `fileDropTarget`).
+ * null = formato reconocido pero no soportado (p. ej. .doc legado).
+ */
+internal fun parseAttachmentFile(file: File): String? {
     val bytes = file.readBytes()
     return when (file.extension.lowercase()) {
         "pdf" -> extractPdfText(bytes)

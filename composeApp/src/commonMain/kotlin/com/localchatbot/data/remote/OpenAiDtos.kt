@@ -19,6 +19,8 @@ data class ChatCompletionRequest(
     @SerialName("presence_penalty") val presencePenalty: Double? = null,
     @SerialName("frequency_penalty") val frequencyPenalty: Double? = null,
     val seed: Int? = null,
+    @SerialName("min_p") val minP: Double? = null,
+    @SerialName("repeat_penalty") val repeatPenalty: Double? = null,
     val tools: List<ToolDefinition>? = null,
     @SerialName("tool_choice") val toolChoice: String? = null,
     @SerialName("stream_options") val streamOptions: StreamOptions? = null,

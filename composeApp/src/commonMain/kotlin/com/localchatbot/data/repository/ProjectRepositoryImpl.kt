@@ -45,6 +45,10 @@ class ProjectRepositoryImpl(
         s.copy(projects = s.projects.map { if (it.id == id) it.copy(workspaceDir = workspaceDir) else it })
     }
 
+    override suspend fun updateInstructions(id: String, instructions: String) = update { s ->
+        s.copy(projects = s.projects.map { if (it.id == id) it.copy(instructions = instructions) else it })
+    }
+
     override suspend fun updateCollapsed(id: String, collapsed: Boolean) = update { s ->
         s.copy(projects = s.projects.map { if (it.id == id) it.copy(collapsed = collapsed) else it })
     }

@@ -75,6 +75,22 @@ interface ChatRepository {
     suspend fun updateModel(sessionId: String, model: String)
     suspend fun setPinned(sessionId: String, pinned: Boolean)
     suspend fun updateContextSummary(sessionId: String, summary: String)
+    /**
+     * Publica, **solo en memoria**, el texto que va generando el modelo para [messageId].
+     * [sessionWithMessages] y [getSession] lo muestran por encima de lo persistido sin
+     * tocar SQLite: cada escritura reejecuta la consulta de la sesión activa (deserializando
+     * todos sus mensajes) y el trigger FTS5 reindexa el texto entero, así que durante el
+     * streaming la BD solo se escribe cada bastante más tiempo que el refresco de la UI.
+     * Un campo null deja el valor persistido.
+     *
+     * Las escrituras de [updateMessageContent]/[updateMessageReasoning] sobre un mensaje con
+     * preview actualizan también el preview, para que nunca muestre algo más viejo que la BD.
+     */
+    fun setStreamingPreview(sessionId: String, messageId: String, content: String?, reasoning: String?)
+
+    /** Descarta los previews de streaming de [sessionId]. Llamar al terminar el turno. */
+    fun clearStreamingPreviews(sessionId: String)
+
     /** Elimina el mensaje indicado y todos los posteriores en esa sesión. */
     suspend fun deleteMessagesFrom(sessionId: String, messageId: String)
 

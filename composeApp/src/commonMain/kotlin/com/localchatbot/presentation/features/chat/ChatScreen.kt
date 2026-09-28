@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -47,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
+import com.localchatbot.core.fs.fileDropTarget
 import com.localchatbot.core.fs.rememberFilePicker
 import com.localchatbot.core.fs.rememberDirectoryPicker
 import com.localchatbot.core.image.rememberImagePicker
@@ -123,7 +126,25 @@ fun ChatScreen(
         chatViewModel.notifyCopied("Conversación")
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    // Arrastrar archivos desde el explorador del SO (desktop). Mientras el modelo responde se
+    // rechaza igual que el botón de adjuntar, que está deshabilitado: la cola de mensajes
+    // es solo texto y el adjunto se perdería.
+    var dropHover by remember { mutableStateOf(false) }
+    val dropBorderColor = MaterialTheme.colorScheme.primary
+    val busyDrop = { _: Any -> chatViewModel.attachTextFileError("Espera a que termine la respuesta para adjuntar archivos.") }
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .fileDropTarget(
+                onImage = { if (state.sending) busyDrop(it) else chatViewModel.onImagePicked(it) },
+                onTextFile = { if (state.sending) busyDrop(it) else chatViewModel.attachTextFile(it) },
+                onError = chatViewModel::attachTextFileError,
+                onHover = { dropHover = it }
+            )
+            .then(
+                if (dropHover) Modifier.border(2.dp, dropBorderColor, RoundedCornerShape(12.dp)) else Modifier
+            )
+    ) {
         ChatContent(
             state = state,
             todoItems = todoItems,

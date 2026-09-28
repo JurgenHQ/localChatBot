@@ -75,7 +75,7 @@
 <body>
 <div id="login">
   <h1>LocalChatBot — Acceso remoto</h1>
-  <input id="pin" type="password" inputmode="numeric" placeholder="PIN" autocomplete="off" />
+  <input id="pin" type="password" autocapitalize="characters" placeholder="PIN" autocomplete="off" />
   <button id="loginBtn">Conectar</button>
   <div id="loginErr" class="err"></div>
 </div>
@@ -251,7 +251,18 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
     ws.onmessage = (ev) => render(JSON.parse(ev.data));
-    ws.onclose = () => { $('status').textContent = 'Desconectado — reintentando…'; setTimeout(connect, 1500); };
+    ws.onclose = (ev) => {
+      // 1008 = token rechazado o caducado: reintentar con él no serviría de nada.
+      if (ev.code === 1008) {
+        token = null;
+        $('app').style.display = 'none';
+        $('login').style.display = '';
+        $('loginErr').textContent = 'La sesión caducó. Introduce el PIN de nuevo.';
+        return;
+      }
+      $('status').textContent = 'Desconectado — reintentando…';
+      setTimeout(connect, 1500);
+    };
     ws.onopen = () => { $('status').textContent = 'Conectado'; };
   }
 

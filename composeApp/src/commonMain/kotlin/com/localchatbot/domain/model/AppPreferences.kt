@@ -116,6 +116,11 @@ data class AppPreferences(
     /** PIN que los dispositivos remotos deben introducir. Generado al activar. */
     val remoteAccessPin: String = "",
     /**
+     * IP local en la que escucha el servidor remoto, p. ej. la de Tailscale para que solo se
+     * llegue por la VPN. Vacío = todas las interfaces (`0.0.0.0`), como antes.
+     */
+    val remoteAccessBindHost: String = "",
+    /**
      * Última URL del visor remoto embebido (Fase 1b). La app abre esta web (el
      * cliente remoto servido por otro desktop) dentro de un WebView, sin navegador
      * externo. Se recuerda entre sesiones.
@@ -137,7 +142,16 @@ data class AppPreferences(
      */
     val codeCompletionEnabled: Boolean = false,
     /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
-    val generationParams: GenerationParams = GenerationParams()
+    val generationParams: GenerationParams = GenerationParams(),
+    /**
+     * Segundos que un stream de chat puede pasar sin recibir ni un byte antes de darse por
+     * colgado. Cubre el prefill: con un prompt largo en una máquina lenta el servidor no
+     * manda nada hasta el primer token, así que no puede ser muy corto. Antes era un fijo
+     * de 10 min, y un servidor colgado tardaba eso en detectarse.
+     */
+    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
+    /** Buscar una versión nueva al arrancar (solo desktop Windows instalado con el MSI). */
+    val autoCheckUpdates: Boolean = true
 ) {
     /** Config de conexión del perfil activo. Nunca vacía: [Default] ya trae un perfil. */
     val connection: ConnectionConfig
@@ -161,6 +175,11 @@ data class AppPreferences(
         }
 
     companion object {
+        const val DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180
+
+        /** Opciones que ofrece Ajustes (se recorren con cada click). */
+        val STREAM_IDLE_TIMEOUT_OPTIONS_SEC = listOf(60, 180, 300, 600)
+
         val Default = AppPreferences(
             connectionProfiles = listOf(
                 ConnectionProfile(id = "default", name = "Perfil 1", config = ConnectionConfig(ip = "", port = "1234", model = ""))

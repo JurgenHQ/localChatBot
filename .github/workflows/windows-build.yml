@@ -18,6 +18,9 @@ permissions:
 jobs:
   build-msi:
     runs-on: windows-latest
+    # Los secrets no se pueden usar directamente en un `if:`; se deriva aquí si hay certificado.
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
 
     steps:
       - name: Checkout
@@ -30,11 +33,54 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      # Tests de commonMain en JVM. Antes del empaquetado: si fallan, no hay MSI.
+      - name: Unit tests
+        run: ./gradlew :composeApp:desktopTest --no-daemon
+
+      # 1.0.<run_number>: crece con cada build y se mantiene por encima de la base 1.0.6
+      # de los builds locales. MSI admite hasta 65535 en el tercer campo.
+      # Va por ORG_GRADLE_PROJECT_appVersion (Gradle lo lee como -PappVersion) y no por la
+      # línea de comandos: PowerShell parte `-PappVersion=1.0.30` en `-PappVersion=1` y
+      # `.0.30`, y el MSI salía con la versión inválida "1".
       - name: Package MSI
+        env:
+          ORG_GRADLE_PROJECT_appVersion: 1.0.${{ github.run_number }}
         run: ./gradlew :composeApp:packageMsi --no-daemon
 
+      # Firma opcional: solo corre si el repo tiene el certificado en los secrets
+      # WINDOWS_CERT_PFX_BASE64 (el .pfx en base64) y WINDOWS_CERT_PASSWORD. Sin ellos el MSI
+      # sale sin firmar, como hasta ahora, y SmartScreen lo marca como "app no reconocida".
+      - name: Sign MSI
+        if: env.HAS_WINDOWS_CERT == 'true'
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Sort-Object FullName -Descending | Select-Object -First 1
+          $msi = Get-ChildItem composeApp/build/compose/binaries/main/msi/*.msi | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool falló ($LASTEXITCODE)" }
+          Remove-Item $pfx
+
+      # El nombre del MSI lleva la versión, así que sin esto el release acumularía uno por
+      # build. El actualizador elige el de versión más alta igualmente, pero el release solo
+      # tiene que ofrecer uno.
+      - name: Remove previous MSI from rolling release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view latest --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null |
+            grep -i '\.msi$' |
+            while read -r name; do gh release delete-asset latest "$name" --repo "$GITHUB_REPOSITORY" -y; done || true
+
       # Pre-release rodante: sobrescribe el tag fijo `latest` y reemplaza el
-      # .msi adjunto en cada push a main. Link de descarga permanente y único.
+      # .msi adjunto en cada push a main. Es de donde lee el actualizador de la app.
       - name: Publish rolling pre-release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2

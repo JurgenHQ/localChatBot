@@ -58,6 +58,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -386,13 +387,21 @@ private fun AssistantBubble(
                             // Markdown no soporta inline-highlight directo. Cuando hay
                             // match, el modelo todavía ve la salida con formato; el
                             // resaltado se logra con el background/border del Box.
-                            if (onOpenFileInEditor != null) {
-                                FileAwareMarkdown(displayContent, onOpenFileInEditor)
+                            if (isStreaming) {
+                                // Un Markdown por bloque mientras llega texto: los bloques
+                                // cerrados no cambian y no se re-parsean (ver
+                                // splitMarkdownBlocks). Al terminar se vuelve al render
+                                // único de abajo, que es el que manda en cómo queda.
+                                val blocks = remember(displayContent) { splitMarkdownBlocks(displayContent) }
+                                Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                                    blocks.forEachIndexed { index, block ->
+                                        key(index) {
+                                            MarkdownContent(block, onOpenFileInEditor)
+                                        }
+                                    }
+                                }
                             } else {
-                                Markdown(
-                                    content = displayContent,
-                                    components = codeBlockComponents()
-                                )
+                                MarkdownContent(displayContent, onOpenFileInEditor)
                             }
                         }
                     }
@@ -795,6 +804,15 @@ private fun linkifyFileReferences(content: String): String {
                 m.value
             }
         }
+    }
+}
+
+@Composable
+private fun MarkdownContent(content: String, onOpenFileInEditor: ((String, Int?) -> Unit)?) {
+    if (onOpenFileInEditor != null) {
+        FileAwareMarkdown(content, onOpenFileInEditor)
+    } else {
+        Markdown(content = content, components = codeBlockComponents())
     }
 }
 

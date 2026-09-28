@@ -49,6 +49,12 @@ class ChatRepositoryImpl(
     private val mediaOverlay = MutableStateFlow<Map<String, Pair<String?, String?>>>(emptyMap())
 
     /**
+     * Texto en streaming aún sin volcar a SQLite, por id de mensaje (ver
+     * [ChatRepository.setStreamingPreview]). Igual que [mediaOverlay], vive solo en memoria.
+     */
+    private val streamingOverlay = MutableStateFlow<Map<String, StreamingPreview>>(emptyMap())
+
+    /**
      * Metadatos sin mensajes. No se combina con [mediaOverlay] a propósito: el drawer no
      * muestra imágenes, así que generar una imagen no tiene por qué re-emitir la lista.
      *
@@ -64,18 +70,20 @@ class ChatRepositoryImpl(
      * tamaño de **esa** sesión y no con el del historial entero — que era justo el problema
      * del antiguo `sessions`, donde cada delta de streaming re-leía y deserializaba todos
      * los mensajes de todas las sesiones.
+     *
+     * El mapeo fila → dominio (lo caro: deserializa las columnas JSON) va en su propio
+     * `map`, así que solo corre cuando cambia la BD. Los overlays en memoria se aplican
+     * después con [applyOverlays], que solo copia los mensajes afectados: un tick de
+     * streaming (cada 120 ms) no relee ni deserializa nada.
      */
     override fun sessionWithMessages(sessionId: String): Flow<ChatSession?> = combine(
         db.sessionQueries.selectSessionById(sessionId).asFlow().mapToOneOrNull(ioDispatcher),
-        db.messageQueries.selectMessagesBySession(sessionId).asFlow().mapToList(ioDispatcher),
-        mediaOverlay
-    ) { dbSession, dbMessages, overlay ->
-        dbSession?.toDomain(
-            dbMessages.map { m ->
-                val (image, video) = overlay[m.id] ?: (null to null)
-                m.toDomain(image, video)
-            }
-        )
+        db.messageQueries.selectMessagesBySession(sessionId).asFlow().mapToList(ioDispatcher)
+            .map { rows -> rows.map { it.toDomain(null, null) } },
+        mediaOverlay,
+        streamingOverlay
+    ) { dbSession, messages, media, streaming ->
+        dbSession?.toDomain(applyOverlays(messages, media, streaming))
     }
 
     override fun messageImageDataUrl(messageId: String): String? = mediaOverlay.value[messageId]?.first
@@ -128,15 +136,13 @@ class ChatRepositoryImpl(
 
     override suspend fun deleteSession(id: String) {
         withContext(ioDispatcher) { db.sessionQueries.deleteSession(id) }
+        clearStreamingPreviews(id)
     }
 
     override suspend fun getSession(id: String): ChatSession? = withContext(ioDispatcher) {
         val s = db.sessionQueries.selectSessionById(id).executeAsOneOrNull() ?: return@withContext null
-        val messages = db.messageQueries.selectMessagesBySession(id).executeAsList().map { m ->
-            val (image, video) = mediaOverlay.value[m.id] ?: (null to null)
-            m.toDomain(image, video)
-        }
-        s.toDomain(messages)
+        val messages = db.messageQueries.selectMessagesBySession(id).executeAsList().map { it.toDomain(null, null) }
+        s.toDomain(applyOverlays(messages, mediaOverlay.value, streamingOverlay.value))
     }
 
     override suspend fun appendMessage(sessionId: String, message: ChatMessage) {
@@ -170,6 +176,12 @@ class ChatRepositoryImpl(
 
     override suspend fun updateMessageContent(sessionId: String, messageId: String, content: String) {
         touchSession(sessionId) { db.messageQueries.updateMessageContent(content, messageId) }
+        // Un preview más viejo que lo recién escrito taparía el valor nuevo (p. ej. el aviso
+        // de límite de iteraciones, que reemplaza el texto por otro más corto).
+        streamingOverlay.update { overlay ->
+            val preview = overlay[messageId] ?: return@update overlay
+            overlay + (messageId to preview.copy(content = content))
+        }
     }
 
     override suspend fun updateMessageToolCalls(
@@ -206,6 +218,21 @@ class ChatRepositoryImpl(
 
     override suspend fun updateMessageReasoning(sessionId: String, messageId: String, reasoning: String) {
         touchSession(sessionId) { db.messageQueries.updateMessageReasoning(reasoning, messageId) }
+        streamingOverlay.update { overlay ->
+            val preview = overlay[messageId] ?: return@update overlay
+            overlay + (messageId to preview.copy(reasoning = reasoning))
+        }
+    }
+
+    override fun setStreamingPreview(sessionId: String, messageId: String, content: String?, reasoning: String?) {
+        streamingOverlay.update { it + (messageId to StreamingPreview(sessionId, content, reasoning)) }
+    }
+
+    override fun clearStreamingPreviews(sessionId: String) {
+        streamingOverlay.update { overlay ->
+            if (overlay.values.none { it.sessionId == sessionId }) overlay
+            else overlay.filterValues { it.sessionId != sessionId }
+        }
     }
 
     override suspend fun updateMessageCheckpoint(sessionId: String, messageId: String, checkpointId: String) {
@@ -314,6 +341,7 @@ class ChatRepositoryImpl(
     override suspend fun clearAll() {
         withContext(ioDispatcher) { db.sessionQueries.deleteAllSessions() }
         mediaOverlay.update { emptyMap() }
+        streamingOverlay.update { emptyMap() }
     }
 
     /** No-op: cada mutación SQLDelight ya es una transacción síncrona/inmediata, a diferencia

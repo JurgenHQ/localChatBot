@@ -72,6 +72,17 @@ class ActiveWorkspaceStore(
         return project?.workspaceDir ?: preferencesRepository.current().fsWorkspaceDir
     }
 
+    /**
+     * Instrucciones del proyecto de la sesión del turno en curso, o null si no tiene proyecto
+     * o están vacías. Mismo criterio de sesión que [current].
+     */
+    suspend fun currentProjectInstructions(): String? {
+        val sessionId = turnSessionId() ?: return null
+        val projectState = projectRepository.current()
+        val projectId = projectState.assignments[sessionId] ?: return null
+        return projectState.projects.firstOrNull { it.id == projectId }?.instructions?.takeIf { it.isNotBlank() }
+    }
+
     /** Modo de agente efectivo del turno en curso (gating de tools de escritura y system prompt). */
     suspend fun currentAgentMode(): AgentMode {
         val sessionId = turnSessionId()
