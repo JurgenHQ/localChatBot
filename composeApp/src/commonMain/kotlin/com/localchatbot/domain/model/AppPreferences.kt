@@ -116,6 +116,11 @@ data class AppPreferences(
     /** PIN que los dispositivos remotos deben introducir. Generado al activar. */
     val remoteAccessPin: String = "",
     /**
+     * IP local en la que escucha el servidor remoto, p. ej. la de Tailscale para que solo se
+     * llegue por la VPN. Vacío = todas las interfaces (`0.0.0.0`), como antes.
+     */
+    val remoteAccessBindHost: String = "",
+    /**
      * Última URL del visor remoto embebido (Fase 1b). La app abre esta web (el
      * cliente remoto servido por otro desktop) dentro de un WebView, sin navegador
      * externo. Se recuerda entre sesiones.

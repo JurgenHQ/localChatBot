@@ -109,6 +109,7 @@ fun SettingsScreen(
             localIps = state.localIps,
             onToggleRemoteAccess = viewModel::toggleRemoteAccess,
             onRegenerateRemotePin = viewModel::regenerateRemotePin,
+            onCycleRemoteBindHost = viewModel::cycleRemoteBindHost,
             onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
             onToggleCodeCompletion = viewModel::toggleCodeCompletion,
             onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout
@@ -161,13 +162,15 @@ fun SettingsContent(
     onClearHistory: () -> Unit,
     onToggleHttps: (Boolean) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
-    onExportSettings: () -> Unit = {},
+    /** El Boolean es "incluir API keys y demás secretos". */
+    onExportSettings: (Boolean) -> Unit = {},
     onImportSettings: () -> Unit = {},
     onOpenRemoteViewer: () -> Unit = {},
     remoteClients: Int = 0,
     localIps: List<String> = emptyList(),
     onToggleRemoteAccess: (Boolean) -> Unit = {},
     onRegenerateRemotePin: () -> Unit = {},
+    onCycleRemoteBindHost: () -> Unit = {},
     onToggleDesktopNotifications: (Boolean) -> Unit = {},
     onToggleCodeCompletion: (Boolean) -> Unit = {},
     onCycleStreamIdleTimeout: () -> Unit = {},
@@ -528,6 +531,14 @@ fun SettingsContent(
                         trailing = { MonoValue(remote.remoteAccessPin.ifBlank { "—" }) }
                     )
                     Divider()
+                    // Cada click pasa a la siguiente IP local. Elegir la de la VPN
+                    // (Tailscale suele ser 100.x) deja el servidor fuera del resto de la red.
+                    SettingsRow(
+                        title = "Escuchar en",
+                        onClick = onCycleRemoteBindHost,
+                        trailing = { MonoValue(remote.remoteAccessBindHost.ifBlank { "Todas las interfaces" }, maxChars = 22) }
+                    )
+                    Divider()
                     SettingsRow(
                         title = "Conectados",
                         onClick = {},
@@ -540,7 +551,8 @@ fun SettingsContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        val urls = localIps.map { "http://$it:${remote.remoteAccessPort}" }
+                        val hosts = remote.remoteAccessBindHost.takeIf { it.isNotBlank() }?.let(::listOf) ?: localIps
+                        val urls = hosts.map { "http://$it:${remote.remoteAccessPort}" }
                         if (urls.isEmpty()) {
                             MonoValue("http://<ip-de-este-pc>:${remote.remoteAccessPort}", maxChars = 60)
                         } else {
@@ -587,10 +599,19 @@ fun SettingsContent(
         )
 
         SectionLabel("Backup")
+        // Sin persistir a propósito: incluir las keys tiene que ser una decisión de cada
+        // exportación, no algo que quedó activado de la vez anterior.
+        var exportSecrets by remember { mutableStateOf(false) }
         SectionCard {
             SettingsRow(
+                title = "Incluir API keys al exportar",
+                onClick = { exportSecrets = !exportSecrets },
+                trailing = { Switch(checked = exportSecrets, onCheckedChange = { exportSecrets = it }) }
+            )
+            Divider()
+            SettingsRow(
                 title = "Exportar configuración",
-                onClick = onExportSettings,
+                onClick = { onExportSettings(exportSecrets) },
                 trailing = { MonoValue("Guardar →", maxChars = 12) }
             )
             Divider()
@@ -602,8 +623,9 @@ fun SettingsContent(
         }
         Text(
             "Exporta todas tus configuraciones a un archivo .json para moverlas a otra máquina. " +
-                "⚠️ El archivo incluye tus API keys en texto plano: guárdalo en un lugar seguro. " +
-                "Importar reemplaza por completo la configuración actual.",
+                "Las API keys no se incluyen salvo que lo actives; si lo haces, van en texto " +
+                "plano: guarda el archivo en un lugar seguro. Importar reemplaza la configuración " +
+                "actual, pero conserva tus keys donde el archivo no las trae.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.localIpAddresses
+import com.localchatbot.core.security.generateRemotePin
 import com.localchatbot.core.util.newId
 import com.localchatbot.domain.model.AppPreferences
 import com.localchatbot.domain.model.ConnectionConfig
@@ -13,7 +14,6 @@ import com.localchatbot.domain.repository.ChatRepository
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.localchatbot.domain.repository.ProjectRepository
 import com.localchatbot.domain.usecase.CheckConnectionUseCase
-import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -173,9 +173,9 @@ class SettingsViewModel(
     }
 
     /** Construye el JSON y lo emite a la pantalla (que abre el diálogo "guardar como"). */
-    fun exportSettings() {
+    fun exportSettings(includeSecrets: Boolean = false) {
         viewModelScope.launch {
-            runCatching { preferences.exportJson() }
+            runCatching { preferences.exportJson(includeSecrets) }
                 .onSuccess { _exportEvents.emit(it) }
                 .onFailure { _message.value = "Error al exportar: ${it.message}" }
         }
@@ -212,8 +212,20 @@ class SettingsViewModel(
     fun toggleRemoteAccess(enabled: Boolean) {
         viewModelScope.launch {
             val cur = preferences.current()
-            val pin = cur.remoteAccessPin.ifBlank { Random.nextInt(100_000, 1_000_000).toString() }
+            val pin = cur.remoteAccessPin.ifBlank { generateRemotePin() }
             preferences.updateRemoteAccess(enabled, cur.remoteAccessPort, pin)
+        }
+    }
+
+    /**
+     * Pasa a la siguiente interfaz donde escuchar el servidor remoto: todas → cada IP local
+     * → todas. Si la guardada ya no está entre las IPs actuales, vuelve a "todas".
+     */
+    fun cycleRemoteBindHost() {
+        viewModelScope.launch {
+            val options = listOf("") + state.value.localIps
+            val current = options.indexOf(preferences.current().remoteAccessBindHost)
+            preferences.updateRemoteAccessBindHost(options[(current + 1) % options.size])
         }
     }
 
@@ -221,7 +233,7 @@ class SettingsViewModel(
     fun regenerateRemotePin() {
         viewModelScope.launch {
             val cur = preferences.current()
-            val pin = Random.nextInt(100_000, 1_000_000).toString()
+            val pin = generateRemotePin()
             preferences.updateRemoteAccess(cur.remoteAccessEnabled, cur.remoteAccessPort, pin)
         }
     }

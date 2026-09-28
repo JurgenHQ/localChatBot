@@ -50,12 +50,18 @@ interface PreferencesRepository {
     suspend fun setMcpServers(servers: List<McpServerConfig>)
     suspend fun setScheduledTasks(tasks: List<com.localchatbot.domain.model.ScheduledTask>)
     suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String)
+    suspend fun updateRemoteAccessBindHost(host: String)
     suspend fun updateRemoteViewerUrl(value: String)
     suspend fun updateDesktopNotifications(value: Boolean)
     suspend fun updateStreamIdleTimeout(seconds: Int)
     suspend fun updateCodeCompletionEnabled(value: Boolean)
     suspend fun updateGenerationParams(params: GenerationParams)
     suspend fun reset()
-    suspend fun exportJson(): String
+    /**
+     * Configuración como JSON. Sin [includeSecrets] las API keys, la key de Tavily y los
+     * headers/env de MCP con nombre de credencial salen vacíos; [importJson] conserva los
+     * secretos actuales donde el archivo los trae vacíos.
+     */
+    suspend fun exportJson(includeSecrets: Boolean = false): String
     suspend fun importJson(json: String)   // lanza excepción si el JSON es inválido
 }

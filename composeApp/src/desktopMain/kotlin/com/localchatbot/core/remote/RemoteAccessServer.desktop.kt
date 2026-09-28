@@ -163,8 +163,11 @@ private class DesktopRemoteAccessServer(
     private fun pinMatches(sent: String): Boolean {
         val expected = pin
         if (expected.isEmpty()) return false
+        // Sin distinguir mayúsculas: el PIN generado es alfanumérico en mayúsculas y en el
+        // teclado del móvil es fácil escribirlo en minúsculas. No resta entropía (el
+        // alfabeto ya es solo de mayúsculas).
         return java.security.MessageDigest.isEqual(
-            sent.toByteArray(Charsets.UTF_8),
+            sent.trim().uppercase().toByteArray(Charsets.UTF_8),
             expected.toByteArray(Charsets.UTF_8)
         )
     }
@@ -254,13 +257,17 @@ private class DesktopRemoteAccessServer(
         }
     }.map { json.encodeToString(JsonObject.serializer(), it) }
 
-    override fun start(port: Int, pin: String) {
+    override fun start(port: Int, pin: String, host: String) {
         if (_running.value) stop()
-        this.pin = pin
+        // Se guarda normalizado igual que lo que se compara en pinMatches.
+        this.pin = pin.trim().uppercase()
         tokens.clear()
         authFailures.clear()
         globalFailures.clear()
-        server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
+        // Con una IP concreta (p. ej. la de Tailscale) el servidor solo es alcanzable por esa
+        // interfaz. Si esa IP ya no existe (VPN caída), el bind falla y el servidor no
+        // arranca: caer a 0.0.0.0 abriría en silencio justo lo que el usuario quiso cerrar.
+        server = embeddedServer(CIO, port = port, host = host.ifBlank { "0.0.0.0" }) {
             install(WebSockets)
             routing {
                 get("/") {
@@ -349,8 +356,12 @@ private class DesktopRemoteAccessServer(
                     }
                 }
             }
-        }.also { it.start(wait = false) }
-        _running.value = true
+        }
+        // El bind puede fallar (puerto ocupado, IP elegida que ya no existe). Sin capturarlo
+        // la excepción subía al collector de preferencias de AppContainer y lo mataba: el
+        // servidor ya no reaccionaba a ningún cambio hasta reiniciar la app.
+        _running.value = runCatching { server?.start(wait = false) }.isSuccess
+        if (!_running.value) server = null
     }
 
     override fun stop() {

@@ -1,5 +1,7 @@
 package com.localchatbot.data.repository
 
+import com.localchatbot.core.security.SecretCipher
+import com.localchatbot.core.security.SecretSealing
 import com.localchatbot.core.storage.SkillFileStore
 import com.localchatbot.core.theme.ThemeMode
 import com.localchatbot.core.util.newId
@@ -11,6 +13,7 @@ import com.localchatbot.domain.model.InstalledSkill
 import com.localchatbot.domain.model.McpServerConfig
 import com.localchatbot.domain.model.PromptTemplate
 import com.localchatbot.domain.model.ScheduledTask
+import com.localchatbot.domain.model.SecretRedaction
 import com.localchatbot.domain.model.SkillDefinition
 import com.localchatbot.domain.repository.PreferencesRepository
 import com.russhwolf.settings.Settings
@@ -27,7 +30,13 @@ import kotlinx.serialization.builtins.serializer
 
 class PreferencesRepositoryImpl(
     private val settings: Settings,
-    private val skillFileStore: SkillFileStore
+    private val skillFileStore: SkillFileStore,
+    /**
+     * Cifra los secretos antes de guardarlos (ver [SecretSealing]): API keys de los perfiles,
+     * key de Tavily, headers y env de MCP y PIN del acceso remoto. En memoria ([preferences])
+     * siempre van en claro; solo lo que baja a [settings] va cifrado. Null = como antes.
+     */
+    private val cipher: SecretCipher? = null
 ) : PreferencesRepository {
 
     private val templatesJson = Json { ignoreUnknownKeys = true }
@@ -44,6 +53,45 @@ class PreferencesRepositoryImpl(
 
     private val _state = MutableStateFlow(load())
     override val preferences: StateFlow<AppPreferences> = _state.asStateFlow()
+
+    init {
+        sealPlaintextSecrets()
+    }
+
+    private fun seal(value: String) = SecretSealing.seal(value, cipher)
+    private fun unseal(value: String) = SecretSealing.unseal(value, cipher)
+
+    private fun ConnectionProfile.mapApiKey(f: (String) -> String) = copy(config = config.copy(apiKey = f(config.apiKey)))
+    private fun McpServerConfig.mapSecrets(f: (String) -> String) =
+        copy(headers = headers.mapValues { f(it.value) }, env = env.mapValues { f(it.value) })
+
+    /**
+     * Migración de una sola vez: los secretos guardados en claro antes de existir el
+     * cifrado se reescriben cifrados en el primer arranque con [cipher]. Se comprueba sobre
+     * lo guardado, no sobre el estado en memoria (que siempre va en claro), para no
+     * reescribir settings en cada arranque.
+     */
+    private fun sealPlaintextSecrets() {
+        if (cipher == null) return
+        fun plain(v: String) = v.isNotEmpty() && !SecretSealing.isSealed(v)
+        val stored = _state.value
+        val rawProfiles = settings.getStringOrNull(KEY_CONNECTION_PROFILES)?.let {
+            runCatching { templatesJson.decodeFromString(connectionProfilesSerializer, it) }.getOrNull()
+        }.orEmpty()
+        if (rawProfiles.any { plain(it.config.apiKey) }) persistConnectionProfiles(stored.connectionProfiles)
+        if (plain(settings.getString(KEY_TAVILY, ""))) settings.putString(KEY_TAVILY, seal(stored.tavilyApiKey))
+        if (plain(settings.getString(KEY_REMOTE_PIN, ""))) settings.putString(KEY_REMOTE_PIN, seal(stored.remoteAccessPin))
+        val rawMcp = settings.getStringOrNull(KEY_MCP_SERVERS)?.let {
+            runCatching { templatesJson.decodeFromString(mcpSerializer, it) }.getOrNull()
+        }.orEmpty()
+        if (rawMcp.any { server -> (server.headers.values + server.env.values).any(::plain) }) {
+            persistMcpServers(stored.mcpServers)
+        }
+        // La API key del modelo de conexión de antes de los perfiles: ya se copió al
+        // "Perfil 1" y nadie la lee, pero seguía en claro en el archivo. Con `hasKey`
+        // delante: en desktop cada escritura reescribe settings.xml.
+        if (settings.hasKey(KEY_API_KEY)) settings.remove(KEY_API_KEY)
+    }
 
     override suspend fun current(): AppPreferences = _state.value
 
@@ -72,7 +120,10 @@ class PreferencesRepositoryImpl(
     }
 
     private fun persistConnectionProfiles(profiles: List<ConnectionProfile>) {
-        settings.putString(KEY_CONNECTION_PROFILES, templatesJson.encodeToString(connectionProfilesSerializer, profiles))
+        settings.putString(
+            KEY_CONNECTION_PROFILES,
+            templatesJson.encodeToString(connectionProfilesSerializer, profiles.map { it.mapApiKey(::seal) })
+        )
     }
 
     override suspend fun updateThemeMode(mode: ThemeMode) {
@@ -91,7 +142,7 @@ class PreferencesRepositoryImpl(
     }
 
     override suspend fun updateTavilyApiKey(value: String) {
-        settings.putString(KEY_TAVILY, value)
+        settings.putString(KEY_TAVILY, seal(value))
         _state.value = _state.value.copy(tavilyApiKey = value)
     }
 
@@ -205,8 +256,12 @@ class PreferencesRepositoryImpl(
     }
 
     override suspend fun setMcpServers(servers: List<McpServerConfig>) {
-        settings.putString(KEY_MCP_SERVERS, templatesJson.encodeToString(mcpSerializer, servers))
+        persistMcpServers(servers)
         _state.value = _state.value.copy(mcpServers = servers)
+    }
+
+    private fun persistMcpServers(servers: List<McpServerConfig>) {
+        settings.putString(KEY_MCP_SERVERS, templatesJson.encodeToString(mcpSerializer, servers.map { it.mapSecrets(::seal) }))
     }
 
     override suspend fun setScheduledTasks(tasks: List<ScheduledTask>) {
@@ -214,13 +269,17 @@ class PreferencesRepositoryImpl(
         _state.value = _state.value.copy(scheduledTasks = tasks)
     }
 
-    override suspend fun exportJson(): String {
+    override suspend fun exportJson(includeSecrets: Boolean): String {
+        val state = _state.value
+        // Sin secretos por defecto: el export es un archivo que se mueve, se adjunta o se
+        // sube a la nube, y ahí una API key en claro es exactamente lo que no debe ir.
+        val redact: (String) -> String = { if (includeSecrets) it else "" }
         val export = SettingsExport(
-            connectionProfiles = _state.value.connectionProfiles,
-            activeConnectionProfileId = _state.value.activeConnectionProfileId,
-            themeMode = _state.value.themeMode,
-            accentSeed = _state.value.accentSeed,
-            tavilyApiKey = _state.value.tavilyApiKey,
+            connectionProfiles = state.connectionProfiles.map { it.mapApiKey(redact) },
+            activeConnectionProfileId = state.activeConnectionProfileId,
+            themeMode = state.themeMode,
+            accentSeed = state.accentSeed,
+            tavilyApiKey = redact(state.tavilyApiKey),
             defaultSystemPrompt = _state.value.defaultSystemPrompt,
             promptTemplates = _state.value.promptTemplates,
             imageServiceUrl = _state.value.imageServiceUrl,
@@ -230,7 +289,7 @@ class PreferencesRepositoryImpl(
             fsAllowOutsideWorkspace = _state.value.fsAllowOutsideWorkspace,
             installedSkills = _state.value.installedSkills,
             customSkills = _state.value.customSkills,
-            mcpServers = _state.value.mcpServers,
+            mcpServers = if (includeSecrets) state.mcpServers else state.mcpServers.map(SecretRedaction::redactMcp),
             scheduledTasks = _state.value.scheduledTasks
         )
         return exportFormat.encodeToString(SettingsExport.serializer(), export)
@@ -240,15 +299,21 @@ class PreferencesRepositoryImpl(
         try {
             val export = templatesJson.decodeFromString(SettingsExport.serializer(), json)
 
+            // Un archivo exportado sin secretos trae las keys vacías: se conservan las que ya
+            // hay aquí (mismo perfil / servidor MCP), en vez de borrarlas al importar.
+            val current = _state.value
             val profiles = export.connectionProfiles.ifEmpty {
                 val legacy = export.connection ?: ConnectionConfig()
                 listOf(ConnectionProfile(id = newId(), name = "Perfil 1", config = legacy))
-            }.take(3)
+            }.take(3).map { imported ->
+                val existingKey = current.connectionProfiles.firstOrNull { it.id == imported.id }?.config?.apiKey
+                if (imported.config.apiKey.isEmpty() && existingKey != null) imported.mapApiKey { existingKey } else imported
+            }
             setConnectionProfiles(profiles)
             setActiveConnectionProfile(export.activeConnectionProfileId.ifBlank { profiles.first().id })
             updateThemeMode(export.themeMode)
             updateAccent(export.accentSeed)
-            updateTavilyApiKey(export.tavilyApiKey)
+            updateTavilyApiKey(export.tavilyApiKey.ifEmpty { current.tavilyApiKey })
             updateDefaultSystemPrompt(export.defaultSystemPrompt)
             setPromptTemplates(export.promptTemplates)
             updateImageServiceUrl(export.imageServiceUrl)
@@ -258,7 +323,10 @@ class PreferencesRepositoryImpl(
             updateFsAllowOutsideWorkspace(export.fsAllowOutsideWorkspace)
             setInstalledSkills(export.installedSkills)
             setCustomSkills(export.customSkills)
-            setMcpServers(export.mcpServers)
+            setMcpServers(export.mcpServers.map { imported ->
+                current.mcpServers.firstOrNull { it.id == imported.id }
+                    ?.let { SecretRedaction.fillRedacted(imported, it) } ?: imported
+            })
             setScheduledTasks(export.scheduledTasks)
         } catch (e: Exception) {
             throw Exception("Error parsing settings JSON: ${e.message}")
@@ -268,12 +336,17 @@ class PreferencesRepositoryImpl(
     override suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String) {
         settings.putBoolean(KEY_REMOTE_ENABLED, enabled)
         settings.putInt(KEY_REMOTE_PORT, port)
-        settings.putString(KEY_REMOTE_PIN, pin)
+        settings.putString(KEY_REMOTE_PIN, seal(pin))
         _state.value = _state.value.copy(
             remoteAccessEnabled = enabled,
             remoteAccessPort = port,
             remoteAccessPin = pin
         )
+    }
+
+    override suspend fun updateRemoteAccessBindHost(host: String) {
+        settings.putString(KEY_REMOTE_BIND_HOST, host)
+        _state.value = _state.value.copy(remoteAccessBindHost = host)
     }
 
     override suspend fun updateRemoteViewerUrl(value: String) {
@@ -310,7 +383,7 @@ class PreferencesRepositoryImpl(
             KEY_FS_WORKSPACE, KEY_FS_YOLO, KEY_FS_ALLOW_OUTSIDE, KEY_FS_PREVIEW_EDITS, KEY_AGENT_MODE,
             KEY_SESSION_AGENT_MODES, KEY_SESSION_COMPACT_BOUNDARIES,
             KEY_INSTALLED_SKILLS, KEY_CUSTOM_SKILLS, KEY_MCP_SERVERS, KEY_SCHEDULED_TASKS,
-            KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_VIEWER_URL,
+            KEY_REMOTE_ENABLED, KEY_REMOTE_PORT, KEY_REMOTE_PIN, KEY_REMOTE_BIND_HOST, KEY_REMOTE_VIEWER_URL,
             KEY_DESKTOP_NOTIFICATIONS, KEY_CODE_COMPLETION, KEY_GEN_PARAMS, KEY_STREAM_IDLE_TIMEOUT
         ).forEach(settings::remove)
         _state.value = AppPreferences.Default
@@ -327,7 +400,7 @@ class PreferencesRepositoryImpl(
             }.getOrDefault(default.themeMode),
             accentSeed = settings.getLong(KEY_ACCENT, default.accentSeed),
             onboardingDone = settings.getBoolean(KEY_ONBOARDED, default.onboardingDone),
-            tavilyApiKey = settings.getString(KEY_TAVILY, default.tavilyApiKey),
+            tavilyApiKey = unseal(settings.getString(KEY_TAVILY, default.tavilyApiKey)),
             defaultSystemPrompt = settings.getString(KEY_SYSTEM_PROMPT, default.defaultSystemPrompt),
             promptTemplates = runCatching {
                 val raw = settings.getStringOrNull(KEY_TEMPLATES) ?: return@runCatching emptyList()
@@ -362,7 +435,7 @@ class PreferencesRepositoryImpl(
             customSkills = loadCustomSkills(),
             mcpServers = runCatching {
                 val raw = settings.getStringOrNull(KEY_MCP_SERVERS) ?: return@runCatching emptyList()
-                templatesJson.decodeFromString(mcpSerializer, raw)
+                templatesJson.decodeFromString(mcpSerializer, raw).map { it.mapSecrets(::unseal) }
             }.getOrDefault(emptyList()),
             scheduledTasks = runCatching {
                 val raw = settings.getStringOrNull(KEY_SCHEDULED_TASKS) ?: return@runCatching emptyList()
@@ -370,7 +443,8 @@ class PreferencesRepositoryImpl(
             }.getOrDefault(emptyList()),
             remoteAccessEnabled = settings.getBoolean(KEY_REMOTE_ENABLED, default.remoteAccessEnabled),
             remoteAccessPort = settings.getInt(KEY_REMOTE_PORT, default.remoteAccessPort),
-            remoteAccessPin = settings.getString(KEY_REMOTE_PIN, default.remoteAccessPin),
+            remoteAccessPin = unseal(settings.getString(KEY_REMOTE_PIN, default.remoteAccessPin)),
+            remoteAccessBindHost = settings.getString(KEY_REMOTE_BIND_HOST, default.remoteAccessBindHost),
             remoteViewerUrl = settings.getString(KEY_REMOTE_VIEWER_URL, default.remoteViewerUrl),
             desktopNotificationsEnabled = settings.getBoolean(
                 KEY_DESKTOP_NOTIFICATIONS, default.desktopNotificationsEnabled
@@ -396,6 +470,7 @@ class PreferencesRepositoryImpl(
         val raw = settings.getStringOrNull(KEY_CONNECTION_PROFILES)
         val existing = raw?.let {
             runCatching { templatesJson.decodeFromString(connectionProfilesSerializer, it) }.getOrNull()
+                ?.map { profile -> profile.mapApiKey(::unseal) }
         }
         if (!existing.isNullOrEmpty()) {
             val activeId = settings.getStringOrNull(KEY_ACTIVE_CONNECTION_PROFILE)
@@ -406,7 +481,7 @@ class PreferencesRepositoryImpl(
 
         val legacy = loadLegacyConnection(default.connection)
         val profile = ConnectionProfile(id = newId(), name = "Perfil 1", config = legacy)
-        settings.putString(KEY_CONNECTION_PROFILES, templatesJson.encodeToString(connectionProfilesSerializer, listOf(profile)))
+        persistConnectionProfiles(listOf(profile))
         settings.putString(KEY_ACTIVE_CONNECTION_PROFILE, profile.id)
         return listOf(profile) to profile.id
     }
@@ -504,6 +579,7 @@ class PreferencesRepositoryImpl(
         const val KEY_REMOTE_ENABLED = "remote_access_enabled"
         const val KEY_REMOTE_PORT = "remote_access_port"
         const val KEY_REMOTE_PIN = "remote_access_pin"
+        const val KEY_REMOTE_BIND_HOST = "remote_access_bind_host"
         const val KEY_REMOTE_VIEWER_URL = "remote_viewer_url"
         const val KEY_DESKTOP_NOTIFICATIONS = "desktop_notifications_enabled"
         const val KEY_STREAM_IDLE_TIMEOUT = "stream_idle_timeout_sec"

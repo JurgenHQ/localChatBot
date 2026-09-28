@@ -16,6 +16,7 @@ import com.localchatbot.core.network.HttpClientFactory
 import com.localchatbot.core.remote.RemoteAccessDeps
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.createRemoteAccessServer
+import com.localchatbot.core.security.createSecretCipher
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
@@ -174,7 +175,8 @@ class AppContainer {
     val memoryStore: MemoryStore = createMemoryStore()
     val hooksStore: HooksStore = createHooksStore()
     val checkpointStore: CheckpointStore = CheckpointStore()
-    val preferencesRepository: PreferencesRepository = PreferencesRepositoryImpl(settings, skillFileStore)
+    val preferencesRepository: PreferencesRepository =
+        PreferencesRepositoryImpl(settings, skillFileStore, cipher = createSecretCipher())
     val projectRepository: ProjectRepository = ProjectRepositoryImpl(settings, json)
     val chatRepository: ChatRepository = ChatRepositoryImpl(database, json)
     val modelRepository: ModelRepository = ModelRepositoryImpl(openAiApi, lmStudioApi, llamaCppApi)
@@ -513,13 +515,13 @@ class AppContainer {
     }
 
     init {
-        // Reacciona al toggle/puerto/PIN de acceso remoto.
+        // Reacciona al toggle/puerto/PIN/interfaz de acceso remoto.
         applicationScope.launch {
             preferencesRepository.preferences
-                .map { Triple(it.remoteAccessEnabled, it.remoteAccessPort, it.remoteAccessPin) }
+                .map { RemoteAccessConfig(it.remoteAccessEnabled, it.remoteAccessPort, it.remoteAccessPin, it.remoteAccessBindHost) }
                 .distinctUntilChanged()
-                .collect { (enabled, port, pin) ->
-                    if (enabled && pin.isNotBlank()) remoteAccessServer.start(port, pin)
+                .collect { cfg ->
+                    if (cfg.enabled && cfg.pin.isNotBlank()) remoteAccessServer.start(cfg.port, cfg.pin, cfg.host)
                     else remoteAccessServer.stop()
                 }
         }
@@ -527,3 +529,6 @@ class AppContainer {
 }
 
 private const val KEY_CHAT_MIGRATED_TO_SQLDELIGHT_V1 = "chat_migrated_to_sqldelight_v1"
+
+/** Lo que reinicia el servidor de acceso remoto al cambiar. */
+private data class RemoteAccessConfig(val enabled: Boolean, val port: Int, val pin: String, val host: String)
