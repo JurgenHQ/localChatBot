@@ -43,9 +43,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew clean
 ```
 
-There are no automated tests in this project. Changes touching `commonMain` should at minimum compile for Desktop **and** one mobile target (`expect`/`actual` gaps only surface per target).
+Unit tests live in `composeApp/src/commonTest` (pure logic only: context window, network inspector sanitizing) and run on the JVM:
 
-CI (`.github/workflows/windows-build.yml`) builds the MSI on every push to `main` and `feature/**`: `main` publishes a rolling `latest` pre-release, feature branches upload a 30-day artifact.
+```bash
+./gradlew :composeApp:desktopTest
+```
+
+Changes touching `commonMain` should at minimum compile for Desktop **and** one mobile target (`expect`/`actual` gaps only surface per target).
+
+CI (`.github/workflows/windows-build.yml`) runs `desktopTest` and builds the MSI on every push to `main` and `feature/**` and on PRs to `main`: `main` publishes a rolling `latest` pre-release, feature branches upload a 30-day artifact.
 
 ## Architecture
 
@@ -137,27 +143,29 @@ Navigation is `MainScaffold` (`presentation/navigation/`): three bottom tabs (`B
 - **`effectiveWorkspace`** = assigned project's `workspaceDir`, else the global `prefs.fsWorkspaceDir` (orphan assignments fall back silently).
 - **`effectiveAgentMode`** = `prefs.sessionAgentModes[sessionId]` override, else the global `prefs.agentMode`.
 
-Both feed the fs tools (via `FsToolUtil.workspaceStore`) and the `<workspace>` block of the system prompt. Desktop-only in practice; with no projects and no overrides the behaviour is identical to the global-only setup. The drawer groups sessions under collapsible project sections.
+Both feed the fs tools (via `FsToolUtil.workspaceStore`) and the `<workspace>` block of the request. Desktop-only in practice; with no projects and no overrides the behaviour is identical to the global-only setup. The drawer groups sessions under collapsible project sections.
 
 **The store has two access paths and they answer about different sessions.** The `StateFlow`s (`effectiveWorkspace`, `effectiveAgentMode`) track the *visible* session and exist for the UI (workspace chip, Plan/Build toggle). The **suspend** `current()` / `currentAgentMode()` track the *running turn* via `TurnSessionContext` (falling back to the visible session outside a turn) and are what tools and the system prompt must use. Before that split, a scheduled task running while you worked resolved its workspace and its Plan/Build gate against whatever chat you happened to be looking at.
 
 ### Tool-calling loop (`UseCases.kt`)
 
 `SendMessageUseCase` drives the multi-round loop:
-1. Build the system prompt: user system text + optional skills index (`buildSkillsIndex` lists enabled skills so the model knows to call `use_skill`) + agent tool prompt + `<user-memory>` + rolling context summary + `<workspace>` block (computed once per turn: cwd, file tree, git status, AGENTS.md/CLAUDE.md). Stable parts go first for KV-cache reuse; volatile parts last.
+1. Build the request (`buildMessagesForApi`, pure logic in `ContextWindow.kt`, tested in `commonTest`). The **system message holds only what is stable across turns**: user system text + optional skills index (`buildSkillsIndex` lists enabled skills so the model knows to call `use_skill`) + agent tool prompt + `<user-memory>` + rolling context summary/truncation notice. The `<workspace>` block (computed once per turn: cwd, file tree, git status, AGENTS.md/CLAUDE.md) is **not** in the system: it is prepended, as an ephemeral API-only copy, to the **last `user` message**. Reason: llama.cpp/LM Studio reuse the longest identical prefix of the previous request, and the system is position 0 — a git status change used to invalidate the cache for the entire conversation (30–120 s of prefill on 60k tokens); now it only invalidates from the last user message on. Don't move volatile content back into the system.
 2. Stream `/v1/chat/completions` with the definitions of *available* tools only (unavailable tools are never sent).
 3. If `tool_calls` arrive, execute each tool (web search, image/video generation, diagram render, filesystem/shell, `use_skill`, skill scripts, MCP). Destructive/confirmable tools route through `ToolConfirmationController` first.
 4. Push results as `role=tool` messages and re-stream (max `MAX_TOOL_ITERATIONS` rounds, currently 200) — **unless** the tool sets `Tool.endsTurn` (only `ask_user`), which hands control back to the user; their reply arrives as the next `role=user` message.
 5. Drain any out-of-band image/video produced and attach it to the final `ChatMessage` without sending base64 to the model.
 6. After the first user→assistant exchange of a session, fire-and-forget a cheap non-streaming completion that generates the session title (replaces the first-40-chars placeholder).
 
-Other behaviours worth knowing before touching this file: the *nudge* mechanism re-prompts the model with an ephemeral instruction (folded into the system message, never persisted) in three cases — it announced an action but emitted no `tool_call`, it ended the turn with unfinished todos (`MAX_TODO_NUDGES`), or it asked a question in prose instead of calling `ask_user` (below). Token metrics accumulate across rounds.
+Other behaviours worth knowing before touching this file: the *nudge* mechanism re-prompts the model with an ephemeral instruction (sent at the **end** of the request — appended to the last `user` message, or as a synthetic `user` message wrapped in `<recordatorio-del-sistema>` after the last assistant — never persisted, never in the system so it can't invalidate the cache) in three cases — it announced an action but emitted no `tool_call`, it ended the turn with unfinished todos (`MAX_TODO_NUDGES`), or it asked a question in prose instead of calling `ask_user` (below). Token metrics accumulate across rounds.
 
 **Streaming writes are throttled.** Content and reasoning deltas accumulate in buffers and hit SQLite at most every `STREAM_PERSIST_INTERVAL_MS` (120 ms) via `maybePersist`/`flushStreamBuffers`, instead of one `UPDATE` per token — see the cost note under Persistence. The first delta of each round always writes (so text appears immediately), and the attempt's `finally` flushes whatever is left, under `NonCancellable`, so pressing stop keeps the text generated up to that moment. The retry/rollback path clears the dirty flags instead of flushing, since it deletes the partial message anyway.
 
 **Forcing `ask_user`.** The prompt rule alone doesn't hold with local models: asked to run a questionnaire they dump the questions as text, the turn ends and nothing lets the user reply. So when the model closes a turn without tool calls, `looksLikeQuestionToUser(buffer)` checks whether the final text is a question addressed to the user (last non-empty line ends in `?`, or ≥2 lines do — conservative, to avoid rhetorical questions mid-explanation); if so, and `ask_user` wasn't called this turn, `ASK_USER_NUDGE` is injected and the round re-streams **once** (`MAX_ASK_USER_NUDGES`). The already-written text is **not** rolled back — a false positive costs one extra round-trip, never lost content — and the nudge never answers on the user's behalf. The nudge also tells the model to ask one question per call, since `ask_user` takes a single question.
 
-**Rolling context summary.** When `buildMessagesForApi` has to drop old messages to fit the context window, it returns them as `discarded`; once per turn a background `model.summarize(...)` folds them into `ChatSession.contextSummary` (column `session.context_summary`), which is re-injected into the system prompt as "Resumen del historial anterior". The summary job is fired only on the first iteration of a turn, so the fresh value lands on the *next* turn.
+**Rolling context summary.** When `buildMessagesForApi` has to drop old messages to fit the context window, it returns them as `discarded`; once per turn a background `model.summarize(...)` folds them into `ChatSession.contextSummary` (column `session.context_summary`), which is re-injected into the system prompt as "Resumen del historial anterior". The summary job is fired only on the first iteration of a turn, so the fresh value lands on the *next* turn — and only when the cut moved since the last summary (`summarizedThrough`), or an unchanged summary would be regenerated (and the cache invalidated) every turn.
+
+**The window trims with hysteresis.** When the history exceeds the budget, `ContextWindow.window` cuts down to ~50 % of it (`HYSTERESIS_TARGET_FRACTION`) and remembers the start (`windowStarts`, per session, in memory); later turns keep that same start while it still fits. Trimming "just enough" moved the first message of the request every turn, which is a full cache miss every turn. If the cut lands on `role=tool` results it moves **back** to include their announcing assistant (moving forward used to leave the window empty when the last message was one huge tool result).
 
 ### Background resume (mobile stream interruption)
 
@@ -399,7 +407,7 @@ tells the model which to reach for.
 
 ### Remote access (`RemoteAccessServer`)
 
-Desktop-only Ktor server (`ktor-server-cio` + websockets) that exposes the chats on the LAN/VPN so you can review and approve agent changes from another device. `expect fun createRemoteAccessServer(deps)`; mobile gets `NoopRemoteAccessServer`. Gated by `remoteAccessEnabled` / `remoteAccessPort` (7676) / `remoteAccessPin`, and started/stopped **reactively** from an `AppContainer.init` collector on those preferences; stopped in the desktop shutdown hook. `localIpAddresses()` (also `expect`) supplies the URLs to display. The consumer side is `RemoteViewerScreen` — an embedded `PlatformWebView` (`core/webview/`) pointed at another desktop's remote URL, remembered in `remoteViewerUrl`.
+Desktop-only Ktor server (`ktor-server-cio` + websockets) that exposes the chats on the LAN/VPN so you can review and approve agent changes from another device. `expect fun createRemoteAccessServer(deps)`; mobile gets `NoopRemoteAccessServer`. Gated by `remoteAccessEnabled` / `remoteAccessPort` (7676) / `remoteAccessPin`, and started/stopped **reactively** from an `AppContainer.init` collector on those preferences; stopped in the desktop shutdown hook. `localIpAddresses()` (also `expect`) supplies the URLs to display. A token can approve confirmations and send messages to the agent (in YOLO, run commands on this machine), so `/auth` is hardened: constant-time PIN comparison, a delay on each failure, per-IP lockout after 5 failures (doubling up to 1 h) plus a global cap across all IPs (HTTP 429 + `Retry-After`), and tokens expire after 12 h (an open WebSocket is closed with code 1008 on expiry, which the client treats as "back to login" rather than reconnecting). The consumer side is `RemoteViewerScreen` — an embedded `PlatformWebView` (`core/webview/`) pointed at another desktop's remote URL, remembered in `remoteViewerUrl`.
 
 ### Integrated terminal (`TerminalController` / `TerminalPanel`)
 
@@ -518,7 +526,7 @@ Shell commands run automatically **after a tool mutates the workspace** — form
 
 ### Memory (`memory.md` / `read_memory` / `save_memory`)
 
-Durable user-preference store so the model honors conventions across tasks (commit style, naming, tone, language, tooling). `MemoryStore` (`core/storage/`, `expect`/`actual`) backs `~/.localchatbot/memory.md` (sibling of `tools.md`, desktop only), seeded with `MEMORY_HEADER` on first write. Read-write by the model, unlike the curated `tools.md`. **Hybrid access**: `SendMessageUseCase.buildMemoryContext()` injects a `<user-memory>` block (capped at `MEMORY_INJECT_CAP` chars; truncated tail points to `read_memory`) into the stable region of every system prompt — placed before the volatile workspace block for KV-cache reuse — and `read_memory` returns the full file on demand. `save_memory` appends one preference per call and is confirmable (`requiresConfirmation = true`) so the user sees what's being remembered.
+Durable user-preference store so the model honors conventions across tasks (commit style, naming, tone, language, tooling). `MemoryStore` (`core/storage/`, `expect`/`actual`) backs `~/.localchatbot/memory.md` (sibling of `tools.md`, desktop only), seeded with `MEMORY_HEADER` on first write. Read-write by the model, unlike the curated `tools.md`. **Hybrid access**: `SendMessageUseCase.buildMemoryContext()` injects a `<user-memory>` block (capped at `MEMORY_INJECT_CAP` chars; truncated tail points to `read_memory`) into every system prompt (it changes rarely, so it belongs in the stable, cache-friendly system; the volatile workspace block travels with the last user message instead) — and `read_memory` returns the full file on demand. `save_memory` appends one preference per call and is confirmable (`requiresConfirmation = true`) so the user sees what's being remembered.
 
 ### MCP (Model Context Protocol)
 
@@ -606,7 +614,7 @@ reachable from the chat `⋮` menu and the command palette.
 
 ### NetworkInspectorScreen (no ViewModel)
 
-`NetworkInspector` is a plain singleton that holds a circular buffer of the last 50 HTTP transactions. All API classes call `inspector.record(...)`. The screen reads `inspector.entries` (a `StateFlow`) directly with local `remember` state for selection and search. This is intentional — there are no side effects or use cases, and a ViewModel would be unable to receive events from the data layer.
+`NetworkInspector` is a plain singleton that holds a circular buffer of the last 50 HTTP transactions. Bodies are sanitized on `record` (`sanitizeBody`): base64 data URLs are replaced by their length and each body is capped at 64k chars (head + tail) — it's always on, and full chat requests plus SSE transcripts used to retain hundreds of MB. All API classes call `inspector.record(...)`. The screen reads `inspector.entries` (a `StateFlow`) directly with local `remember` state for selection and search. This is intentional — there are no side effects or use cases, and a ViewModel would be unable to receive events from the data layer.
 
 ### Atomic Design for components
 
