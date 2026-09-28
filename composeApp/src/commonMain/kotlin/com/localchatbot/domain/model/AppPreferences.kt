@@ -137,7 +137,14 @@ data class AppPreferences(
      */
     val codeCompletionEnabled: Boolean = false,
     /** Parámetros de generación globales (temperature, topP, maxTokens, etc.). */
-    val generationParams: GenerationParams = GenerationParams()
+    val generationParams: GenerationParams = GenerationParams(),
+    /**
+     * Segundos que un stream de chat puede pasar sin recibir ni un byte antes de darse por
+     * colgado. Cubre el prefill: con un prompt largo en una máquina lenta el servidor no
+     * manda nada hasta el primer token, así que no puede ser muy corto. Antes era un fijo
+     * de 10 min, y un servidor colgado tardaba eso en detectarse.
+     */
+    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC
 ) {
     /** Config de conexión del perfil activo. Nunca vacía: [Default] ya trae un perfil. */
     val connection: ConnectionConfig
@@ -161,6 +168,11 @@ data class AppPreferences(
         }
 
     companion object {
+        const val DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180
+
+        /** Opciones que ofrece Ajustes (se recorren con cada click). */
+        val STREAM_IDLE_TIMEOUT_OPTIONS_SEC = listOf(60, 180, 300, 600)
+
         val Default = AppPreferences(
             connectionProfiles = listOf(
                 ConnectionProfile(id = "default", name = "Perfil 1", config = ConnectionConfig(ip = "", port = "1234", model = ""))

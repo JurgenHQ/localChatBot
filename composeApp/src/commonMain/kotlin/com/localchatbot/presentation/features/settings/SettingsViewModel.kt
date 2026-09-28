@@ -159,6 +159,15 @@ class SettingsViewModel(
         viewModelScope.launch { preferences.updateCodeCompletionEnabled(value) }
     }
 
+    /** Pasa a la siguiente opción de [AppPreferences.STREAM_IDLE_TIMEOUT_OPTIONS_SEC]. */
+    fun cycleStreamIdleTimeout() {
+        viewModelScope.launch {
+            val options = AppPreferences.STREAM_IDLE_TIMEOUT_OPTIONS_SEC
+            val current = preferences.current().streamIdleTimeoutSec
+            preferences.updateStreamIdleTimeout(options.firstOrNull { it > current } ?: options.first())
+        }
+    }
+
     fun toggleDesktopNotifications(value: Boolean) {
         viewModelScope.launch { preferences.updateDesktopNotifications(value) }
     }

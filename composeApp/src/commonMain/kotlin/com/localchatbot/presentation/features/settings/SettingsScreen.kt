@@ -110,7 +110,8 @@ fun SettingsScreen(
             onToggleRemoteAccess = viewModel::toggleRemoteAccess,
             onRegenerateRemotePin = viewModel::regenerateRemotePin,
             onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
-            onToggleCodeCompletion = viewModel::toggleCodeCompletion
+            onToggleCodeCompletion = viewModel::toggleCodeCompletion,
+            onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout
         )
 
         state.openEditor?.let { editor ->
@@ -169,6 +170,7 @@ fun SettingsContent(
     onRegenerateRemotePin: () -> Unit = {},
     onToggleDesktopNotifications: (Boolean) -> Unit = {},
     onToggleCodeCompletion: (Boolean) -> Unit = {},
+    onCycleStreamIdleTimeout: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -320,6 +322,13 @@ fun SettingsContent(
                         maxChars = 18
                     )
                 }
+            )
+            Divider()
+            // Cada click pasa a la siguiente opción: son pocas y no merece un editor propio.
+            SettingsRow(
+                title = "Espera máxima sin respuesta",
+                onClick = onCycleStreamIdleTimeout,
+                trailing = { MonoValue("${preferences.streamIdleTimeoutSec / 60} min", maxChars = 8) }
             )
             if (PlatformCapabilities.isDesktop) {
                 Divider()

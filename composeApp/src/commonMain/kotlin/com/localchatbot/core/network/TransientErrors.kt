@@ -48,7 +48,11 @@ private val TRANSIENT_HTTP_CODES = setOf(502, 503, 504)
  * engine como "NSURLErrorDomain -1005".
  */
 fun friendlyStreamErrorMessage(e: Throwable): String =
-    if (isTransientNetworkError(e))
+    if (e is SocketTimeoutException || e is HttpRequestTimeoutException)
+        "El servidor dejó de enviar datos y no respondió tras reintentar. Si el modelo " +
+            "tarda mucho en empezar a responder (prompts largos en una máquina lenta), " +
+            "sube la \"Espera máxima sin respuesta\" en Ajustes."
+    else if (isTransientNetworkError(e))
         "Se perdió la conexión con el servidor y no se pudo reanudar. " +
             "Comprueba que el servidor del modelo siga activo y reintenta."
     else e.message ?: "Error inesperado durante la respuesta"

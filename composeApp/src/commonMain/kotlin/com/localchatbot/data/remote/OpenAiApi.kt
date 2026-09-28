@@ -5,6 +5,7 @@ import com.localchatbot.core.debug.NetworkTransaction
 import com.localchatbot.core.platform.PlatformCapabilities
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -32,7 +33,14 @@ class OpenAiApi(
      * llamada). Si devuelve no-vacío, se añade como `Authorization: Bearer <key>`.
      * Para LM Studio con auth activada o proveedores cloud.
      */
-    private val authTokenProvider: suspend () -> String? = { null }
+    private val authTokenProvider: suspend () -> String? = { null },
+    /**
+     * Milisegundos sin recibir un byte tras los que el stream de chat se da por colgado
+     * (preferencia `streamIdleTimeoutSec`). Null deja el socket timeout global del cliente
+     * (10 min), que sigue siendo el de las demás llamadas: generar una imagen o un vídeo
+     * puede tardar eso sin mandar nada y no se trata de un servidor colgado.
+     */
+    private val streamIdleTimeoutMsProvider: suspend () -> Long? = { null }
 ) {
 
     suspend fun chatCompletion(
@@ -108,10 +116,17 @@ class OpenAiApi(
         var parseErrorCount = 0
         var firstParseError: String? = null
         val token = apiKeyOverride ?: authTokenProvider()
+        val idleTimeoutMs = streamIdleTimeoutMsProvider()
         try {
             client.preparePost(url) {
                 contentType(ContentType.Application.Json)
                 token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+                // Tiempo máximo entre bytes: un servidor colgado se detecta en minutos, no
+                // en los 10 del cliente. Es un SocketTimeoutException, que el loop de
+                // SendMessageUseCase trata como transitorio y reintenta.
+                idleTimeoutMs?.let { idleMs ->
+                    timeout { socketTimeoutMillis = idleMs }
+                }
                 // Solo en desktop (CIO): fuerza conexión nueva por cada stream para
                 // evitar reusar una conexión que LM Studio ya cerró, lo que causaría
                 // EOF inmediato en llamadas rápidas (p. ej. YOLO mode sin delay de

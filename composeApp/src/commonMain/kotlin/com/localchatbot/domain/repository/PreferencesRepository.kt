@@ -52,6 +52,7 @@ interface PreferencesRepository {
     suspend fun updateRemoteAccess(enabled: Boolean, port: Int, pin: String)
     suspend fun updateRemoteViewerUrl(value: String)
     suspend fun updateDesktopNotifications(value: Boolean)
+    suspend fun updateStreamIdleTimeout(seconds: Int)
     suspend fun updateCodeCompletionEnabled(value: Boolean)
     suspend fun updateGenerationParams(params: GenerationParams)
     suspend fun reset()

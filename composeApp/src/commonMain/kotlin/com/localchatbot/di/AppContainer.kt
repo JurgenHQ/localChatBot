@@ -134,7 +134,8 @@ class AppContainer {
     val imageSaver: ImageSaver = createImageSaver()
     private val openAiApi = OpenAiApi(
         httpClient, json, networkInspector,
-        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } }
+        authTokenProvider = { preferencesRepository.current().connection.apiKey.takeIf { it.isNotBlank() } },
+        streamIdleTimeoutMsProvider = { preferencesRepository.current().streamIdleTimeoutSec * 1_000L }
     )
     private val lmStudioApi = LmStudioApi(
         httpClient, json, networkInspector,
