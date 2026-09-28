@@ -99,6 +99,8 @@ class ModelRepositoryImpl(
             presencePenalty = p.presencePenalty.takeUnless { samplingParamsBlocked },
             frequencyPenalty = p.frequencyPenalty.takeUnless { samplingParamsBlocked },
             seed = p.seed,
+            minP = p.minP.takeUnless { samplingParamsBlocked },
+            repeatPenalty = p.repeatPenalty.takeUnless { samplingParamsBlocked },
             reasoningEffort = p.reasoningEffort
         )
 

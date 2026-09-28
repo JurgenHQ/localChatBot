@@ -198,11 +198,13 @@ class SendMessageUseCase(
         }
         val cfgApiKey = cfg.apiKey.takeIf { it.isNotBlank() }
 
-        // Parámetros de generación: override sesión ?: global ?: default (AGENT_TEMPERATURE para agente).
-        // Se calculan aquí una vez y se usan en cada ronda del loop de streaming.
+        // Parámetros de generación: override sesión ?: perfil (campo a campo sobre el global)
+        // ?: default (AGENT_TEMPERATURE para agente). Se calculan aquí una vez y se usan en
+        // cada ronda del loop de streaming. `cfg` es el perfil del turno, así que una tarea
+        // programada con su propio perfil usa también sus parámetros.
         val globalParams = currentPrefs.generationParams
         val sessionParams = initialSession.generationParams
-        val baseParams = sessionParams ?: globalParams
+        val baseParams = sessionParams ?: cfg.generationParams.orElse(globalParams)
 
         // Solo mandamos las tools disponibles en este momento: sin workspace → sin fs tools,
         // sin API key → sin search_web, etc. Así el modelo nunca intenta invocar una tool

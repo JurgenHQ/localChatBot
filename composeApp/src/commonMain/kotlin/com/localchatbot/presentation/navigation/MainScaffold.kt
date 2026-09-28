@@ -353,11 +353,12 @@ fun MainScaffold(container: AppContainer) {
                                     )
                                     BottomTab.Settings -> SettingsScreen(
                                         viewModel = settingsViewModel,
-                                        editorViewModelFactory = { editor ->
+                                        editorViewModelFactory = { editor, paramsForProfile ->
                                             SettingsEditorViewModel(
                                                 preferences = container.preferencesRepository,
                                                 editor = editor,
-                                                listModels = container.listModels
+                                                listModels = container.listModels,
+                                                paramsForProfile = paramsForProfile
                                             )
                                         },
                                         onOpenNetworkInspector = { inspectorOpen = true },

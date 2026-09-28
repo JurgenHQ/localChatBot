@@ -41,6 +41,8 @@ sealed interface SettingsEditor {
     data object PresencePenalty : SettingsEditor
     data object FrequencyPenalty : SettingsEditor
     data object Seed : SettingsEditor
+    data object MinP : SettingsEditor
+    data object RepeatPenalty : SettingsEditor
     data object ReasoningEffort : SettingsEditor
 }
 

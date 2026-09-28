@@ -36,7 +36,9 @@ data class SettingsEditorUiState(
             SettingsEditor.MaxTokens,
             SettingsEditor.PresencePenalty,
             SettingsEditor.FrequencyPenalty,
-            SettingsEditor.Seed -> true
+            SettingsEditor.Seed,
+            SettingsEditor.MinP,
+            SettingsEditor.RepeatPenalty -> true
             else -> textDraft.isNotBlank()
         }
 }
@@ -44,8 +46,25 @@ data class SettingsEditorUiState(
 class SettingsEditorViewModel(
     private val preferences: PreferencesRepository,
     private val editor: SettingsEditor,
-    private val listModels: ListModelsUseCase? = null
+    private val listModels: ListModelsUseCase? = null,
+    /**
+     * Si los parámetros de generación se editan para el perfil activo (true) o para todos
+     * (false, los globales). Vacío en un perfil = heredar el global.
+     */
+    private val paramsForProfile: Boolean = false
 ) : ViewModel() {
+
+    private suspend fun currentParams(): GenerationParams = preferences.current().let {
+        if (paramsForProfile) it.connection.generationParams else it.generationParams
+    }
+
+    private suspend fun saveParams(params: GenerationParams) {
+        if (paramsForProfile) {
+            preferences.updateConnection(preferences.current().connection.copy(generationParams = params))
+        } else {
+            preferences.updateGenerationParams(params)
+        }
+    }
 
     private val _state = MutableStateFlow(SettingsEditorUiState(editor = editor))
     val state: StateFlow<SettingsEditorUiState> = _state.asStateFlow()
@@ -53,7 +72,7 @@ class SettingsEditorViewModel(
     init {
         viewModelScope.launch {
             val prefs = preferences.current()
-            val p = prefs.generationParams
+            val p = currentParams()
             _state.update {
                 it.copy(
                     textDraft = when (editor) {
@@ -71,6 +90,8 @@ class SettingsEditorViewModel(
                         SettingsEditor.PresencePenalty -> p.presencePenalty?.toString() ?: ""
                         SettingsEditor.FrequencyPenalty -> p.frequencyPenalty?.toString() ?: ""
                         SettingsEditor.Seed -> p.seed?.toString() ?: ""
+                        SettingsEditor.MinP -> p.minP?.toString() ?: ""
+                        SettingsEditor.RepeatPenalty -> p.repeatPenalty?.toString() ?: ""
                         else -> ""
                     },
                     themeDraft = prefs.themeMode,
@@ -91,8 +112,7 @@ class SettingsEditorViewModel(
 
     /** Selección directa (como Theme/Accent): guarda y cierra el sheet en un solo tap. */
     fun onReasoningEffortSelected(level: String?, onDone: () -> Unit) = viewModelScope.launch {
-        val cur = preferences.current().generationParams
-        preferences.updateGenerationParams(cur.copy(reasoningEffort = level))
+        saveParams(currentParams().copy(reasoningEffort = level))
         onDone()
     }
 
@@ -139,8 +159,10 @@ class SettingsEditorViewModel(
                 SettingsEditor.MaxTokens,
                 SettingsEditor.PresencePenalty,
                 SettingsEditor.FrequencyPenalty,
-                SettingsEditor.Seed -> {
-                    val cur = preferences.current().generationParams
+                SettingsEditor.Seed,
+                SettingsEditor.MinP,
+                SettingsEditor.RepeatPenalty -> {
+                    val cur = currentParams()
                     val v = s.textDraft.trim()
                     val updated = when (editor) {
                         SettingsEditor.Temperature -> cur.copy(temperature = v.toDoubleOrNull())
@@ -149,9 +171,11 @@ class SettingsEditorViewModel(
                         SettingsEditor.PresencePenalty -> cur.copy(presencePenalty = v.toDoubleOrNull())
                         SettingsEditor.FrequencyPenalty -> cur.copy(frequencyPenalty = v.toDoubleOrNull())
                         SettingsEditor.Seed -> cur.copy(seed = v.toIntOrNull())
+                        SettingsEditor.MinP -> cur.copy(minP = v.toDoubleOrNull())
+                        SettingsEditor.RepeatPenalty -> cur.copy(repeatPenalty = v.toDoubleOrNull())
                         else -> cur
                     }
-                    preferences.updateGenerationParams(updated)
+                    saveParams(updated)
                 }
                 // Selección directa vía onReasoningEffortSelected (mismo patrón que
                 // Theme/Accent); este editor nunca llega a save().

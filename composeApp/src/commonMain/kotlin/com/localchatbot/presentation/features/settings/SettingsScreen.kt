@@ -63,12 +63,15 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    editorViewModelFactory: (SettingsEditor) -> SettingsEditorViewModel,
+    /** El Boolean: los parámetros de generación se editan para el perfil activo. */
+    editorViewModelFactory: (SettingsEditor, Boolean) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
     onOpenRemoteViewer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // Ámbito de "Parámetros de generación": todos los perfiles (global) o solo el activo.
+    var paramsForProfile by remember { mutableStateOf(false) }
 
     val exporter = rememberSettingsExporter(onError = viewModel::fileError)
     val importer = rememberSettingsImporter(
@@ -112,11 +115,13 @@ fun SettingsScreen(
             onCycleRemoteBindHost = viewModel::cycleRemoteBindHost,
             onToggleDesktopNotifications = viewModel::toggleDesktopNotifications,
             onToggleCodeCompletion = viewModel::toggleCodeCompletion,
-            onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout
+            onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout,
+            paramsForProfile = paramsForProfile,
+            onToggleParamsScope = { paramsForProfile = !paramsForProfile }
         )
 
         state.openEditor?.let { editor ->
-            val editorVm = remember(editor) { editorViewModelFactory(editor) }
+            val editorVm = remember(editor, paramsForProfile) { editorViewModelFactory(editor, paramsForProfile) }
             SettingsEditorSheet(
                 viewModel = editorVm,
                 onDismiss = viewModel::closeEditor
@@ -174,6 +179,8 @@ fun SettingsContent(
     onToggleDesktopNotifications: (Boolean) -> Unit = {},
     onToggleCodeCompletion: (Boolean) -> Unit = {},
     onCycleStreamIdleTimeout: () -> Unit = {},
+    paramsForProfile: Boolean = false,
+    onToggleParamsScope: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -364,53 +371,50 @@ fun SettingsContent(
         )
 
         SectionLabel("Parámetros de generación")
-        val gp = preferences.generationParams
+        val globalParams = preferences.generationParams
+        val profileParams = cfg.generationParams
+        val activeProfileName = preferences.connectionProfiles
+            .firstOrNull { it.id == preferences.activeConnectionProfileId }?.name ?: "perfil activo"
+        /**
+         * Valor a mostrar de un parámetro. En ámbito de perfil, si el perfil no lo fija se ve
+         * el global que hereda, para que quede claro qué se manda de verdad.
+         */
+        fun <T> shown(pick: (com.localchatbot.domain.model.GenerationParams) -> T?, empty: String): String {
+            val own = pick(if (paramsForProfile) profileParams else globalParams)
+            if (own != null) return own.toString()
+            if (paramsForProfile) pick(globalParams)?.let { return "global: $it" }
+            return empty
+        }
         SectionCard {
             SettingsRow(
-                title = "Temperatura",
-                onClick = { onOpenEditor(SettingsEditor.Temperature) },
-                trailing = { MonoValue(gp.temperature?.toString() ?: "por defecto") }
+                title = "Aplicar a",
+                onClick = onToggleParamsScope,
+                trailing = { MonoValue(if (paramsForProfile) activeProfileName else "Todos los perfiles", maxChars = 20) }
             )
-            Divider()
-            SettingsRow(
-                title = "Top-P",
-                onClick = { onOpenEditor(SettingsEditor.TopP) },
-                trailing = { MonoValue(gp.topP?.toString() ?: "por defecto") }
-            )
-            Divider()
-            SettingsRow(
-                title = "Max tokens",
-                onClick = { onOpenEditor(SettingsEditor.MaxTokens) },
-                trailing = { MonoValue(gp.maxTokens?.toString() ?: "por defecto") }
-            )
-            Divider()
-            SettingsRow(
-                title = "Presence penalty",
-                onClick = { onOpenEditor(SettingsEditor.PresencePenalty) },
-                trailing = { MonoValue(gp.presencePenalty?.toString() ?: "por defecto") }
-            )
-            Divider()
-            SettingsRow(
-                title = "Frequency penalty",
-                onClick = { onOpenEditor(SettingsEditor.FrequencyPenalty) },
-                trailing = { MonoValue(gp.frequencyPenalty?.toString() ?: "por defecto") }
-            )
-            Divider()
-            SettingsRow(
-                title = "Seed",
-                onClick = { onOpenEditor(SettingsEditor.Seed) },
-                trailing = { MonoValue(gp.seed?.toString() ?: "aleatorio") }
-            )
-            Divider()
-            SettingsRow(
-                title = "Esfuerzo de razonamiento",
-                onClick = { onOpenEditor(SettingsEditor.ReasoningEffort) },
-                trailing = { MonoValue(gp.reasoningEffort ?: "automático") }
-            )
+            listOf(
+                Triple("Temperatura", SettingsEditor.Temperature, shown({ it.temperature }, "por defecto")),
+                Triple("Top-P", SettingsEditor.TopP, shown({ it.topP }, "por defecto")),
+                Triple("Min-P", SettingsEditor.MinP, shown({ it.minP }, "por defecto")),
+                Triple("Repeat penalty", SettingsEditor.RepeatPenalty, shown({ it.repeatPenalty }, "por defecto")),
+                Triple("Max tokens", SettingsEditor.MaxTokens, shown({ it.maxTokens }, "por defecto")),
+                Triple("Presence penalty", SettingsEditor.PresencePenalty, shown({ it.presencePenalty }, "por defecto")),
+                Triple("Frequency penalty", SettingsEditor.FrequencyPenalty, shown({ it.frequencyPenalty }, "por defecto")),
+                Triple("Seed", SettingsEditor.Seed, shown({ it.seed }, "aleatorio")),
+                Triple("Esfuerzo de razonamiento", SettingsEditor.ReasoningEffort, shown({ it.reasoningEffort }, "automático"))
+            ).forEach { (title, editor, value) ->
+                Divider()
+                SettingsRow(
+                    title = title,
+                    onClick = { onOpenEditor(editor) },
+                    trailing = { MonoValue(value, maxChars = 16) }
+                )
+            }
         }
         Text(
             "Se envían en cada request. Vacío = el servidor usa su valor por defecto. " +
-                "La temperatura del agente (0.3) se aplica solo cuando no hay un valor configurado aquí.",
+                "Con \"Aplicar a\" en un perfil, lo que dejes vacío hereda el valor de todos los " +
+                "perfiles. Min-P y repeat penalty son para servidores locales (llama.cpp, LM Studio, " +
+                "Ollama). La temperatura del agente (0.3) se aplica solo cuando no hay un valor configurado aquí.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
