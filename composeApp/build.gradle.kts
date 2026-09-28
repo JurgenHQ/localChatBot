@@ -159,7 +159,11 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "LocalChatBot"
-            packageVersion = "1.0.6"
+            // El CI pasa -PappVersion=1.0.<número de build> para que cada MSI publicado tenga una
+            // versión mayor que el anterior: con el mismo upgradeUuid y la misma versión, Windows
+            // no actualiza en su sitio, y el actualizador de la app (AppUpdater) compara versiones.
+            // Sin la propiedad (builds locales) queda la base fija.
+            packageVersion = (project.findProperty("appVersion") as String?) ?: "1.0.6"
             description = "Chat con un modelo LLM local en tu red"
             vendor = "LocalChatBot"
             // jlink solo incluye módulos detectados por análisis estático (jdeps); el driver

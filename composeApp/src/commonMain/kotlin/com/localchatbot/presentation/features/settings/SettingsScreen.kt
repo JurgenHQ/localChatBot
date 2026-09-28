@@ -58,6 +58,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
+import com.localchatbot.core.update.AppUpdater
+import com.localchatbot.core.update.UpdateState
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 @Composable
@@ -67,9 +70,12 @@ fun SettingsScreen(
     editorViewModelFactory: (SettingsEditor, Boolean) -> SettingsEditorViewModel,
     onOpenNetworkInspector: () -> Unit = {},
     onOpenRemoteViewer: () -> Unit = {},
+    appUpdater: AppUpdater? = null,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val updateState by (appUpdater?.state ?: remember { MutableStateFlow<UpdateState>(UpdateState.Unsupported) })
+        .collectAsStateWithLifecycle()
     // Ámbito de "Parámetros de generación": todos los perfiles (global) o solo el activo.
     var paramsForProfile by remember { mutableStateOf(false) }
 
@@ -117,7 +123,12 @@ fun SettingsScreen(
             onToggleCodeCompletion = viewModel::toggleCodeCompletion,
             onCycleStreamIdleTimeout = viewModel::cycleStreamIdleTimeout,
             paramsForProfile = paramsForProfile,
-            onToggleParamsScope = { paramsForProfile = !paramsForProfile }
+            onToggleParamsScope = { paramsForProfile = !paramsForProfile },
+            updateState = updateState,
+            currentVersion = appUpdater?.currentVersion,
+            onCheckUpdates = { appUpdater?.check() },
+            onInstallUpdate = { appUpdater?.install() },
+            onToggleAutoCheckUpdates = viewModel::toggleAutoCheckUpdates
         )
 
         state.openEditor?.let { editor ->
@@ -181,6 +192,11 @@ fun SettingsContent(
     onCycleStreamIdleTimeout: () -> Unit = {},
     paramsForProfile: Boolean = false,
     onToggleParamsScope: () -> Unit = {},
+    updateState: UpdateState = UpdateState.Unsupported,
+    currentVersion: String? = null,
+    onCheckUpdates: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
+    onToggleAutoCheckUpdates: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val cfg = preferences.connection
@@ -601,6 +617,54 @@ fun SettingsContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        if (updateState !is UpdateState.Unsupported) {
+            SectionLabel("Actualizaciones")
+            SectionCard {
+                SettingsRow(
+                    title = "Versión instalada",
+                    onClick = onCheckUpdates,
+                    trailing = { MonoValue(currentVersion ?: "—", maxChars = 12) }
+                )
+                Divider()
+                when (updateState) {
+                    is UpdateState.Available -> SettingsRow(
+                        title = "Instalar ${updateState.version}",
+                        onClick = onInstallUpdate,
+                        trailing = { MonoValue("Instalar →", maxChars = 12) }
+                    )
+                    is UpdateState.Downloading -> SettingsRow(
+                        title = "Descargando ${updateState.version}…",
+                        onClick = {},
+                        trailing = {}
+                    )
+                    else -> SettingsRow(
+                        title = when (updateState) {
+                            UpdateState.Checking -> "Buscando…"
+                            UpdateState.UpToDate -> "Estás al día"
+                            is UpdateState.Error -> updateState.message
+                            else -> "Buscar actualizaciones"
+                        },
+                        onClick = onCheckUpdates,
+                        trailing = { MonoValue("Buscar", maxChars = 8) }
+                    )
+                }
+                Divider()
+                SettingsRow(
+                    title = "Buscar al iniciar",
+                    onClick = { onToggleAutoCheckUpdates(!preferences.autoCheckUpdates) },
+                    trailing = {
+                        Switch(checked = preferences.autoCheckUpdates, onCheckedChange = onToggleAutoCheckUpdates)
+                    }
+                )
+            }
+            Text(
+                "Descarga el instalador de la última versión publicada y lo abre; la app se cierra " +
+                    "para que pueda reemplazarla. Tus chats y ajustes se conservan.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         SectionLabel("Backup")
         // Sin persistir a propósito: incluir las keys tiene que ser una decisión de cada

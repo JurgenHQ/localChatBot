@@ -149,7 +149,9 @@ data class AppPreferences(
      * manda nada hasta el primer token, así que no puede ser muy corto. Antes era un fijo
      * de 10 min, y un servidor colgado tardaba eso en detectarse.
      */
-    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC
+    val streamIdleTimeoutSec: Int = DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
+    /** Buscar una versión nueva al arrancar (solo desktop Windows instalado con el MSI). */
+    val autoCheckUpdates: Boolean = true
 ) {
     /** Config de conexión del perfil activo. Nunca vacía: [Default] ya trae un perfil. */
     val connection: ConnectionConfig

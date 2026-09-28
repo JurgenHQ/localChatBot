@@ -136,6 +136,10 @@ Navigation is `MainScaffold` (`presentation/navigation/`): three bottom tabs (`B
 
 `AppPreferences.connectionProfiles: List<ConnectionProfile>` (**max 3**) + `activeConnectionProfileId`. `AppPreferences.connection` is a *derived* getter returning the active profile's `ConnectionConfig` — nothing reads a standalone connection field anymore. Switching profiles happens from the drawer switcher. `ConnectionConfig` supports host/port/HTTPS/model plus an optional `apiKey` sent as `Authorization: Bearer …` (so cloud providers work, not just LAN). `SettingsExport` keeps a deprecated nullable `connection` field purely to read pre-profiles backups.
 
+**Generation parameters are per profile, merged field by field.** `ConnectionConfig.generationParams` holds the profile's own values; each null field inherits the global `AppPreferences.generationParams` (`GenerationParams.orElse`), and a session override still wins over both. The turn resolves it from `cfg`, the turn's profile, so a scheduled task with its own `connectionProfileId` also gets that profile's parameters. Settings → *Parámetros de generación* has an "Aplicar a" row that switches between editing the global values and the active profile's (UI state only, `SettingsEditorViewModel(paramsForProfile)`); in profile scope an unset row shows the inherited `global: X`. `min_p` and `repeat_penalty` exist for local servers (llama.cpp, LM Studio, Ollama); OpenAI rejects unknown parameters, which is fine because null fields are never serialized (`explicitNulls = false`) and `reasoningEffort` blocks them like the other samplers.
+
+**Context length detection** is a chain in `ModelRepositoryImpl.fetchContextLength`: LM Studio → llama.cpp `/props` → Ollama (`OllamaApi`). For Ollama the real value is `GET /api/ps` → `context_length` of the *loaded* model (it reflects `OLLAMA_CONTEXT_LENGTH`), then `num_ctx` from `/api/show`'s `parameters`. **Never `model_info.*.context_length`**: that is the training maximum (often 128k), not what Ollama runs with, and overestimating is exactly the bug — Ollama silently drops the start of the prompt. A model not loaded yet falls through to the default; the 60 s cache means the next turn after it loads picks the real value.
+
 ### Projects and per-session workspace
 
 `Project` (id, name, `workspaceDir`, `collapsed`) + `ProjectState.assignments` (`sessionId → projectId`), persisted by `ProjectRepositoryImpl` in settings. `ActiveWorkspaceStore` resolves, for a session:
@@ -144,6 +148,8 @@ Navigation is `MainScaffold` (`presentation/navigation/`): three bottom tabs (`B
 - **`effectiveAgentMode`** = `prefs.sessionAgentModes[sessionId]` override, else the global `prefs.agentMode`.
 
 Both feed the fs tools (via `FsToolUtil.workspaceStore`) and the `<workspace>` block of the request. Desktop-only in practice; with no projects and no overrides the behaviour is identical to the global-only setup. The drawer groups sessions under collapsible project sections.
+
+`Project.instructions` (drawer → project menu → *Añadir/Editar instrucciones*) is prepended to the system prompt of every conversation in the project as `<project-instructions>`, right after the global system prompt. It goes in the **stable** system (it only changes when edited), resolved by `ActiveWorkspaceStore.currentProjectInstructions()` against the *turn's* session like `current()`. It's for conventions the user doesn't want to commit; AGENTS.md/CLAUDE.md in the repo still travel in the `<workspace>` block.
 
 **The store has two access paths and they answer about different sessions.** The `StateFlow`s (`effectiveWorkspace`, `effectiveAgentMode`) track the *visible* session and exist for the UI (workspace chip, Plan/Build toggle). The **suspend** `current()` / `currentAgentMode()` track the *running turn* via `TurnSessionContext` (falling back to the visible session outside a turn) and are what tools and the system prompt must use. Before that split, a scheduled task running while you worked resolved its workspace and its Plan/Build gate against whatever chat you happened to be looking at.
 
@@ -523,6 +529,8 @@ Built-in file browser/editor over the effective workspace, used both directly an
 - **Android**: SAF `ActivityResultContracts.OpenDocument()` → `pdfbox-android` (`com.tom-roush:pdfbox-android`, AWT-free port; needs `PDFBoxResourceLoader.init()` before first use) for `.pdf`, same zip+XML approach for `.docx`.
 - **iOS**: `UIDocumentPickerViewController` (`.Import` mode, copies into the sandbox — no security-scoped URL handling needed) → native `PDFKit.PDFDocument` for `.pdf`. For `.docx` there's no built-in unzip API, so `FilePicker.ios.kt` parses the ZIP structure by hand (central directory → `word/document.xml`) and inflates with Foundation's `decompressedDataUsingAlgorithm` (raw deflate); text extraction mirrors the Android/Desktop `<w:p>`/`<w:t>` criteria via namespace-tolerant regex instead of DOM.
 
+**Drag and drop (desktop).** `Modifier.fileDropTarget` (`core/fs/FileDrop.kt`, `expect`; a no-op on mobile) wraps Compose 1.7's `dragAndDropTarget` and reads the AWT `javaFileListFlavor`. Images go to `onImagePicked` (first one only — a message holds one image, and the user is told), everything else through the same `parseAttachmentFile` as the picker. `shouldStartDragAndDrop` only checks the flavor: reading the file list before the drop throws `InvalidDnDOperationException` on some JDKs. `ChatScreen` rejects drops while a turn is streaming, like the disabled attach button — the message queue is text-only and the attachment would be lost.
+
 Legacy binary `.doc` is unsupported everywhere (`onError` callback → `ChatViewModel.attachTextFileError` → `errorMessage`, same UX as stream failures). `onResult`/`onError` are plain callbacks (not suspend), matching `rememberImagePicker`'s pattern rather than the old bridge-singleton pattern used for `VoicePermissionBridge`.
 
 ### Tool docs (`read_tool_docs` / `tools.md`)
@@ -538,7 +546,7 @@ Shell commands run automatically **after a tool mutates the workspace** — form
 - The hook's output is **appended to the tool result**, not sent separately, so the model sees it in the same round: if the formatter rewrote the file it just edited, or the build broke, it finds out before building further on top.
 - `onlyOnFailureOutput` (default true) keeps a passing formatter from spending context on "all good".
 - The file is re-read every turn, so editing it takes effect without restarting. Broken JSON yields an empty list rather than propagating — a malformed hook must not take down the turn. Output is capped at `HOOK_OUTPUT_CAP` (2k).
-- **`after_turn` is not implemented yet** — see `ROADMAP.md` 2.6.
+- **`"event": "after_turn"`** runs the hook when the model closes the turn instead of after a tool — the "run the tests when it says it's done" case — and only if the turn used a workspace-mutating tool (`mutatingToolsUsed`; a hook's `tools` list narrows it further). A failure goes back to the model as an ephemeral nudge (`AFTER_TURN_NUDGE_PREFIX`, same mechanism as the todo/`ask_user` nudges, which tells it not to disable tests to get green), at most `MAX_AFTER_TURN_NUDGES` (2) times per turn; once exhausted, the failure is appended to the final message so the user doesn't read the turn as green. Output keeps the **tail** (`takeLast`), where test runners print their summary. A hook without `event` stays `after_tool`, so existing `hooks.json` files behave as before.
 
 ### Memory (`memory.md` / `read_memory` / `save_memory`)
 
@@ -664,6 +672,16 @@ The project has four source sets:
 - **Linux / other** — plain decorated window, no insets.
 
 The desktop shutdown hook (registered where `AppContainer` is created) flushes pending writes, stops the remote-access server and closes MCP clients.
+
+### Desktop auto-update (`AppUpdater`)
+
+`AppUpdater` (`core/update/`, `expect fun createAppUpdater`) checks the rolling `latest` pre-release on GitHub and installs a newer `.msi`. Only real on **Windows run from the installer**: it needs `jpackage.app-version` (set by the jpackage launcher; absent under `./gradlew run`), and only the MSI is published. Everywhere else the state is `Unsupported` and Settings hides the section.
+
+- **Versions come from CI**: `packageVersion` reads `-PappVersion`, and `windows-build.yml` passes `1.0.${{ github.run_number }}` (local builds keep the `1.0.6` base). With a fixed `upgradeUuid` and a higher version, the MSI upgrades in place; with the same version Windows would refuse.
+- `pickUpdate` picks the highest-versioned `.msi` asset (numeric compare, `compareVersions`) newer than the installed one. The CI deletes previous MSIs from the release before uploading, but the updater doesn't depend on that.
+- Install downloads to the temp dir (streamed, not in memory), launches `msiexec /i` and calls `exitProcess(0)` so msiexec can replace the files; the shutdown hook flushes settings and chats first. A private repo answers 404 without a token, which is treated as "up to date", not an error.
+- Checked 15 s after startup when `autoCheckUpdates` (default on; Settings → *Actualizaciones*), and on demand from Settings.
+- **Signing is prepared, not active**: the `Sign MSI` step runs only if the repo has `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` secrets (`signtool` + RFC 3161 timestamp). Without a certificate the MSI stays unsigned and SmartScreen warns as before. macOS notarization is not set up — there is no macOS build in CI.
 
 ### Desktop notifications (`SystemNotifier`)
 

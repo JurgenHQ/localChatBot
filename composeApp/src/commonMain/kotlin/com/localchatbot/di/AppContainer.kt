@@ -17,6 +17,8 @@ import com.localchatbot.core.remote.RemoteAccessDeps
 import com.localchatbot.core.remote.RemoteAccessServer
 import com.localchatbot.core.remote.createRemoteAccessServer
 import com.localchatbot.core.security.createSecretCipher
+import com.localchatbot.core.update.AppUpdater
+import com.localchatbot.core.update.createAppUpdater
 import com.localchatbot.core.state.ActiveSessionStore
 import com.localchatbot.core.state.ActiveWorkspaceStore
 import com.localchatbot.core.state.PendingUserPromptStore
@@ -109,6 +111,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -174,6 +177,9 @@ class AppContainer {
      * foreground service) ya hacen su propio salto interno cuando hace falta.
      */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Actualización desde el pre-release `latest` (solo el MSI de Windows; inerte en el resto). */
+    val appUpdater: AppUpdater = createAppUpdater(applicationScope, httpClient)
 
     val skillFileStore: SkillFileStore = createSkillFileStore()
     val toolDocsStore: ToolDocsStore = createToolDocsStore()
@@ -517,6 +523,12 @@ class AppContainer {
         if (PlatformCapabilities.isDesktop) {
             automationScheduler.start()
         }
+        // Comprobación de actualizaciones al arrancar, con retraso: no compite con la carga
+        // inicial, y si no hay red solo queda un error visible en Ajustes.
+        applicationScope.launch {
+            delay(UPDATE_CHECK_DELAY_MS)
+            if (preferencesRepository.current().autoCheckUpdates) appUpdater.check()
+        }
     }
 
     init {
@@ -534,6 +546,7 @@ class AppContainer {
 }
 
 private const val KEY_CHAT_MIGRATED_TO_SQLDELIGHT_V1 = "chat_migrated_to_sqldelight_v1"
+private const val UPDATE_CHECK_DELAY_MS = 15_000L
 
 /** Lo que reinicia el servidor de acceso remoto al cambiar. */
 private data class RemoteAccessConfig(val enabled: Boolean, val port: Int, val pin: String, val host: String)

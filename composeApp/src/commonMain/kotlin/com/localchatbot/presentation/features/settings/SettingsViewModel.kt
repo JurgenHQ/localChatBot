@@ -161,6 +161,10 @@ class SettingsViewModel(
         viewModelScope.launch { preferences.updateCodeCompletionEnabled(value) }
     }
 
+    fun toggleAutoCheckUpdates(value: Boolean) {
+        viewModelScope.launch { preferences.updateAutoCheckUpdates(value) }
+    }
+
     /** Pasa a la siguiente opción de [AppPreferences.STREAM_IDLE_TIMEOUT_OPTIONS_SEC]. */
     fun cycleStreamIdleTimeout() {
         viewModelScope.launch {

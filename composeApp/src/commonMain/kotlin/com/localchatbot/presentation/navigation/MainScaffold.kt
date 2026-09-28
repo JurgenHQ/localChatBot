@@ -362,7 +362,8 @@ fun MainScaffold(container: AppContainer) {
                                             )
                                         },
                                         onOpenNetworkInspector = { inspectorOpen = true },
-                                        onOpenRemoteViewer = { remoteViewerOpen = true }
+                                        onOpenRemoteViewer = { remoteViewerOpen = true },
+                                        appUpdater = container.appUpdater
                                     )
                                 }
                             }
