@@ -1,0 +1,62 @@
+name: Android / iOS
+
+# Solo compila: los huecos expect/actual y el código de androidMain/iosMain solo fallan al
+# compilar su target, y el workflow del MSI solo compila desktop. Sin esto un cambio en
+# commonMain podía romper Android o iOS y enterarse nadie hasta abrir el proyecto en Xcode.
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Un push nuevo al mismo PR cancela la compilación anterior (el runner de macOS es caro).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # El runner de Ubuntu trae el Android SDK (ANDROID_HOME).
+      - name: Compile Android
+        run: ./gradlew :composeApp:compileDebugKotlinAndroid --no-daemon
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # Kotlin/Native descarga su toolchain (~1 GB) a ~/.konan en el primer build.
+      - name: Cache Kotlin/Native
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Compile iOS (simulator)
+        run: ./gradlew :composeApp:compileKotlinIosSimulatorArm64 --no-daemon

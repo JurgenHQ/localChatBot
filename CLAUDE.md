@@ -43,7 +43,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew clean
 ```
 
-Unit tests live in `composeApp/src/commonTest` (pure logic only: context window, network inspector sanitizing) and run on the JVM:
+Unit tests live in `composeApp/src/commonTest` (pure logic only: context window, token calibration, streaming overlays, markdown blocks, network inspector sanitizing, `looksLikeQuestionToUser`, `DangerousCommands`, FTS query building, `ChatExport`) and run on the JVM:
 
 ```bash
 ./gradlew :composeApp:desktopTest
@@ -51,7 +51,7 @@ Unit tests live in `composeApp/src/commonTest` (pure logic only: context window,
 
 Changes touching `commonMain` should at minimum compile for Desktop **and** one mobile target (`expect`/`actual` gaps only surface per target).
 
-CI (`.github/workflows/windows-build.yml`) runs `desktopTest` and builds the MSI on every push to `main` and `feature/**` and on PRs to `main`: `main` publishes a rolling `latest` pre-release, feature branches upload a 30-day artifact.
+CI (`.github/workflows/windows-build.yml`) runs `desktopTest` and builds the MSI on every push to `main` and `feature/**` and on PRs to `main`: `main` publishes a rolling `latest` pre-release, feature branches upload a 30-day artifact. `.github/workflows/multiplatform-check.yml` compiles Android (`compileDebugKotlinAndroid`, Ubuntu) and iOS (`compileKotlinIosSimulatorArm64`, macOS) on the same triggers — compile only, since `expect`/`actual` gaps and `androidMain`/`iosMain` code only break on their own target.
 
 ## Architecture
 
@@ -168,6 +168,10 @@ While a message streams, `AssistantBubble` renders **one `Markdown` per top-leve
 **Rolling context summary.** When `buildMessagesForApi` has to drop old messages to fit the context window, it returns them as `discarded`; once per turn a background `model.summarize(...)` folds them into `ChatSession.contextSummary` (column `session.context_summary`), which is re-injected into the system prompt as "Resumen del historial anterior". The summary job is fired only on the first iteration of a turn, so the fresh value lands on the *next* turn — and only when the cut moved since the last summary (`summarizedThrough`), or an unchanged summary would be regenerated (and the cache invalidated) every turn.
 
 **The window trims with hysteresis.** When the history exceeds the budget, `ContextWindow.window` cuts down to ~50 % of it (`HYSTERESIS_TARGET_FRACTION`) and remembers the start (`windowStarts`, per session, in memory); later turns keep that same start while it still fits. Trimming "just enough" moved the first message of the request every turn, which is a full cache miss every turn. If the cut lands on `role=tool` results it moves **back** to include their announcing assistant (moving forward used to leave the window empty when the last message was one huge tool result).
+
+**Token estimates are calibrated against the server.** The window budget is estimated at ~4 chars/token (`estimateMessageTokens`, which also counts tool-call arguments), which undershoots code, JSON and Spanish (~3) and never sees the tool definitions sent with every request. After each round with a real `prompt_tokens`, `TokenCalibration.update` compares it with what `buildMessagesForApi` estimated for that same request (`BuiltRequest.estimatedTokens`) and keeps a factor per **model** in `tokenFactors` (in memory; averaged with the previous one so an odd sample can't jerk the window and its cache, clamped to 0.8–2.5, ignored below 500 tokens). The next window's budget is divided by that factor. The first turn after a restart uses the fixed ratio, as before.
+
+**Stream idle timeout.** The chat stream sets its own socket timeout (`AppPreferences.streamIdleTimeoutSec`, default 180 s, cycled from Settings → *Espera máxima sin respuesta* through 1/3/5/10 min) via `OpenAiApi.streamIdleTimeoutMsProvider`; every other call keeps the client's global 10 min, since image/video generation legitimately stays silent that long. It must cover prefill — a long prompt on a slow machine sends nothing until the first token. The timeout is a transient error, so the retry loop re-streams the round; if it still fails, `friendlyStreamErrorMessage` points the user at the setting.
 
 ### Background resume (mobile stream interruption)
 
