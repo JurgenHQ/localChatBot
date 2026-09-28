@@ -121,7 +121,12 @@ class OpenAiApi(
                 // streaming porque NSURLSession cierra la conexión más agresivamente;
                 // Darwin ya detecta conexiones muertas en su propio pool, así que
                 // dejamos que negocie keep-alive por defecto.
-                if (PlatformCapabilities.forceCloseHttpConnection) {
+                //
+                // Solo con http:// (LM Studio / llama.cpp en la LAN, que es donde se vio el
+                // problema): con https:// (proveedores cloud) cerrar la conexión costaba un
+                // handshake TLS completo en cada ronda del loop de tools, y esos servidores
+                // no cierran conexiones vivas por su cuenta.
+                if (PlatformCapabilities.forceCloseHttpConnection && url.startsWith("http://", ignoreCase = true)) {
                     header(HttpHeaders.Connection, "close")
                 }
                 // Se manda el JSON ya serializado para el inspector en vez de dejar que
